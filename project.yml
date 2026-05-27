@@ -1,0 +1,52 @@
+name: BriskEdit
+options:
+  bundleIdPrefix: com.johannesgrof
+  deploymentTarget:
+    macOS: "26.0"
+  developmentLanguage: en
+  createIntermediateGroups: true
+  generateEmptyDirectories: true
+  groupSortPosition: top
+  xcodeVersion: "26.0"
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    SWIFT_STRICT_CONCURRENCY: complete
+    SWIFT_UPCOMING_FEATURE_REGION_BASED_ISOLATION: YES
+    SWIFT_UPCOMING_FEATURE_INFERRED_SENDABLE_CAPTURES: YES
+    ENABLE_USER_SCRIPT_SANDBOXING: NO
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+
+packages:
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    from: "2.9.2"
+
+targets:
+  BriskEdit:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/BriskEdit
+    dependencies:
+      - package: Sparkle
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.johannesgrof.briskedit
+        PRODUCT_NAME: BriskEdit
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Johannes Grof"
+        INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.developer-tools"
+        INFOPLIST_KEY_CFBundleDisplayName: BriskEdit
+        INFOPLIST_KEY_NSPrincipalClass: NSApplication
+        INFOPLIST_KEY_SUFeedURL: "https://github.com/jx-grxf/BriskEdit/releases/latest/download/appcast.xml"
+        INFOPLIST_KEY_SUPublicEDKey: $(BRISKEDIT_SPARKLE_PUBLIC_KEY)
+        INFOPLIST_KEY_SUEnableInstallerLauncherService: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGNING_REQUIRED: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        COMBINE_HIDPI_IMAGES: YES

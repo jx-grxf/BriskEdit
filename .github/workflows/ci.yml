@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 25
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Install xcodegen
+        run: brew install xcodegen
+
+      - name: Audit release identity
+        run: ./script/audit_release_identity.sh
+
+      - name: Generate Xcode project
+        run: xcodegen
+
+      - name: Resolve Swift package dependencies
+        run: |
+          xcodebuild \
+            -project BriskEdit.xcodeproj \
+            -scheme BriskEdit \
+            -destination 'platform=macOS' \
+            -resolvePackageDependencies
+
+      - name: Build (Debug)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project BriskEdit.xcodeproj \
+            -scheme BriskEdit \
+            -configuration Debug \
+            -destination 'platform=macOS' \
+            -derivedDataPath build \
+            build | tail -100
+
+      - name: Verify app bundle signature (ad-hoc)
+        run: codesign --verify --deep --strict build/Build/Products/Debug/BriskEdit.app

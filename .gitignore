@@ -1,0 +1,39 @@
+# Xcode
+build/
+DerivedData/
+*.xcodeproj/
+*.xcworkspace/
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+Packages/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editor
+.vscode/
+.idea/
+
+# Builds
+*.app
+*.dSYM
+*.dmg
+*.zip
+release/
+artifacts/
+
+# Sparkle private keys must never be committed
+sparkle_private_key
+*.pem
+
+# Logs
+*.log
