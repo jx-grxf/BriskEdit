@@ -1,0 +1,165 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the leading v"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Install tools
+        run: |
+          brew install xcodegen create-dmg
+
+      - name: Audit release identity
+        run: ./script/audit_release_identity.sh
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME}"
+            version="${tag#v}"
+          else
+            version="${{ inputs.version }}"
+            tag="v${version#v}"
+            version="${version#v}"
+          fi
+          if [[ "$tag" == *"-beta."* || "$tag" == *"-beta"* ]]; then
+            channel="beta"
+            prerelease="--prerelease"
+          else
+            channel="stable"
+            prerelease=""
+          fi
+          echo "tag=$tag" >>"$GITHUB_OUTPUT"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "channel=$channel" >>"$GITHUB_OUTPUT"
+          echo "prerelease=$prerelease" >>"$GITHUB_OUTPUT"
+
+      - name: Build DMG
+        env:
+          BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
+          BRISKEDIT_BUILD: ${{ github.run_number }}
+          BRISKEDIT_SPARKLE_PUBLIC_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PUBLIC_KEY }}
+          BRISKEDIT_SIGN_IDENTITY: ${{ secrets.BRISKEDIT_SIGN_IDENTITY }}
+        run: ./script/package_dmg.sh
+
+      - name: Build Sparkle assets
+        env:
+          BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
+          BRISKEDIT_BUILD: ${{ github.run_number }}
+          BRISKEDIT_UPDATE_CHANNEL: ${{ steps.version.outputs.channel }}
+          BRISKEDIT_SPARKLE_PRIVATE_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PRIVATE_KEY }}
+          BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}
+        run: ./script/create_sparkle_assets.sh
+
+      - name: Verify Sparkle appcast
+        run: |
+          ./script/verify_appcast.swift \
+            "dist/sparkle/appcast.xml" \
+            "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/BriskEdit-${{ steps.version.outputs.version }}.zip" \
+            "${{ steps.version.outputs.channel }}"
+
+      - name: Verify app signature
+        run: codesign --verify --deep --strict dist/BriskEdit.app
+
+      - name: Verify DMG
+        env:
+          BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
+        run: hdiutil imageinfo "dist/BriskEdit-${BRISKEDIT_VERSION}.dmg" >/dev/null
+
+      - name: Notarize DMG
+        env:
+          BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
+          BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
+          BRISKEDIT_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.BRISKEDIT_NOTARY_KEYCHAIN_PROFILE }}
+          BRISKEDIT_NOTARY_APPLE_ID: ${{ secrets.BRISKEDIT_NOTARY_APPLE_ID }}
+          BRISKEDIT_NOTARY_TEAM_ID: ${{ secrets.BRISKEDIT_NOTARY_TEAM_ID }}
+          BRISKEDIT_NOTARY_PASSWORD: ${{ secrets.BRISKEDIT_NOTARY_PASSWORD }}
+        run: ./script/notarize_release.sh
+
+      - name: Upload DMG artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: BriskEdit-${{ steps.version.outputs.version }}-dmg
+          path: dist/BriskEdit-${{ steps.version.outputs.version }}.dmg
+          if-no-files-found: error
+
+      - name: Upload Sparkle artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: BriskEdit-${{ steps.version.outputs.version }}-sparkle
+          path: |
+            dist/sparkle/BriskEdit-${{ steps.version.outputs.version }}.zip
+            dist/sparkle/appcast.xml
+          if-no-files-found: error
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          RELEASE_PRERELEASE: ${{ steps.version.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          asset="dist/BriskEdit-${RELEASE_VERSION}.dmg"
+          sparkle_zip="dist/sparkle/BriskEdit-${RELEASE_VERSION}.zip"
+          appcast="dist/sparkle/appcast.xml"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" "$asset#BriskEdit-${RELEASE_VERSION}.dmg" --clobber
+            gh release upload "$RELEASE_TAG" "$sparkle_zip#BriskEdit-${RELEASE_VERSION}.zip" --clobber
+            gh release upload "$RELEASE_TAG" "$appcast#appcast.xml" --clobber
+          else
+            gh release create "$RELEASE_TAG" \
+              "$asset#BriskEdit-${RELEASE_VERSION}.dmg" \
+              "$sparkle_zip#BriskEdit-${RELEASE_VERSION}.zip" \
+              "$appcast#appcast.xml" \
+              --target "$GITHUB_SHA" \
+              --title "BriskEdit ${RELEASE_VERSION}" \
+              --notes-file RELEASE_NOTES.md \
+              $RELEASE_PRERELEASE
+          fi
+
+      - name: Publish beta appcast feed
+        if: steps.version.outputs.channel == 'beta'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          beta_tag="beta"
+          appcast="dist/sparkle/appcast.xml"
+          if gh release view "$beta_tag" >/dev/null 2>&1; then
+            gh release edit "$beta_tag" --target "$GITHUB_SHA" --prerelease --title "BriskEdit Beta Feed"
+            gh release upload "$beta_tag" "$appcast#appcast.xml" --clobber
+          else
+            gh release create "$beta_tag" \
+              "$appcast#appcast.xml" \
+              --target "$GITHUB_SHA" \
+              --title "BriskEdit Beta Feed" \
+              --notes "Moving Sparkle beta appcast feed. Install beta builds from versioned prereleases." \
+              --prerelease
+          fi
