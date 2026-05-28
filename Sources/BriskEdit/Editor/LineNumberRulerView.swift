@@ -63,6 +63,10 @@ final class LineNumberRulerView: NSRulerView {
     }
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
+        if drawTextKit1LineNumbers() {
+            return
+        }
+
         guard
             let textView = codeTextView,
             let textLayoutManager = textView.textLayoutManager,
@@ -127,6 +131,57 @@ final class LineNumberRulerView: NSRulerView {
         }
     }
 
+    private func drawTextKit1LineNumbers() -> Bool {
+        guard
+            let textView = codeTextView,
+            textView.textLayoutManager == nil,
+            let layoutManager = textView.layoutManager,
+            let textContainer = textView.textContainer,
+            let scrollView = textView.enclosingScrollView
+        else { return false }
+
+        let visibleRect = scrollView.contentView.bounds
+        let visibleInTextContainer = NSRect(
+            x: visibleRect.minX - textView.textContainerOrigin.x,
+            y: visibleRect.minY - textView.textContainerOrigin.y,
+            width: visibleRect.width,
+            height: visibleRect.height
+        )
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleInTextContainer, in: textContainer)
+        guard glyphRange.location != NSNotFound else { return true }
+
+        let font = NSFont.monospacedDigitSystemFont(ofSize: theme.fontSize - 1, weight: .regular)
+        let labelAttrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: theme.gutterForeground
+        ]
+
+        var glyphIndex = glyphRange.location
+        while glyphIndex < NSMaxRange(glyphRange) {
+            var effectiveRange = NSRange(location: 0, length: 0)
+            let lineRect = layoutManager.lineFragmentRect(
+                forGlyphAt: glyphIndex,
+                effectiveRange: &effectiveRange,
+                withoutAdditionalLayout: true
+            )
+            let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+            if isFirstVisualFragment(characterIndex: charIndex) {
+                let lineNumber = lineNumber(forCharacterOffset: charIndex)
+                let label = NSAttributedString(string: "\(lineNumber)", attributes: labelAttrs)
+                let labelSize = label.size()
+                let y = lineRect.minY + textView.textContainerOrigin.y - visibleRect.minY + (lineRect.height - labelSize.height) / 2
+                label.draw(at: NSPoint(x: ruleThickness - labelSize.width - 6, y: y))
+            }
+
+            glyphIndex = NSMaxRange(effectiveRange)
+            if effectiveRange.length == 0 {
+                glyphIndex += 1
+            }
+        }
+
+        return true
+    }
+
     private func rebuildLineIndex() {
         guard let text = codeTextView?.string else {
             lineStartOffsets = [0]
@@ -166,5 +221,12 @@ final class LineNumberRulerView: NSRulerView {
             }
         }
         return max(1, low)
+    }
+
+    private func isFirstVisualFragment(characterIndex: Int) -> Bool {
+        guard characterIndex > 0, let text = codeTextView?.string as NSString? else {
+            return true
+        }
+        return text.character(at: characterIndex - 1) == 10
     }
 }

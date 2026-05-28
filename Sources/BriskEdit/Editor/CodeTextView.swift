@@ -19,12 +19,17 @@ final class CodeTextView: NSTextView {
     }
 
     static func makeScrollable(theme: EditorTheme) -> (scrollView: NSScrollView, textView: CodeTextView, ruler: LineNumberRulerView) {
-        // Let AppKit create the TextKit 2 scroll/clip/text-container stack. The
-        // inherited factory preserves the subclass and avoids a blank custom stack.
-        let scrollView = CodeTextView.scrollablePlainDocumentContentTextView()
-        guard let textView = scrollView.documentView as? CodeTextView else {
-            preconditionFailure("Expected CodeTextView document view")
-        }
+        let storage = NSTextStorage()
+        let layoutManager = NSLayoutManager()
+        storage.addLayoutManager(layoutManager)
+
+        let textContainer = NSTextContainer(size: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
+        textContainer.widthTracksTextView = true
+        textContainer.heightTracksTextView = false
+        textContainer.lineFragmentPadding = 6
+        layoutManager.addTextContainer(textContainer)
+
+        let textView = CodeTextView(frame: .zero, textContainer: textContainer)
 
         textView.minSize = NSSize(width: 0, height: 0)
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
@@ -55,12 +60,14 @@ final class CodeTextView: NSTextView {
         textView.isSelectable = true
         textView.drawsBackground = true
 
+        let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
         scrollView.backgroundColor = theme.background
+        scrollView.documentView = textView
 
         let ruler = LineNumberRulerView(textView: textView, theme: theme)
         scrollView.verticalRulerView = ruler
@@ -85,17 +92,18 @@ final class CodeTextView: NSTextView {
 
     private func applyBaseTheme() {
         lastAppliedAppearanceName = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua])
+        let foreground = resolvedForegroundColor
         font = theme.nsFont
         backgroundColor = theme.background
-        textColor = theme.foreground
+        textColor = foreground
         insertionPointColor = theme.cursor
         selectedTextAttributes = [
             .backgroundColor: theme.selection,
-            .foregroundColor: theme.foreground
+            .foregroundColor: foreground
         ]
         typingAttributes = [
             .font: theme.nsFont,
-            .foregroundColor: theme.foreground,
+            .foregroundColor: foreground,
             .paragraphStyle: theme.paragraphStyle
         ]
         defaultParagraphStyle = theme.paragraphStyle
@@ -114,6 +122,11 @@ final class CodeTextView: NSTextView {
 
     func rehighlight() {
         SyntaxHighlighter.apply(to: self, language: language, theme: theme)
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        drawVisiblePlainTextOverlay(in: dirtyRect)
     }
 
     override func insertTab(_ sender: Any?) {
@@ -147,6 +160,73 @@ final class CodeTextView: NSTextView {
         let containerWidth = max(1, width)
         guard textContainer?.containerSize.width != containerWidth else { return }
         textContainer?.containerSize = NSSize(width: containerWidth, height: CGFloat.greatestFiniteMagnitude)
-        textLayoutManager?.textViewportLayoutController.layoutViewport()
+        if let textContainer {
+            layoutManager?.ensureLayout(for: textContainer)
+        }
+    }
+
+    private func drawVisiblePlainTextOverlay(in dirtyRect: NSRect) {
+        guard !string.isEmpty else { return }
+
+        let nsString = string as NSString
+        let font = theme.nsFont
+        let paragraphStyle = theme.paragraphStyle.mutableCopy() as? NSMutableParagraphStyle ?? NSMutableParagraphStyle()
+        paragraphStyle.lineBreakMode = .byClipping
+
+        let lineHeight = ceil(font.ascender - font.descender + font.leading) * paragraphStyle.lineHeightMultiple
+        let origin = NSPoint(
+            x: textContainerOrigin.x + (textContainer?.lineFragmentPadding ?? 0),
+            y: textContainerOrigin.y + textContainerInset.height
+        )
+        let visibleRect = bounds.intersection(dirtyRect.insetBy(dx: -2, dy: -lineHeight))
+        let firstLine = max(0, Int(floor((visibleRect.minY - origin.y) / max(1, lineHeight))))
+        let lastLine = max(firstLine, Int(ceil((visibleRect.maxY - origin.y) / max(1, lineHeight))))
+
+        var currentLine = 0
+        var drawnLine = false
+        nsString.enumerateSubstrings(
+            in: NSRange(location: 0, length: nsString.length),
+            options: [.byLines, .substringNotRequired]
+        ) { _, lineRange, _, stop in
+            defer { currentLine += 1 }
+            guard currentLine >= firstLine else { return }
+            guard currentLine <= lastLine else {
+                stop.pointee = true
+                return
+            }
+
+            drawnLine = true
+            let y = origin.y + CGFloat(currentLine) * lineHeight
+            self.drawLine(range: lineRange, at: NSPoint(x: origin.x, y: y), paragraphStyle: paragraphStyle)
+        }
+
+        if !drawnLine, nsString.length == 0 {
+            return
+        }
+    }
+
+    private func drawLine(range: NSRange, at point: NSPoint, paragraphStyle: NSParagraphStyle) {
+        let nsString = string as NSString
+        guard range.location <= nsString.length else { return }
+
+        let safeRange = NSRange(
+            location: range.location,
+            length: min(range.length, nsString.length - range.location)
+        )
+        let line = nsString.substring(with: safeRange) as NSString
+        let attributes: [NSAttributedString.Key: Any] = [
+            .font: theme.nsFont,
+            .foregroundColor: resolvedForegroundColor,
+            .paragraphStyle: paragraphStyle
+        ]
+        line.draw(at: point, withAttributes: attributes)
+    }
+
+    private var resolvedForegroundColor: NSColor {
+        if let match = effectiveAppearance.bestMatch(from: [.darkAqua, .aqua]), match == .darkAqua {
+            NSColor(calibratedWhite: 0.92, alpha: 1)
+        } else {
+            NSColor(calibratedWhite: 0.10, alpha: 1)
+        }
     }
 }

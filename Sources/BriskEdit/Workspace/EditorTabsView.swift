@@ -58,7 +58,7 @@ struct EditorTabsView: View {
     private func editorSurface(for tab: EditorTab) -> some View {
         if workspace.showMarkdownPreview && tab.document.language == .markdown {
             HStack(spacing: 0) {
-                EditorHost(document: tab.document, theme: preferences.editorTheme)
+                VisibleEditorHost(document: tab.document, theme: preferences.editorTheme)
                     .id(tab.id)
                     .frame(minWidth: 360)
                     .layoutPriority(1)
@@ -67,7 +67,7 @@ struct EditorTabsView: View {
                     .frame(width: 340)
             }
         } else {
-            EditorHost(document: tab.document, theme: preferences.editorTheme)
+            VisibleEditorHost(document: tab.document, theme: preferences.editorTheme)
                 .id(tab.id)
                 .frame(minWidth: 360)
         }
