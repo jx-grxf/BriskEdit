@@ -7,7 +7,7 @@ struct WorkspaceWindow: View {
     var body: some View {
         NavigationSplitView {
             sidebar
-                .frame(minWidth: 200)
+                .frame(minWidth: 220)
         } detail: {
             detail
         }
@@ -15,6 +15,14 @@ struct WorkspaceWindow: View {
         .focusedSceneValue(\.workspace, workspace)
         .sheet(isPresented: Bindable(workspace).showCommandPalette) {
             CommandPaletteView(workspace: workspace)
+        }
+        .alert("BriskEdit", isPresented: Binding(
+            get: { workspace.lastError != nil },
+            set: { if !$0 { workspace.lastError = nil } }
+        )) {
+            Button("OK", role: .cancel) { workspace.lastError = nil }
+        } message: {
+            Text(workspace.lastError ?? "")
         }
     }
 

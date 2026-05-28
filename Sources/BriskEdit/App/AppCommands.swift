@@ -38,6 +38,26 @@ struct AppCommands: Commands {
             .keyboardShortcut("p", modifiers: [.command, .shift])
         }
 
+        CommandMenu("Run") {
+            Button("Run File") {
+                workspace?.runActiveDocument()
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(workspace?.activeTab?.document.language.isRunnable != true)
+
+            Divider()
+
+            Button("Toggle Terminal") {
+                workspace?.showTerminal.toggle()
+            }
+            .keyboardShortcut("`", modifiers: .control)
+
+            Button("Toggle Markdown Preview") {
+                workspace?.showMarkdownPreview.toggle()
+            }
+            .keyboardShortcut("m", modifiers: [.command, .shift])
+        }
+
         CommandGroup(after: .appInfo) {
             Button("Check for Updates…") {
                 updates.checkForUpdates()

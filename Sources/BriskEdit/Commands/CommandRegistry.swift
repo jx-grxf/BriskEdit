@@ -26,6 +26,18 @@ enum CommandRegistry {
         },
         EditorCommand(id: "tab.closeActive", title: "Close Tab", group: "Tabs", shortcut: "⌘W") { ws in
             if let id = ws.activeTabID { ws.closeTab(id) }
+        },
+        EditorCommand(id: "run.active", title: "Run File", group: "Run", shortcut: "⌘R") { ws in
+            ws.runActiveDocument()
+        },
+        EditorCommand(id: "terminal.toggle", title: "Toggle Terminal", group: "View", shortcut: "⌃`") { ws in
+            ws.showTerminal.toggle()
+        },
+        EditorCommand(id: "markdown.toggle", title: "Toggle Markdown Preview", group: "View", shortcut: nil) { ws in
+            ws.showMarkdownPreview.toggle()
+        },
+        EditorCommand(id: "files.refresh", title: "Refresh File Tree", group: "View", shortcut: nil) { ws in
+            ws.refreshFileTree()
         }
     ]
 

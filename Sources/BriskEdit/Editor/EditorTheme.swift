@@ -11,6 +11,10 @@ struct EditorTheme: Sendable, Equatable {
     var gutterBackground: NSColor
     var gutterForeground: NSColor
     var currentLineHighlight: NSColor
+    var keyword: NSColor
+    var string: NSColor
+    var number: NSColor
+    var comment: NSColor
     var tabWidth: Int
     var usesSpacesForTabs: Bool
 
@@ -52,6 +56,10 @@ struct EditorTheme: Sendable, Equatable {
                 ? NSColor(white: 1, alpha: 0.04)
                 : NSColor(white: 0, alpha: 0.04)
         },
+        keyword: NSColor.systemPurple,
+        string: NSColor.systemGreen,
+        number: NSColor.systemOrange,
+        comment: NSColor.secondaryLabelColor,
         tabWidth: 4,
         usesSpacesForTabs: true
     )

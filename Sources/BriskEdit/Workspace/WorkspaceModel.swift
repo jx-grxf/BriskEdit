@@ -9,7 +9,22 @@ final class WorkspaceModel {
     var tabs: [EditorTab] = []
     var activeTabID: EditorTab.ID?
     var showCommandPalette: Bool = false
+    var showTerminal: Bool = true
+    var showMarkdownPreview: Bool = true
+    var showHiddenFiles: Bool = false
+    var reloadToken = UUID()
     var selectedSidebarURL: URL?
+    var lastError: String?
+    let terminal = TerminalController()
+
+    init() {
+        if let path = UserDefaults.standard.string(forKey: Keys.lastWorkspaceRoot) {
+            let url = URL(fileURLWithPath: path)
+            if FileManager.default.fileExists(atPath: url.path) {
+                rootURL = url
+            }
+        }
+    }
 
     var activeTab: EditorTab? {
         guard let id = activeTabID else { return nil }
@@ -24,10 +39,25 @@ final class WorkspaceModel {
         do {
             let doc = try await TextDocument.load(from: url)
             let tab = EditorTab(document: doc)
-            tabs.append(tab)
+            if tabs.count == 1,
+               let current = tabs.first,
+               current.document.fileURL == nil,
+               current.document.text.isEmpty,
+               !current.document.isDirty {
+                tabs = [tab]
+            } else {
+                tabs.append(tab)
+            }
             activeTabID = tab.id
         } catch {
             NSLog("BriskEdit: failed to load %@: %@", url.path, String(describing: error))
+            lastError = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
+    func ensureInitialDocument() {
+        if tabs.isEmpty {
+            newUntitled()
         }
     }
 
@@ -49,10 +79,28 @@ final class WorkspaceModel {
 
     func selectTab(_ id: EditorTab.ID) {
         activeTabID = id
+        selectedSidebarURL = tabs.first { $0.id == id }?.document.fileURL
     }
 
     func setWorkspaceRoot(_ url: URL) {
         rootURL = url
+        selectedSidebarURL = nil
+        reloadToken = UUID()
+        UserDefaults.standard.set(url.path, forKey: Keys.lastWorkspaceRoot)
+    }
+
+    func refreshFileTree() {
+        reloadToken = UUID()
+    }
+
+    func toggleHiddenFiles() {
+        showHiddenFiles.toggle()
+        reloadToken = UUID()
+    }
+
+    func runActiveDocument() {
+        showTerminal = true
+        terminal.runActiveDocument(activeTab?.document, workspaceRoot: rootURL)
     }
 
     func saveActiveTab() async {
@@ -65,6 +113,7 @@ final class WorkspaceModel {
             try await tab.document.save()
         } catch {
             NSLog("BriskEdit: save failed: %@", String(describing: error))
+            lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"
         }
     }
 
@@ -77,6 +126,11 @@ final class WorkspaceModel {
             try await tab.document.save(to: url)
         } catch {
             NSLog("BriskEdit: save-as failed: %@", String(describing: error))
+            lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"
         }
+    }
+
+    private enum Keys {
+        static let lastWorkspaceRoot = "workspace.lastRoot"
     }
 }
