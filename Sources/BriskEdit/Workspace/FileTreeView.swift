@@ -205,11 +205,7 @@ private struct FileTreeBranch: View {
     @MainActor
     private func loadChildren(force: Bool) async {
         guard force || !didLoad else { return }
-        let url = node.url
-        let includeHidden = workspace.showHiddenFiles
-        let loaded = await Task.detached {
-            FileNode.children(of: url, includeHidden: includeHidden)
-        }.value
+        let loaded = await workspace.loadChildren(of: node.url)
         children = loaded
         didLoad = true
     }
@@ -246,10 +242,11 @@ private func iconColor(_ language: SourceLanguage) -> Color {
     case .swift: .orange
     case .c, .cpp: .blue
     case .javascript, .typescript: .yellow
+    case .php: .indigo
     case .python: .green
     case .rust: .brown
     case .markdown: .purple
-    case .json, .yaml: .cyan
+    case .json, .yaml, .xml: .cyan
     case .html, .css: .pink
     case .shell: .mint
     case .go: .teal

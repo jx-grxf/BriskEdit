@@ -58,7 +58,7 @@ struct EditorTabsView: View {
     private func editorSurface(for tab: EditorTab) -> some View {
         if workspace.showMarkdownPreview && tab.document.language == .markdown {
             HStack(spacing: 0) {
-                VisibleEditorHost(document: tab.document, theme: preferences.editorTheme)
+                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme)
                     .id(tab.id)
                     .frame(minWidth: 360)
                     .layoutPriority(1)
@@ -67,7 +67,7 @@ struct EditorTabsView: View {
                     .frame(width: 340)
             }
         } else {
-            VisibleEditorHost(document: tab.document, theme: preferences.editorTheme)
+            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme)
                 .id(tab.id)
                 .frame(minWidth: 360)
         }
@@ -151,11 +151,12 @@ private struct TabChip: View {
         case .swift: .orange
         case .c, .cpp: .blue
         case .javascript, .typescript: .yellow
+        case .php: .indigo
         case .python: .green
         case .rust: .brown
         case .markdown: .purple
         case .json, .yaml: .cyan
-        case .html, .css: .pink
+        case .html, .css, .xml: .pink
         case .shell: .mint
         case .go: .teal
         case .plainText: .secondary

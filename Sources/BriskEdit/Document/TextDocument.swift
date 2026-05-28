@@ -112,11 +112,13 @@ enum SourceLanguage: String, Sendable, CaseIterable {
     case javascript = "JavaScript"
     case json = "JSON"
     case markdown = "Markdown"
+    case php = "PHP"
     case python = "Python"
     case rust = "Rust"
     case shell = "Shell"
     case swift = "Swift"
     case typescript = "TypeScript"
+    case xml = "XML"
     case yaml = "YAML"
     case plainText = "Plain Text"
 
@@ -131,11 +133,13 @@ enum SourceLanguage: String, Sendable, CaseIterable {
         case "js", "jsx", "mjs", "cjs": self = .javascript
         case "json": self = .json
         case "md", "markdown": self = .markdown
+        case "php": self = .php
         case "py": self = .python
         case "rs": self = .rust
         case "sh", "bash", "zsh": self = .shell
         case "swift": self = .swift
         case "ts", "tsx": self = .typescript
+        case "xml", "plist", "xib", "storyboard": self = .xml
         case "yaml", "yml": self = .yaml
         default: self = .plainText
         }
@@ -151,11 +155,13 @@ enum SourceLanguage: String, Sendable, CaseIterable {
         case .javascript: "curlybraces"
         case .json: "curlybraces.square"
         case .markdown: "doc.richtext"
+        case .php: "p.square"
         case .python: "chevron.left.forwardslash.chevron.right"
         case .rust: "gearshape.2"
         case .shell: "terminal"
         case .swift: "swift"
         case .typescript: "t.square"
+        case .xml: "chevron.left.forwardslash.chevron.right"
         case .yaml: "list.bullet.rectangle"
         case .plainText: "doc.text"
         }
@@ -163,7 +169,7 @@ enum SourceLanguage: String, Sendable, CaseIterable {
 
     var isRunnable: Bool {
         switch self {
-        case .c, .cpp, .go, .javascript, .python, .rust, .shell, .swift, .typescript:
+        case .c, .cpp, .go, .javascript, .php, .python, .rust, .shell, .swift, .typescript:
             true
         default:
             false
@@ -185,8 +191,37 @@ enum SourceLanguage: String, Sendable, CaseIterable {
         case .html: "html"
         case .json: "json"
         case .markdown: "md"
+        case .php: "php"
         case .yaml: "yml"
+        case .xml: "xml"
         case .plainText: "txt"
+        }
+    }
+
+    var completionWords: [String] {
+        switch self {
+        case .c:
+            ["#include", "#define", "printf", "scanf", "malloc", "free", "sizeof", "int", "char", "double", "float", "void", "struct", "return", "for", "while", "if", "else"]
+        case .cpp:
+            ["#include", "std::cout", "std::cin", "std::vector", "std::string", "namespace", "class", "template", "typename", "auto", "const", "return", "for", "while", "if", "else"]
+        case .swift:
+            ["import", "struct", "class", "enum", "extension", "func", "var", "let", "guard", "if", "else", "switch", "case", "return", "async", "await"]
+        case .javascript, .typescript:
+            ["import", "export", "const", "let", "function", "async", "await", "return", "class", "interface", "type", "if", "else", "for", "while"]
+        case .python:
+            ["import", "from", "def", "class", "self", "return", "if", "elif", "else", "for", "while", "with", "try", "except"]
+        case .go:
+            ["package", "import", "func", "return", "struct", "interface", "defer", "go", "range", "if", "else", "for"]
+        case .rust:
+            ["use", "fn", "let", "mut", "pub", "impl", "trait", "struct", "enum", "match", "return", "async", "await"]
+        case .shell:
+            ["#!/usr/bin/env bash", "set -euo pipefail", "if", "then", "else", "fi", "for", "do", "done", "case", "esac"]
+        case .html, .xml:
+            ["html", "head", "body", "script", "style", "div", "span", "section", "article", "link", "meta"]
+        case .css:
+            ["display", "grid", "flex", "align-items", "justify-content", "color", "background", "font-size", "padding", "margin"]
+        case .json, .yaml, .markdown, .php, .plainText:
+            []
         }
     }
 }

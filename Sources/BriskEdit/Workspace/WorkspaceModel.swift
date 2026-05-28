@@ -16,6 +16,7 @@ final class WorkspaceModel {
     var selectedSidebarURL: URL?
     var lastError: String?
     let terminal = TerminalController()
+    private var childCache: [FileTreeCacheKey: [FileNode]] = [:]
 
     init() {
         if let path = UserDefaults.standard.string(forKey: Keys.lastWorkspaceRoot) {
@@ -85,17 +86,33 @@ final class WorkspaceModel {
     func setWorkspaceRoot(_ url: URL) {
         rootURL = url
         selectedSidebarURL = nil
+        childCache.removeAll(keepingCapacity: true)
         reloadToken = UUID()
         UserDefaults.standard.set(url.path, forKey: Keys.lastWorkspaceRoot)
     }
 
     func refreshFileTree() {
+        childCache.removeAll(keepingCapacity: true)
         reloadToken = UUID()
     }
 
     func toggleHiddenFiles() {
         showHiddenFiles.toggle()
+        childCache.removeAll(keepingCapacity: true)
         reloadToken = UUID()
+    }
+
+    func loadChildren(of url: URL) async -> [FileNode] {
+        let key = FileTreeCacheKey(url: url, includeHidden: showHiddenFiles)
+        if let cached = childCache[key] {
+            return cached
+        }
+        let includeHidden = showHiddenFiles
+        let loaded = await Task.detached(priority: .userInitiated) {
+            FileNode.children(of: url, includeHidden: includeHidden)
+        }.value
+        childCache[key] = loaded
+        return loaded
     }
 
     func runActiveDocument() {
@@ -132,5 +149,10 @@ final class WorkspaceModel {
 
     private enum Keys {
         static let lastWorkspaceRoot = "workspace.lastRoot"
+    }
+
+    private struct FileTreeCacheKey: Hashable {
+        let url: URL
+        let includeHidden: Bool
     }
 }
