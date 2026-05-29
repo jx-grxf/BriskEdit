@@ -38,6 +38,9 @@ struct WorkspaceWindow: View {
         .sheet(isPresented: Bindable(workspace).showFileFinder) {
             FileFinderView(workspace: workspace)
         }
+        .sheet(isPresented: Bindable(workspace).showToolHealth) {
+            ToolHealthPanel()
+        }
         .alert("BriskEdit", isPresented: Binding(
             get: { workspace.lastError != nil },
             set: { if !$0 { workspace.lastError = nil } }

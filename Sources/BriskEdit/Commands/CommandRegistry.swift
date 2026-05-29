@@ -36,6 +36,9 @@ enum CommandRegistry {
         EditorCommand(id: "run.check", title: "Check File", group: "Run", shortcut: "⌘B") { ws in
             Task { await ws.checkActiveDocument() }
         },
+        EditorCommand(id: "tools.health", title: "Show Tool Health", group: "Tools", shortcut: nil) { ws in
+            ws.showToolHealth = true
+        },
         EditorCommand(id: "terminal.toggle", title: "Toggle Terminal", group: "View", shortcut: "⌃`") { ws in
             ws.showTerminal.toggle()
         },

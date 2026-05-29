@@ -63,6 +63,10 @@ struct AppCommands: Commands {
             .keyboardShortcut("b", modifiers: .command)
             .disabled(workspace?.activeTab == nil)
 
+            Button("Show Tool Health") {
+                workspace?.showToolHealth = true
+            }
+
             Divider()
 
             Button("Toggle Terminal") {

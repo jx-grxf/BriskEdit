@@ -10,6 +10,7 @@ final class WorkspaceModel {
     var activeTabID: EditorTab.ID?
     var showCommandPalette: Bool = false
     var showFileFinder: Bool = false
+    var showToolHealth: Bool = false
     var showTerminal: Bool = true
     var showMarkdownPreview: Bool = true
     var showHiddenFiles: Bool = false
