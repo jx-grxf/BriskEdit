@@ -31,11 +31,11 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
         scrollView = NSScrollView()
         super.init()
 
-        panel.level = .popUpMenu
+        panel.level = .floating
         panel.hasShadow = true
         panel.isOpaque = false
         panel.backgroundColor = .clear
-        panel.hidesOnDeactivate = false
+        panel.hidesOnDeactivate = true
         panel.isFloatingPanel = true
         panel.becomesKeyOnlyIfNeeded = true
         panel.animationBehavior = .utilityWindow
@@ -83,8 +83,13 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
         panel.contentView = background
     }
 
-    /// Shows / refreshes the list below the given caret rect (screen coords).
+    /// Shows / refreshes the list near the given caret rect (screen coords),
+    /// constrained to the editor window so it cannot float over other apps.
     func show(items: [CompletionItem], caretScreenRect rect: NSRect, parent: NSWindow?) {
+        guard let parent, parent.isVisible else {
+            hide()
+            return
+        }
         self.items = items
         tableView.reloadData()
         if tableView.selectedRow < 0 || tableView.selectedRow >= items.count {
@@ -95,18 +100,27 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
         let height = CGFloat(visibleRows) * rowHeight + 8
         panel.setContentSize(NSSize(width: width, height: height))
 
-        // Prefer below the caret; flip above if it would run off-screen.
-        let screenFrame = parent?.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
-        var originY = rect.minY - height - 4
-        if originY < screenFrame.minY {
+        let allowedFrame = parent.contentLayoutRectInScreen.insetBy(dx: 8, dy: 8)
+        let fitsBelow = rect.minY - height - 4 >= allowedFrame.minY
+        let fitsAbove = rect.maxY + height + 4 <= allowedFrame.maxY
+
+        var originY: CGFloat
+        if fitsBelow || !fitsAbove {
+            originY = rect.minY - height - 4
+        } else {
             originY = rect.maxY + 4
         }
         var originX = rect.minX - 4
-        originX = min(max(originX, screenFrame.minX), screenFrame.maxX - width)
+        originX = min(max(originX, allowedFrame.minX), allowedFrame.maxX - width)
+        originY = min(max(originY, allowedFrame.minY), allowedFrame.maxY - height)
         panel.setFrameOrigin(NSPoint(x: originX, y: originY))
 
-        if !panel.isVisible, let parent {
-            panel.order(.above, relativeTo: parent.windowNumber)
+        if panel.parent !== parent {
+            panel.parent?.removeChildWindow(panel)
+            parent.addChildWindow(panel, ordered: .above)
+        }
+        if !panel.isVisible {
+            panel.orderFront(nil)
         }
     }
 
@@ -157,6 +171,12 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         CompletionRowView()
+    }
+}
+
+private extension NSWindow {
+    var contentLayoutRectInScreen: NSRect {
+        convertToScreen(contentLayoutRect)
     }
 }
 
