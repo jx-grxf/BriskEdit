@@ -21,6 +21,24 @@ final class LSPDiagnosticsBus {
     }
 }
 
+struct LSPToolStatus: Sendable, Equatable {
+    enum State: Sendable, Equatable {
+        case available
+        case missing
+        case unsupported
+    }
+
+    let state: State
+    let serverName: String
+    let detail: String
+
+    static let unsupported = LSPToolStatus(
+        state: .unsupported,
+        serverName: "Off",
+        detail: "No language server for this file type"
+    )
+}
+
 /// Minimal multi-server LSP client. Speaks JSON-RPC over a server's stdio to
 /// provide semantic completion and live diagnostics, using the language servers
 /// the developer already has installed (clangd via Xcode, sourcekit-lsp, gopls,
@@ -36,6 +54,14 @@ actor LSPService {
         let arguments: [String]
         let probe: String?            // command to verify availability, nil = always present
         let languageId: String
+
+        var displayName: String {
+            switch id {
+            case "sourcekit": "sourcekit-lsp"
+            case "tsserver": "typescript-language-server"
+            default: id
+            }
+        }
     }
 
     /// Resolves the server launch for a language, or nil if BriskEdit drives no
@@ -69,6 +95,21 @@ actor LSPService {
         default:
             return nil
         }
+    }
+
+    static func toolStatus(for language: SourceLanguage) async -> LSPToolStatus {
+        guard let config = config(for: language) else { return .unsupported }
+        let path = await Task.detached(priority: .utility) {
+            resolveExecutablePath(for: config)
+        }.value
+        if let path {
+            return LSPToolStatus(state: .available, serverName: config.displayName, detail: path)
+        }
+        return LSPToolStatus(
+            state: .missing,
+            serverName: config.displayName,
+            detail: "\(config.displayName) was not found on PATH"
+        )
     }
 
     private var servers: [String: Server] = [:]
@@ -134,6 +175,31 @@ actor LSPService {
             labels.append(token)
         }
         return labels
+    }
+
+    private static func resolveExecutablePath(for config: ServerConfig) -> String? {
+        let command: String
+        if let probe = config.probe {
+            command = "command -v \(probe)"
+        } else if config.executable == "/usr/bin/xcrun", let tool = config.arguments.first {
+            command = "/usr/bin/xcrun --find \(tool)"
+        } else {
+            command = "command -v \(config.executable)"
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", command]
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return nil }
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { return nil }
+        let output = String(data: data, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return output?.isEmpty == false ? output : nil
     }
 }
 

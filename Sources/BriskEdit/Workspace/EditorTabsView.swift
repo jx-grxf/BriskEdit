@@ -300,6 +300,9 @@ private struct StatusBar: View {
                 DiagnosticSummary(diagnostics: doc.diagnostics)
             }
             Spacer()
+            if let doc = workspace.activeTab?.document {
+                IntelliSenseStatusView(language: doc.language)
+            }
         }
         .padding(.horizontal, 12)
         .frame(height: 22)
@@ -314,6 +317,47 @@ private struct StatusBar: View {
         case .utf16BigEndian: "UTF-16 BE"
         case .ascii: "ASCII"
         default: "Encoding \(encoding.rawValue)"
+        }
+    }
+}
+
+private struct IntelliSenseStatusView: View {
+    let language: SourceLanguage
+    @State private var status: LSPToolStatus = .unsupported
+    @State private var isChecking = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(indicatorColor)
+                .frame(width: 7, height: 7)
+            Text("IntelliSense: \(status.serverName)")
+                .font(.caption.monospaced())
+                .lineLimit(1)
+        }
+        .foregroundStyle(foregroundStyle)
+        .help(status.detail)
+        .task(id: language) {
+            isChecking = true
+            status = await LSPService.toolStatus(for: language)
+            isChecking = false
+        }
+    }
+
+    private var indicatorColor: Color {
+        if isChecking { return Color.secondary }
+        return switch status.state {
+        case .available: Color.green
+        case .missing: Color.orange
+        case .unsupported: Color.secondary
+        }
+    }
+
+    private var foregroundStyle: Color {
+        return switch status.state {
+        case .available: Color.secondary
+        case .missing: Color.orange
+        case .unsupported: Color.secondary
         }
     }
 }
