@@ -9,6 +9,8 @@ final class WorkspaceModel {
     var tabs: [EditorTab] = []
     var activeTabID: EditorTab.ID?
     var showCommandPalette: Bool = false
+    var showFileFinder: Bool = false
+    var showToolHealth: Bool = false
     var showTerminal: Bool = true
     var showMarkdownPreview: Bool = true
     var showHiddenFiles: Bool = false
@@ -18,10 +20,11 @@ final class WorkspaceModel {
     /// Directories the user has expanded in the file tree — kept here (not in
     /// per-row @State) so the tree survives reloads without collapsing.
     var expandedDirectories: Set<URL> = []
-    /// When set, a PDF is shown in a resizable pane beside the editor.
-    var splitPDFURL: URL?
+    /// When set, a native preview is shown in a resizable pane beside the editor.
+    var splitPreviewKind: PreviewKind?
     let terminal = TerminalController()
     private var childCache: [FileTreeCacheKey: [FileNode]] = [:]
+    private var watchers: [EditorTab.ID: FileWatcher] = [:]
 
     init() {
         if let path = UserDefaults.standard.string(forKey: Keys.lastWorkspaceRoot) {
@@ -46,10 +49,11 @@ final class WorkspaceModel {
     func openFile(at url: URL) async {
         if let existing = tabs.first(where: { $0.document.fileURL == url }) {
             activeTabID = existing.id
+            persistSession()
             return
         }
-        if url.pathExtension.lowercased() == "pdf" {
-            openTab(EditorTab.pdf(url: url))
+        if let previewKind = PreviewKind.previewKind(for: url) {
+            openTab(EditorTab.preview(previewKind))
             return
         }
         do {
@@ -65,6 +69,8 @@ final class WorkspaceModel {
                 tabs.append(tab)
             }
             activeTabID = tab.id
+            startWatching(tab)
+            persistSession()
         } catch {
             NSLog("BriskEdit: failed to load %@: %@", url.path, String(describing: error))
             lastError = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
@@ -78,12 +84,13 @@ final class WorkspaceModel {
            current.document.fileURL == nil,
            current.document.text.isEmpty,
            !current.document.isDirty,
-           current.pdfURL == nil {
+           current.previewKind == nil {
             tabs = [tab]
         } else {
             tabs.append(tab)
         }
         activeTabID = tab.id
+        persistSession()
     }
 
     func ensureInitialDocument() {
@@ -101,22 +108,25 @@ final class WorkspaceModel {
 
     func closeTab(_ id: EditorTab.ID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        stopWatching(id)
         tabs.remove(at: index)
         if activeTabID == id {
             let fallback = tabs.indices.contains(index) ? tabs[index] : tabs.last
             activeTabID = fallback?.id
         }
+        persistSession()
     }
 
     func selectTab(_ id: EditorTab.ID) {
         activeTabID = id
         selectedSidebarURL = tabs.first { $0.id == id }?.document.fileURL
+        persistSession()
     }
 
     /// Closes a tab, prompting to save when it has unsaved edits.
     func requestCloseTab(_ id: EditorTab.ID) {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
-        guard tab.pdfURL == nil, tab.document.isDirty else {
+        guard tab.previewKind == nil, tab.document.isDirty else {
             closeTab(id)
             return
         }
@@ -138,8 +148,8 @@ final class WorkspaceModel {
         }
     }
 
-    func toggleSplitPDF(_ url: URL) {
-        splitPDFURL = (splitPDFURL == url) ? nil : url
+    func toggleSplitPreview(_ kind: PreviewKind) {
+        splitPreviewKind = (splitPreviewKind == kind) ? nil : kind
     }
 
     /// Saves every dirty tab; returns false if the user cancels a Save dialog.
@@ -164,6 +174,7 @@ final class WorkspaceModel {
                 return false
             }
         }
+        await formatBeforeSave(tab.document)
         do {
             try await tab.document.save()
             return true
@@ -187,7 +198,7 @@ final class WorkspaceModel {
         selectedSidebarURL = nil
         expandedDirectories.removeAll()
         childCache.removeAll(keepingCapacity: true)
-        splitPDFURL = nil
+        splitPreviewKind = nil
         reloadToken = UUID()
         UserDefaults.standard.removeObject(forKey: Keys.lastWorkspaceRoot)
     }
@@ -203,6 +214,16 @@ final class WorkspaceModel {
         reloadToken = UUID()
     }
 
+    /// Flat list of files under the workspace root for the go-to-file palette.
+    /// Reuses the file tree's ignore rules (VCS/build/dependency dirs, dotfiles).
+    func collectWorkspaceFiles(limit: Int = 8000) async -> [URL] {
+        guard let root = rootURL else { return [] }
+        let includeHidden = showHiddenFiles
+        return await Task.detached(priority: .userInitiated) {
+            FileIndex.files(under: root, includeHidden: includeHidden, limit: limit)
+        }.value
+    }
+
     func loadChildren(of url: URL) async -> [FileNode] {
         let key = FileTreeCacheKey(url: url, includeHidden: showHiddenFiles)
         if let cached = childCache[key] {
@@ -216,9 +237,29 @@ final class WorkspaceModel {
         return loaded
     }
 
+    /// Runs a syntax/type check on the active document and stores the findings
+    /// for the gutter. No-op for languages without a check driver.
+    func checkActiveDocument() async {
+        guard let doc = activeTab?.document else { return }
+        if let diagnostics = await DiagnosticsService.check(text: doc.text, language: doc.language, fileURL: doc.fileURL) {
+            doc.diagnostics = diagnostics
+        }
+    }
+
     func runActiveDocument() {
         showTerminal = true
         terminal.runActiveDocument(activeTab?.document, workspaceRoot: rootURL)
+        Task { await checkActiveDocument() }
+    }
+
+    /// Runs the configured on-save formatter over the buffer, if enabled and a
+    /// formatter is available. No-op otherwise. Preferences are read straight
+    /// from UserDefaults so the model stays decoupled from the Preferences view.
+    private func formatBeforeSave(_ document: TextDocument) async {
+        guard UserDefaults.standard.bool(forKey: "editor.formatOnSave") else { return }
+        if let formatted = await FormatterService.format(text: document.text, language: document.language, fileURL: document.fileURL) {
+            document.applyFormatted(formatted)
+        }
     }
 
     func saveActiveTab() async {
@@ -227,8 +268,10 @@ final class WorkspaceModel {
             await saveActiveTabAs()
             return
         }
+        await formatBeforeSave(tab.document)
         do {
             try await tab.document.save()
+            await checkActiveDocument()
         } catch {
             NSLog("BriskEdit: save failed: %@", String(describing: error))
             lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"
@@ -240,11 +283,82 @@ final class WorkspaceModel {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = tab.document.displayName
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        await formatBeforeSave(tab.document)
         do {
             try await tab.document.save(to: url)
+            persistSession()
         } catch {
             NSLog("BriskEdit: save-as failed: %@", String(describing: error))
             lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"
+        }
+    }
+
+    // MARK: - External change watching
+
+    /// Starts (or replaces) a vnode watcher for a file-backed tab so external
+    /// edits get picked up. Preview tabs are skipped — their native viewers reload themselves.
+    private func startWatching(_ tab: EditorTab) {
+        guard tab.previewKind == nil, let url = tab.document.fileURL else { return }
+        let id = tab.id
+        watchers[id]?.cancel()
+        watchers[id] = FileWatcher(url: url) { [weak self] in
+            Task { @MainActor in await self?.handleExternalChange(id) }
+        }
+    }
+
+    private func stopWatching(_ id: EditorTab.ID) {
+        watchers[id]?.cancel()
+        watchers[id] = nil
+    }
+
+    /// Reloads a clean buffer from disk; flags a dirty buffer for the reload
+    /// banner instead of clobbering unsaved edits. Our own saves land here too,
+    /// but disk == buffer then, so they're a no-op.
+    private func handleExternalChange(_ id: EditorTab.ID) async {
+        guard let tab = tabs.first(where: { $0.id == id }), let url = tab.document.fileURL else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        let disk = await Task.detached(priority: .utility) { () -> String? in
+            var used: String.Encoding = .utf8
+            return try? String(contentsOf: url, usedEncoding: &used)
+        }.value
+        guard let disk, disk != tab.document.text else { return }
+        if tab.document.isDirty {
+            tab.document.externalChangePending = true
+        } else {
+            await tab.document.reloadFromDisk()
+        }
+    }
+
+    // MARK: - Session restore
+
+    /// Reopens the file tabs that were open when the app last quit. Skips files
+    /// that no longer exist and restores the previously active tab. No-op once
+    /// tabs are already present, so it never clobbers a window in use.
+    func restoreSession() async {
+        guard tabs.isEmpty else { return }
+        let defaults = UserDefaults.standard
+        let paths = defaults.stringArray(forKey: Keys.openSessionFiles) ?? []
+        guard !paths.isEmpty else { return }
+        let activePath = defaults.string(forKey: Keys.activeSessionFile)
+        for path in paths where FileManager.default.fileExists(atPath: path) {
+            await openFile(at: URL(fileURLWithPath: path))
+        }
+        if let activePath, let match = tabs.first(where: { $0.document.fileURL?.path == activePath }) {
+            activeTabID = match.id
+        }
+        persistSession()
+    }
+
+    /// Records the open file tabs and active tab so the next launch can restore
+    /// them. Untitled (URL-less) and the encoding of each tab are intentionally
+    /// not persisted — only on-disk files come back.
+    private func persistSession() {
+        let defaults = UserDefaults.standard
+        defaults.set(tabs.compactMap { $0.document.fileURL?.path }, forKey: Keys.openSessionFiles)
+        if let activePath = activeTab?.document.fileURL?.path {
+            defaults.set(activePath, forKey: Keys.activeSessionFile)
+        } else {
+            defaults.removeObject(forKey: Keys.activeSessionFile)
         }
     }
 
@@ -328,6 +442,7 @@ final class WorkspaceModel {
         do {
             try FileManager.default.moveItem(at: url, to: destination)
             retargetTabs(from: url, to: destination)
+            persistSession()
             refreshFileTree()
             selectedSidebarURL = destination
         } catch {
@@ -461,11 +576,14 @@ final class WorkspaceModel {
     private func retargetTabs(from oldURL: URL, to newURL: URL) {
         for tab in tabs where tab.document.fileURL?.standardizedFileURL == oldURL.standardizedFileURL {
             tab.document.retarget(to: newURL)
+            startWatching(tab)
         }
     }
 
     private enum Keys {
         static let lastWorkspaceRoot = "workspace.lastRoot"
+        static let openSessionFiles = "session.openFiles"
+        static let activeSessionFile = "session.activeFile"
     }
 
     private struct FileTreeCacheKey: Hashable {

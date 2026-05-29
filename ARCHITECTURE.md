@@ -35,15 +35,16 @@ The boundary that matters most: **AppKit lives in `Editor/` and `Workspace/` onl
               │
               ▼  AppKit responder chain
    ┌─────────────────────────────┐
-   │ CodeTextView (NSTextView)   │  TextKit 2
+   │ BriskCodeTextView           │  TextKit 2
    │  ├─ NSTextLayoutManager     │  layout, line fragments
    │  ├─ NSTextContentStorage    │  text buffer
-   │  └─ LineNumberRulerView     │  gutter, redraws on bounds change
+   │  └─ LineNumberRulerView     │  gutter, self-observes change/scroll
    └──────────┬──────────────────┘
-              │ NSTextDelegate.textDidChange
+              │ NSTextViewDelegate.textDidChange
               ▼
    ┌─────────────────────────────┐
-   │ EditorHost.Coordinator      │  @MainActor
+   │ TextKit2EditorHost          │  @MainActor
+   │  .Coordinator               │
    │  → document.applyEdit(...)  │
    └──────────┬──────────────────┘
               │
@@ -76,10 +77,10 @@ A single edit fans out to the document model on the main actor; persistence deta
        ▲                              ▲
        │ FocusedSceneValue            │ @Bindable
        │                              │
-┌──────┴───────┐              ┌──────┴────────┐
-│ AppCommands  │              │ EditorHost    │  NSViewRepresentable
-│  (menus)     │              │  + Coordinator│
-└──────────────┘              └───────────────┘
+┌──────┴───────┐              ┌──────┴──────────────┐
+│ AppCommands  │              │ TextKit2EditorHost  │  NSViewRepresentable
+│  (menus)     │              │  + Coordinator      │
+└──────────────┘              └─────────────────────┘
 ```
 
 Rules:
@@ -87,7 +88,7 @@ Rules:
 - **`WorkspaceModel`** is `@MainActor` and `@Observable`. Holds the workspace root URL, the open tab list, and the active tab id. SwiftUI binds to it directly; there is no `ObservableObject` / `Combine` plumbing.
 - **`TextDocument`** is `@MainActor` and `@Observable`. Owned by a tab. All mutation goes through `applyEdit(text:)` or `save()` — no direct property writes from views.
 - **File IO** uses `Task.detached(priority: .userInitiated)` for both load and write. The String snapshot is captured by value, so the main actor never blocks on the disk.
-- **`EditorHost.Coordinator`** is `@MainActor`. It is the only thing that listens to NSTextView notifications, which keeps the UI/AppKit boundary thin.
+- **`TextKit2EditorHost.Coordinator`** is `@MainActor`. It is the only thing that listens to NSTextView notifications, which keeps the UI/AppKit boundary thin.
 - **Swift 6 strict concurrency** is enabled. Sendable conformance is required for anything crossing actor boundaries — `FileNode`, `EditorTheme`, and the `RunService` job descriptors are explicitly `Sendable`.
 
 There is no `Combine` and no `async let` fanout in the hot path. The editor pipeline is single-threaded on `@MainActor` by design — typing latency is the metric we optimise for, not throughput.
@@ -96,15 +97,15 @@ There is no `Combine` and no `async let` fanout in the hot path. The editor pipe
 
 ## The editor pipeline in detail
 
-### 1. CodeTextView (`Editor/CodeTextView.swift`)
+### 1. TextKit2EditorHost (`Editor/TextKit2EditorHost.swift`)
 
-`NSTextView` subclass wired to a TextKit 2 stack:
+The single live editor. `NSViewRepresentable` that builds a scroll view around a `BriskCodeTextView` (`NSTextView(usingTextLayoutManager: true)`) plus a `LineNumberRulerView` gutter. This file *is* the editor pipeline — the older `EditorHost`/`VisibleEditorHost`/`CodeTextView` experiments were deleted; do not resurrect them. The text view is wired to a TextKit 2 stack:
 
-- `NSTextContentStorage` owns the text buffer.
-- `NSTextLayoutManager` does layout into a single `NSTextContainer`.
-- `lineFragmentPadding = 6`, `widthTracksTextView = true` for soft-wrap.
+- `NSTextContentStorage` owns the text buffer, `NSTextLayoutManager` does layout into a single `NSTextContainer`.
+- `widthTracksTextView = true` for soft-wrap.
 - Rich text, link detection, smart quotes, auto-correct, smart-insert/delete: **all off**. This is a code editor, not Pages.
-- Tab key inserts spaces when `theme.usesSpacesForTabs` is true (default), respecting `theme.tabWidth`.
+- Tab key inserts spaces when `theme.usesSpacesForTabs` is true (default), respecting `theme.tabWidth`; `insertNewline` carries indentation and opens brace bodies.
+- Auto-closing of brackets/quotes, a floating `CompletionPopup` (snippets + clangd + keywords + buffer symbols), and regex syntax highlighting (`TextKit2SyntaxHighlighter`, debounced) all live in the `Coordinator`.
 - `usesFindBar = true` + `isIncrementalSearchingEnabled = true` → ⌘F drops the standard AppKit find bar without us reimplementing it.
 
 ### 2. LineNumberRulerView (`Editor/LineNumberRulerView.swift`)
@@ -118,15 +119,15 @@ Drawing strategy:
 3. For each fragment, count newlines from the document start to the fragment start (once per repaint, cheap on typical files; will switch to a cached line-index in MVP-1 for million-line cases).
 4. Draw the line number in the gutter at the y of the first line fragment.
 
-Redraws are triggered by `NSText.didChangeNotification` and `NSView.boundsDidChangeNotification` on the scroll view's content view.
+Redraws are triggered by `NSText.didChangeNotification` and `NSView.boundsDidChangeNotification` on the scroll view's content view. The ruler is installed by `TextKit2EditorHost.makeNSView` (`scrollView.verticalRulerView`); it self-observes and only needs theme changes forwarded via `setTheme`.
 
-### 3. EditorHost (`Editor/EditorHost.swift`)
+### 3. Coordinator (inside `TextKit2EditorHost`)
 
-`NSViewRepresentable` glue:
+`NSViewRepresentable` glue lives in the host itself:
 
-- `makeNSView` builds the scroll view, text view, and ruler once. It seeds the text view's string from the document.
-- `updateNSView` only forwards theme changes. It deliberately does **not** sync `document.text → textView.string`, because that would loop. Tab switches force-rebuild via SwiftUI `.id(activeTab.id)` instead.
-- `Coordinator` listens to `NSTextViewDelegate.textDidChange` and pushes `tv.string` back into the document. This is the only writer.
+- `makeNSView` builds the scroll view, text view, and ruler once. It seeds the text view's string from the document and warms up clangd for C/C++.
+- `updateNSView` forwards theme changes and re-applies highlighting. It only re-seeds `textView.string` when `document.revision` advanced *outside* this editor (cheap counter compare, not whole-string), so external edits/reloads land without a feedback loop. Tab switches force-rebuild via SwiftUI `.id(activeTab.id)`.
+- `Coordinator` listens to `NSTextViewDelegate.textDidChange` and pushes `tv.string` back into the document via `applyEdit`. This is the only writer.
 
 ### 4. TextDocument (`Document/TextDocument.swift`)
 
@@ -213,7 +214,7 @@ Release runbook: [`docs/release.md`](docs/release.md).
 
 | You want to change... | Look at |
 |---|---|
-| The text view behavior (key handling, indent, undo) | `Editor/CodeTextView.swift` |
+| The text view behavior (key handling, indent, completion, highlighting) | `Editor/TextKit2EditorHost.swift` |
 | Gutter / line number drawing | `Editor/LineNumberRulerView.swift` |
 | Theme colors, font, paragraph style | `Editor/EditorTheme.swift` |
 | How a file is loaded or saved | `Document/TextDocument.swift` |
@@ -230,7 +231,7 @@ Release runbook: [`docs/release.md`](docs/release.md).
 
 ## Invariants worth knowing
 
-- **`updateNSView` never sets `textView.string`.** Tab switches use SwiftUI `.id(tab.id)` to force a fresh `makeNSView`. This is the only way the editor avoids a feedback loop with the observable document.
+- **`updateNSView` only re-seeds `textView.string` on an external revision bump.** It compares `document.revision` against the last value the coordinator synced; equal means the change originated in this text view, so it is skipped to avoid a feedback loop. Tab switches use SwiftUI `.id(tab.id)` to force a fresh `makeNSView`.
 - **`TextDocument` is the only writer to its own `text`.** Coordinator calls `applyEdit(text:)`, not direct assignment. Future undo/coalescing logic hangs off that single method.
 - **File IO is always detached.** `save()` and `load(from:)` both run on a detached task. The main actor never blocks on disk.
 - **No background filesystem watcher in MVP-0.** Reload-on-external-change lands in MVP-1 with FSEvents.

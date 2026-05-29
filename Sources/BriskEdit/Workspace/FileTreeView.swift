@@ -266,8 +266,8 @@ private struct FileContextMenu: View {
             Divider()
         } else {
             Button("Open") { workspace.selectedSidebarURL = node.url }
-            if node.url.pathExtension.lowercased() == "pdf" {
-                Button("Open in Split Screen") { workspace.toggleSplitPDF(node.url) }
+            if let previewKind = PreviewKind.previewKind(for: node.url) {
+                Button("Open in Split Screen") { workspace.toggleSplitPreview(previewKind) }
             }
             Divider()
         }
@@ -282,4 +282,3 @@ private struct FileContextMenu: View {
         Button("Move to Trash", role: .destructive) { workspace.deleteFile(node.url) }
     }
 }
-

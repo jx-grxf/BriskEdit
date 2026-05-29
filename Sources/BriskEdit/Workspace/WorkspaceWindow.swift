@@ -13,6 +13,7 @@ struct WorkspaceWindow: View {
             detail
         }
         .navigationSplitViewStyle(.balanced)
+        .task { await workspace.restoreSession() }
         .background(WindowConfigurator(
             isDocumentEdited: workspace.hasUnsavedChanges,
             hasUnsavedChanges: workspace.hasUnsavedChanges,
@@ -33,6 +34,12 @@ struct WorkspaceWindow: View {
         .focusedSceneValue(\.workspace, workspace)
         .sheet(isPresented: Bindable(workspace).showCommandPalette) {
             CommandPaletteView(workspace: workspace)
+        }
+        .sheet(isPresented: Bindable(workspace).showFileFinder) {
+            FileFinderView(workspace: workspace)
+        }
+        .sheet(isPresented: Bindable(workspace).showToolHealth) {
+            ToolHealthPanel()
         }
         .alert("BriskEdit", isPresented: Binding(
             get: { workspace.lastError != nil },

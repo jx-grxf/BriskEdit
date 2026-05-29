@@ -59,6 +59,12 @@ private struct EditorPreferencesView: View {
                 }
                 Toggle("Insert spaces for tab", isOn: $prefs.usesSpacesForTabs)
             }
+            Section("On Save") {
+                Toggle("Format with installed tools", isOn: $prefs.formatOnSave)
+                Text("Runs clang-format, swift-format, gofmt, rustfmt, black or prettier if present on your PATH. Skipped silently when the tool isn't installed.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()

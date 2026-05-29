@@ -21,7 +21,7 @@ enum RunService {
         switch document.language {
         case .c:
             let output = shellQuote(tempBinaryPath())
-            line = "(xcrun clang \(file) -Wall -Wextra -o \(output) && \(output)); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
+            line = "(xcrun clang \(file) -Wall -Wextra -DprintDih=printf -o \(output) && \(output)); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
         case .cpp:
             let output = shellQuote(tempBinaryPath())
             line = "(xcrun clang++ \(file) -Wall -Wextra -std=c++20 -o \(output) && \(output)); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""

@@ -1,9 +1,14 @@
 import AppKit
 
-final class LineNumberRulerView: NSRulerView {
+final class LineNumberRulerView: NSRulerView, NSViewToolTipOwner {
     private weak var codeTextView: NSTextView?
     private var theme: EditorTheme
     private var lineStartOffsets: [Int] = [0]
+    private var gitDiff: GitDiff?
+    /// 1-based line → worst-severity diagnostic on that line.
+    private var diagnosticsByLine: [Int: Diagnostic] = [:]
+    /// Refreshed each draw so hovering a marker resolves to its message.
+    private var diagnosticTooltipRects: [(rect: NSRect, line: Int)] = []
 
     init(textView: NSTextView, theme: EditorTheme) {
         self.codeTextView = textView
@@ -46,6 +51,41 @@ final class LineNumberRulerView: NSRulerView {
         needsDisplay = true
     }
 
+    func setGitDiff(_ diff: GitDiff?) {
+        gitDiff = diff
+        needsDisplay = true
+    }
+
+    func setDiagnostics(_ list: [Diagnostic]) {
+        // Keep the most severe diagnostic per line (error beats warning beats note).
+        var map: [Int: Diagnostic] = [:]
+        for diag in list {
+            if let existing = map[diag.line], rank(existing.severity) >= rank(diag.severity) { continue }
+            map[diag.line] = diag
+        }
+        diagnosticsByLine = map
+        needsDisplay = true
+    }
+
+    private func rank(_ severity: Diagnostic.Severity) -> Int {
+        switch severity {
+        case .error: 3
+        case .warning: 2
+        case .note: 1
+        }
+    }
+
+    func view(_ view: NSView, stringForToolTip tag: NSView.ToolTipTag, point: NSPoint, userData data: UnsafeMutableRawPointer?) -> String {
+        guard let entry = diagnosticTooltipRects.first(where: { $0.rect.contains(point) }),
+              let diag = diagnosticsByLine[entry.line] else { return "" }
+        let prefix = switch diag.severity {
+        case .error: "Error"
+        case .warning: "Warning"
+        case .note: "Note"
+        }
+        return "\(prefix): \(diag.message)"
+    }
+
     @objc private func textDidChange(_ note: Notification) {
         rebuildLineIndex()
         updateRuleThickness()
@@ -63,6 +103,8 @@ final class LineNumberRulerView: NSRulerView {
     }
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
+        diagnosticTooltipRects.removeAll(keepingCapacity: true)
+        removeAllToolTips()
         if drawTextKit1LineNumbers() {
             return
         }
@@ -88,9 +130,13 @@ final class LineNumberRulerView: NSRulerView {
             height: visibleRect.height
         )
 
+        // IMPORTANT: do not pass `.ensuresLayout` here. Forcing layout on the
+        // shared NSTextLayoutManager from inside the ruler's draw pass re-enters
+        // the text view's own layout and blanks its glyphs. We only read
+        // fragments the text view has already laid out for the viewport.
         textLayoutManager.enumerateTextLayoutFragments(
             from: textLayoutManager.documentRange.location,
-            options: [.ensuresLayout]
+            options: []
         ) { fragment in
             let frame = fragment.layoutFragmentFrame
             if frame.maxY < visibleInContainer.minY { return true }
@@ -115,6 +161,8 @@ final class LineNumberRulerView: NSRulerView {
                         x: self.ruleThickness - labelSize.width - 6,
                         y: yInView + (bounds.height - labelSize.height) / 2
                     ))
+                    self.drawGitMarker(forLine: lineNumber, y: yInView, height: bounds.height)
+                    self.drawDiagnosticMarker(forLine: lineNumber, y: yInView, height: bounds.height)
                 }
                 if let storage = (textLayoutManager.textContentManager as? NSTextContentStorage)?.textStorage {
                     let substringRange = NSRange(
@@ -180,6 +228,48 @@ final class LineNumberRulerView: NSRulerView {
         }
 
         return true
+    }
+
+    /// Draws the VCS change indicator at the far edge of the gutter: a vertical
+    /// bar for added/modified lines, a small triangle for a deletion above.
+    private func drawGitMarker(forLine line: Int, y: CGFloat, height: CGFloat) {
+        guard let gitDiff else { return }
+        let barWidth: CGFloat = 3
+        let x = ruleThickness - barWidth
+        if let kind = gitDiff.lineKinds[line] {
+            let color = kind == .added ? theme.gitAdded : theme.gitModified
+            color.setFill()
+            NSRect(x: x, y: y, width: barWidth, height: height).fill()
+        }
+        if gitDiff.deletions.contains(line) {
+            theme.gitDeleted.setFill()
+            let size: CGFloat = 5
+            let path = NSBezierPath()
+            path.move(to: NSPoint(x: ruleThickness, y: y))
+            path.line(to: NSPoint(x: ruleThickness - size, y: y))
+            path.line(to: NSPoint(x: ruleThickness, y: y + size))
+            path.close()
+            path.fill()
+        }
+    }
+
+    /// Draws a small severity dot at the left of the gutter and registers a
+    /// tooltip rect so hovering reveals the message.
+    private func drawDiagnosticMarker(forLine line: Int, y: CGFloat, height: CGFloat) {
+        guard let diag = diagnosticsByLine[line] else { return }
+        let diameter: CGFloat = 7
+        let dotRect = NSRect(x: 3, y: y + (height - diameter) / 2, width: diameter, height: diameter)
+        let color: NSColor = switch diag.severity {
+        case .error: theme.gitDeleted
+        case .warning: NSColor.systemOrange
+        case .note: theme.gutterForeground
+        }
+        color.setFill()
+        NSBezierPath(ovalIn: dotRect).fill()
+
+        let hitRect = NSRect(x: 0, y: y, width: ruleThickness, height: height)
+        diagnosticTooltipRects.append((hitRect, line))
+        addToolTip(hitRect, owner: self, userData: nil)
     }
 
     private func rebuildLineIndex() {

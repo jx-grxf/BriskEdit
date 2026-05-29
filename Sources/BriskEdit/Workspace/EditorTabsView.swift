@@ -5,8 +5,8 @@ struct EditorTabsView: View {
     @Environment(Preferences.self) private var preferences
     @SceneStorage("workspace.terminalHeight") private var terminalHeight: Double = 260
     @State private var terminalResizeStart: Double?
-    @SceneStorage("workspace.pdfSplitWidth") private var pdfSplitWidth: Double = 400
-    @State private var pdfResizeStart: Double?
+    @SceneStorage("workspace.previewSplitWidth") private var previewSplitWidth: Double = 400
+    @State private var previewResizeStart: Double?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -15,15 +15,18 @@ struct EditorTabsView: View {
             if let tab = workspace.activeTab {
                 GeometryReader { proxy in
                     VStack(spacing: 0) {
+                        if tab.document.externalChangePending {
+                            ExternalChangeBanner(document: tab.document)
+                        }
                         HStack(spacing: 0) {
                             editorSurface(for: tab)
                                 .frame(minWidth: 320)
                                 .layoutPriority(1)
-                            if let pdf = workspace.splitPDFURL {
-                                PDFSplitHandle()
-                                    .gesture(resizePDFGesture(maxWidth: proxy.size.width - 360))
-                                SplitPDFPane(url: pdf) { workspace.splitPDFURL = nil }
-                                    .frame(width: clampedPDFWidth(maxWidth: proxy.size.width - 360))
+                            if let previewKind = workspace.splitPreviewKind {
+                                PreviewSplitHandle()
+                                    .gesture(resizePreviewGesture(maxWidth: proxy.size.width - 360))
+                                SplitPreviewPane(kind: previewKind) { workspace.splitPreviewKind = nil }
+                                    .frame(width: clampedPreviewWidth(maxWidth: proxy.size.width - 360))
                                     .layoutPriority(0)
                             }
                         }
@@ -50,19 +53,19 @@ struct EditorTabsView: View {
         }
     }
 
-    private func clampedPDFWidth(maxWidth: CGFloat) -> CGFloat {
-        min(max(CGFloat(pdfSplitWidth), 240), max(280, maxWidth))
+    private func clampedPreviewWidth(maxWidth: CGFloat) -> CGFloat {
+        min(max(CGFloat(previewSplitWidth), 240), max(280, maxWidth))
     }
 
-    private func resizePDFGesture(maxWidth: CGFloat) -> some Gesture {
+    private func resizePreviewGesture(maxWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
-                let start = pdfResizeStart ?? pdfSplitWidth
-                pdfResizeStart = start
+                let start = previewResizeStart ?? previewSplitWidth
+                previewResizeStart = start
                 let proposed = start - Double(value.translation.width)
-                pdfSplitWidth = Double(min(max(CGFloat(proposed), 240), max(280, maxWidth)))
+                previewSplitWidth = Double(min(max(CGFloat(proposed), 240), max(280, maxWidth)))
             }
-            .onEnded { _ in pdfResizeStart = nil }
+            .onEnded { _ in previewResizeStart = nil }
     }
 
     private func clampedTerminalHeight(maxHeight: CGFloat) -> CGFloat {
@@ -84,8 +87,8 @@ struct EditorTabsView: View {
 
     @ViewBuilder
     private func editorSurface(for tab: EditorTab) -> some View {
-        if let pdfURL = tab.pdfURL {
-            PDFViewerHost(url: pdfURL)
+        if let previewKind = tab.previewKind {
+            previewSurface(for: previewKind)
                 .id(tab.id)
         } else if workspace.showMarkdownPreview && tab.document.language == .markdown {
             HStack(spacing: 0) {
@@ -103,9 +106,45 @@ struct EditorTabsView: View {
                 .frame(minWidth: 360)
         }
     }
+
+    @ViewBuilder
+    private func previewSurface(for kind: PreviewKind) -> some View {
+        switch kind {
+        case .pdf(let url):
+            PDFViewerHost(url: url)
+        case .quickLook(let url):
+            QuickLookPreviewHost(url: url)
+        }
+    }
 }
 
-private struct PDFSplitHandle: View {
+/// Shown when a file changed on disk while the buffer had unsaved edits. Lets
+/// the user discard their edits and load the disk version, or keep editing.
+private struct ExternalChangeBanner: View {
+    let document: TextDocument
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text("“\(document.displayName)” changed on disk. You have unsaved edits.")
+                .font(.callout)
+            Spacer()
+            Button("Reload from Disk") {
+                Task { await document.reloadFromDisk() }
+            }
+            Button("Keep Mine") {
+                document.externalChangePending = false
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.orange.opacity(0.12))
+        .overlay(alignment: .bottom) { Divider() }
+    }
+}
+
+private struct PreviewSplitHandle: View {
     var body: some View {
         ZStack {
             Divider()
@@ -121,19 +160,19 @@ private struct PDFSplitHandle: View {
         .frame(width: 8)
         .contentShape(Rectangle())
         .pointerStyle(.columnResize)
-        .accessibilityLabel("Resize PDF pane")
+        .accessibilityLabel("Resize preview pane")
     }
 }
 
-private struct SplitPDFPane: View {
-    let url: URL
+private struct SplitPreviewPane: View {
+    let kind: PreviewKind
     let onClose: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: "doc.richtext")
-                Text(url.lastPathComponent)
+                Image(systemName: kind.systemImage)
+                Text(kind.url.lastPathComponent)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -146,7 +185,17 @@ private struct SplitPDFPane: View {
             .frame(height: 30)
             .background(.bar)
             Divider()
+            previewSurface
+        }
+    }
+
+    @ViewBuilder
+    private var previewSurface: some View {
+        switch kind {
+        case .pdf(let url):
             PDFViewerHost(url: url)
+        case .quickLook(let url):
+            QuickLookPreviewHost(url: url)
         }
     }
 }
@@ -224,6 +273,30 @@ private struct TabChip: View {
     }
 }
 
+/// Compact error/warning counts in the status bar; hidden when the file is clean.
+private struct DiagnosticSummary: View {
+    let diagnostics: [Diagnostic]
+
+    var body: some View {
+        let errors = diagnostics.filter { $0.severity == .error }.count
+        let warnings = diagnostics.filter { $0.severity == .warning }.count
+        if errors > 0 || warnings > 0 {
+            HStack(spacing: 8) {
+                if errors > 0 {
+                    Label("\(errors)", systemImage: "xmark.octagon.fill")
+                        .foregroundStyle(.red)
+                }
+                if warnings > 0 {
+                    Label("\(warnings)", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .font(.caption.monospaced())
+            .labelStyle(.titleAndIcon)
+        }
+    }
+}
+
 private struct StatusBar: View {
     let workspace: WorkspaceModel
 
@@ -244,8 +317,12 @@ private struct StatusBar: View {
                     .lineLimit(1)
                 Text(doc.isDirty ? "Modified" : "Saved").font(.caption.monospaced()).foregroundStyle(.secondary)
                     .lineLimit(1)
+                DiagnosticSummary(diagnostics: doc.diagnostics)
             }
             Spacer()
+            if let doc = workspace.activeTab?.document {
+                IntelliSenseStatusView(language: doc.language)
+            }
         }
         .padding(.horizontal, 12)
         .frame(height: 22)
@@ -260,6 +337,47 @@ private struct StatusBar: View {
         case .utf16BigEndian: "UTF-16 BE"
         case .ascii: "ASCII"
         default: "Encoding \(encoding.rawValue)"
+        }
+    }
+}
+
+private struct IntelliSenseStatusView: View {
+    let language: SourceLanguage
+    @State private var status: LSPToolStatus = .unsupported
+    @State private var isChecking = false
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle()
+                .fill(indicatorColor)
+                .frame(width: 7, height: 7)
+            Text("IntelliSense: \(status.serverName)")
+                .font(.caption.monospaced())
+                .lineLimit(1)
+        }
+        .foregroundStyle(foregroundStyle)
+        .help(status.detail)
+        .task(id: language) {
+            isChecking = true
+            status = await LSPService.toolStatus(for: language)
+            isChecking = false
+        }
+    }
+
+    private var indicatorColor: Color {
+        if isChecking { return Color.secondary }
+        return switch status.state {
+        case .available: Color.green
+        case .missing: Color.orange
+        case .unsupported: Color.secondary
+        }
+    }
+
+    private var foregroundStyle: Color {
+        return switch status.state {
+        case .available: Color.secondary
+        case .missing: Color.orange
+        case .unsupported: Color.secondary
         }
     }
 }
