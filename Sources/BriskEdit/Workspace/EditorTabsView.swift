@@ -5,8 +5,8 @@ struct EditorTabsView: View {
     @Environment(Preferences.self) private var preferences
     @SceneStorage("workspace.terminalHeight") private var terminalHeight: Double = 260
     @State private var terminalResizeStart: Double?
-    @SceneStorage("workspace.pdfSplitWidth") private var pdfSplitWidth: Double = 400
-    @State private var pdfResizeStart: Double?
+    @SceneStorage("workspace.previewSplitWidth") private var previewSplitWidth: Double = 400
+    @State private var previewResizeStart: Double?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,11 +22,11 @@ struct EditorTabsView: View {
                             editorSurface(for: tab)
                                 .frame(minWidth: 320)
                                 .layoutPriority(1)
-                            if let pdf = workspace.splitPDFURL {
-                                PDFSplitHandle()
-                                    .gesture(resizePDFGesture(maxWidth: proxy.size.width - 360))
-                                SplitPDFPane(url: pdf) { workspace.splitPDFURL = nil }
-                                    .frame(width: clampedPDFWidth(maxWidth: proxy.size.width - 360))
+                            if let previewKind = workspace.splitPreviewKind {
+                                PreviewSplitHandle()
+                                    .gesture(resizePreviewGesture(maxWidth: proxy.size.width - 360))
+                                SplitPreviewPane(kind: previewKind) { workspace.splitPreviewKind = nil }
+                                    .frame(width: clampedPreviewWidth(maxWidth: proxy.size.width - 360))
                                     .layoutPriority(0)
                             }
                         }
@@ -53,19 +53,19 @@ struct EditorTabsView: View {
         }
     }
 
-    private func clampedPDFWidth(maxWidth: CGFloat) -> CGFloat {
-        min(max(CGFloat(pdfSplitWidth), 240), max(280, maxWidth))
+    private func clampedPreviewWidth(maxWidth: CGFloat) -> CGFloat {
+        min(max(CGFloat(previewSplitWidth), 240), max(280, maxWidth))
     }
 
-    private func resizePDFGesture(maxWidth: CGFloat) -> some Gesture {
+    private func resizePreviewGesture(maxWidth: CGFloat) -> some Gesture {
         DragGesture(minimumDistance: 1)
             .onChanged { value in
-                let start = pdfResizeStart ?? pdfSplitWidth
-                pdfResizeStart = start
+                let start = previewResizeStart ?? previewSplitWidth
+                previewResizeStart = start
                 let proposed = start - Double(value.translation.width)
-                pdfSplitWidth = Double(min(max(CGFloat(proposed), 240), max(280, maxWidth)))
+                previewSplitWidth = Double(min(max(CGFloat(proposed), 240), max(280, maxWidth)))
             }
-            .onEnded { _ in pdfResizeStart = nil }
+            .onEnded { _ in previewResizeStart = nil }
     }
 
     private func clampedTerminalHeight(maxHeight: CGFloat) -> CGFloat {
@@ -87,8 +87,8 @@ struct EditorTabsView: View {
 
     @ViewBuilder
     private func editorSurface(for tab: EditorTab) -> some View {
-        if let pdfURL = tab.pdfURL {
-            PDFViewerHost(url: pdfURL)
+        if let previewKind = tab.previewKind {
+            previewSurface(for: previewKind)
                 .id(tab.id)
         } else if workspace.showMarkdownPreview && tab.document.language == .markdown {
             HStack(spacing: 0) {
@@ -104,6 +104,16 @@ struct EditorTabsView: View {
             TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme)
                 .id(tab.id)
                 .frame(minWidth: 360)
+        }
+    }
+
+    @ViewBuilder
+    private func previewSurface(for kind: PreviewKind) -> some View {
+        switch kind {
+        case .pdf(let url):
+            PDFViewerHost(url: url)
+        case .quickLook(let url):
+            QuickLookPreviewHost(url: url)
         }
     }
 }
@@ -134,7 +144,7 @@ private struct ExternalChangeBanner: View {
     }
 }
 
-private struct PDFSplitHandle: View {
+private struct PreviewSplitHandle: View {
     var body: some View {
         ZStack {
             Divider()
@@ -150,19 +160,19 @@ private struct PDFSplitHandle: View {
         .frame(width: 8)
         .contentShape(Rectangle())
         .pointerStyle(.columnResize)
-        .accessibilityLabel("Resize PDF pane")
+        .accessibilityLabel("Resize preview pane")
     }
 }
 
-private struct SplitPDFPane: View {
-    let url: URL
+private struct SplitPreviewPane: View {
+    let kind: PreviewKind
     let onClose: () -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: "doc.richtext")
-                Text(url.lastPathComponent)
+                Image(systemName: kind.systemImage)
+                Text(kind.url.lastPathComponent)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -175,7 +185,17 @@ private struct SplitPDFPane: View {
             .frame(height: 30)
             .background(.bar)
             Divider()
+            previewSurface
+        }
+    }
+
+    @ViewBuilder
+    private var previewSurface: some View {
+        switch kind {
+        case .pdf(let url):
             PDFViewerHost(url: url)
+        case .quickLook(let url):
+            QuickLookPreviewHost(url: url)
         }
     }
 }

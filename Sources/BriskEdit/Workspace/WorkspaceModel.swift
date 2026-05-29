@@ -20,8 +20,8 @@ final class WorkspaceModel {
     /// Directories the user has expanded in the file tree — kept here (not in
     /// per-row @State) so the tree survives reloads without collapsing.
     var expandedDirectories: Set<URL> = []
-    /// When set, a PDF is shown in a resizable pane beside the editor.
-    var splitPDFURL: URL?
+    /// When set, a native preview is shown in a resizable pane beside the editor.
+    var splitPreviewKind: PreviewKind?
     let terminal = TerminalController()
     private var childCache: [FileTreeCacheKey: [FileNode]] = [:]
     private var watchers: [EditorTab.ID: FileWatcher] = [:]
@@ -52,8 +52,8 @@ final class WorkspaceModel {
             persistSession()
             return
         }
-        if url.pathExtension.lowercased() == "pdf" {
-            openTab(EditorTab.pdf(url: url))
+        if let previewKind = PreviewKind.previewKind(for: url) {
+            openTab(EditorTab.preview(previewKind))
             return
         }
         do {
@@ -84,7 +84,7 @@ final class WorkspaceModel {
            current.document.fileURL == nil,
            current.document.text.isEmpty,
            !current.document.isDirty,
-           current.pdfURL == nil {
+           current.previewKind == nil {
             tabs = [tab]
         } else {
             tabs.append(tab)
@@ -126,7 +126,7 @@ final class WorkspaceModel {
     /// Closes a tab, prompting to save when it has unsaved edits.
     func requestCloseTab(_ id: EditorTab.ID) {
         guard let tab = tabs.first(where: { $0.id == id }) else { return }
-        guard tab.pdfURL == nil, tab.document.isDirty else {
+        guard tab.previewKind == nil, tab.document.isDirty else {
             closeTab(id)
             return
         }
@@ -148,8 +148,8 @@ final class WorkspaceModel {
         }
     }
 
-    func toggleSplitPDF(_ url: URL) {
-        splitPDFURL = (splitPDFURL == url) ? nil : url
+    func toggleSplitPreview(_ kind: PreviewKind) {
+        splitPreviewKind = (splitPreviewKind == kind) ? nil : kind
     }
 
     /// Saves every dirty tab; returns false if the user cancels a Save dialog.
@@ -198,7 +198,7 @@ final class WorkspaceModel {
         selectedSidebarURL = nil
         expandedDirectories.removeAll()
         childCache.removeAll(keepingCapacity: true)
-        splitPDFURL = nil
+        splitPreviewKind = nil
         reloadToken = UUID()
         UserDefaults.standard.removeObject(forKey: Keys.lastWorkspaceRoot)
     }
@@ -296,9 +296,9 @@ final class WorkspaceModel {
     // MARK: - External change watching
 
     /// Starts (or replaces) a vnode watcher for a file-backed tab so external
-    /// edits get picked up. PDF tabs are skipped — the PDF viewer reloads itself.
+    /// edits get picked up. Preview tabs are skipped — their native viewers reload themselves.
     private func startWatching(_ tab: EditorTab) {
-        guard tab.pdfURL == nil, let url = tab.document.fileURL else { return }
+        guard tab.previewKind == nil, let url = tab.document.fileURL else { return }
         let id = tab.id
         watchers[id]?.cancel()
         watchers[id] = FileWatcher(url: url) { [weak self] in
