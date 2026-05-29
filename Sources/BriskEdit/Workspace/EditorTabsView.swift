@@ -15,6 +15,9 @@ struct EditorTabsView: View {
             if let tab = workspace.activeTab {
                 GeometryReader { proxy in
                     VStack(spacing: 0) {
+                        if tab.document.externalChangePending {
+                            ExternalChangeBanner(document: tab.document)
+                        }
                         HStack(spacing: 0) {
                             editorSurface(for: tab)
                                 .frame(minWidth: 320)
@@ -102,6 +105,32 @@ struct EditorTabsView: View {
                 .id(tab.id)
                 .frame(minWidth: 360)
         }
+    }
+}
+
+/// Shown when a file changed on disk while the buffer had unsaved edits. Lets
+/// the user discard their edits and load the disk version, or keep editing.
+private struct ExternalChangeBanner: View {
+    let document: TextDocument
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text("“\(document.displayName)” changed on disk. You have unsaved edits.")
+                .font(.callout)
+            Spacer()
+            Button("Reload from Disk") {
+                Task { await document.reloadFromDisk() }
+            }
+            Button("Keep Mine") {
+                document.externalChangePending = false
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(.orange.opacity(0.12))
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 
@@ -224,6 +253,30 @@ private struct TabChip: View {
     }
 }
 
+/// Compact error/warning counts in the status bar; hidden when the file is clean.
+private struct DiagnosticSummary: View {
+    let diagnostics: [Diagnostic]
+
+    var body: some View {
+        let errors = diagnostics.filter { $0.severity == .error }.count
+        let warnings = diagnostics.filter { $0.severity == .warning }.count
+        if errors > 0 || warnings > 0 {
+            HStack(spacing: 8) {
+                if errors > 0 {
+                    Label("\(errors)", systemImage: "xmark.octagon.fill")
+                        .foregroundStyle(.red)
+                }
+                if warnings > 0 {
+                    Label("\(warnings)", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .font(.caption.monospaced())
+            .labelStyle(.titleAndIcon)
+        }
+    }
+}
+
 private struct StatusBar: View {
     let workspace: WorkspaceModel
 
@@ -244,6 +297,7 @@ private struct StatusBar: View {
                     .lineLimit(1)
                 Text(doc.isDirty ? "Modified" : "Saved").font(.caption.monospaced()).foregroundStyle(.secondary)
                     .lineLimit(1)
+                DiagnosticSummary(diagnostics: doc.diagnostics)
             }
             Spacer()
         }

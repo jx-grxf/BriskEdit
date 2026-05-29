@@ -19,12 +19,14 @@ A native macOS text editor for developers. Built in SwiftUI and AppKit, not Elec
 
 ## What it does
 
-- **Opens files instantly.** TextKit 2 NSTextView, custom gutter, no background indexing on launch. A 100 MB log opens without freezing the UI.
+- **Opens files instantly.** TextKit 2 NSTextView, no background indexing on launch. A 100 MB log opens without freezing the UI.
 - **Workspace, not document soup.** Open a folder, tabs persist, sidebar shows the file tree, split panes when you want them.
 - **Run code from a button.** `Run` discovers the right toolchain for the file (clang/gcc for C, swiftc for Swift, python3 for Python, node/deno for JS/TS, cargo for Rust, go for Go) and runs it in the integrated terminal. No tasks.json, no launch.json, no extension to install.
 - **Integrated terminal that actually feels like Terminal.app.** SwiftTerm-backed, real zsh, multiple tabs, cwd follows the workspace root, kills cleanly.
 - **Markdown preview as a split.** Live render, scroll sync, GFM, sanitized.
-- **Find / replace that doesn't blink.** In-file regex, in-folder with `.gitignore` respected, Command Palette for everything else.
+- **Find / replace that doesn't blink.** In-file regex, in-folder with `.gitignore` respected, Command Palette and a fuzzy Go-to-File palette (⌘P) for everything else.
+- **Code intelligence from the tools you already have.** Completion and live diagnostics via the language servers on your box (clangd, sourcekit-lsp, gopls, pyright, rust-analyzer, typescript-language-server) — no marketplace, no install step. A zero-config `Check File` (⌘B) syntax-checks C/C++/Swift even without a server; errors and warnings surface in the status bar.
+- **Stays out of your way.** Format-on-save with your installed formatter, session restore, and live reload when a file changes on disk.
 - **Lives in macOS.** Native menus, Settings scene, Services menu, share extensions, Quick Look, Sparkle updates.
 
 The point is the absence of bloat. No telemetry, no account, no LSP extension marketplace, no electron, no second runtime. Just the editor and the tools you already have on the box.
@@ -109,7 +111,7 @@ Distribution roadmap:
 
 - **MVP-0** (now): App shell, workspace, file tree, tabs, NSTextView editor with gutter, find/replace, Command Palette, Settings, Sparkle updates.
 - **MVP-1**: Integrated terminal (SwiftTerm), Markdown preview split, Run button with toolchain discovery.
-- **V1**: Tree-sitter syntax highlighting + folding, LSP client (completion, hover, go-to-def, diagnostics), git status in gutter, find-in-folder.
+- **V1** (in progress): LSP client (completion + diagnostics ✅; hover/go-to-def next), find-in-folder ✅, format-on-save ✅, session restore ✅, live reload-on-change ✅, fuzzy Go-to-File ✅, diagnostics in the status bar ✅. Remaining: line-number gutter + git status in gutter (the old NSRulerView is incompatible with the TextKit 2 text view — needs a TextKit 2-native gutter), Tree-sitter syntax highlighting + folding.
 - **V1.5**: Themes, snippets, EditorConfig, multi-cursor.
 - **Later**: Debug Adapter Protocol, integrated build/run tasks, remote SSH, macro recorder.
 

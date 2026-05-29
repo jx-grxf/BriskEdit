@@ -49,7 +49,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         context.coordinator.lastSyncedRevision = document.revision
         context.coordinator.applyHighlight()
-        context.coordinator.warmUpClangd()
+        context.coordinator.warmUpLSP()
+        context.coordinator.scheduleGitDiff()
         DispatchQueue.main.async { [weak scrollView, weak textView] in
             scrollView?.window?.makeFirstResponder(textView)
         }
@@ -69,11 +70,15 @@ struct TextKit2EditorHost: NSViewRepresentable {
         // than comparing whole strings on every cursor move.
         if document.revision != coordinator.lastSyncedRevision {
             let selection = textView.selectedRange()
-            textView.string = document.text
-            textView.setSelectedRange(NSRange(location: min(selection.location, (document.text as NSString).length), length: 0))
+            let newText = document.text
+            textView.string = newText
+            textView.setSelectedRange(NSRange(location: min(selection.location, (newText as NSString).length), length: 0))
             coordinator.lastSyncedRevision = document.revision
+            coordinator.scheduleGitDiff()
         }
         coordinator.applyHighlight()
+        coordinator.ruler?.setTheme(theme)
+        coordinator.ruler?.setDiagnostics(document.diagnostics)
         scrollView.backgroundColor = theme.background
     }
 
@@ -114,9 +119,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
         var document: TextDocument
         var theme: EditorTheme
         weak var textView: NSTextView?
+        weak var ruler: LineNumberRulerView?
         private var highlightWork: DispatchWorkItem?
-        private var clangdWork: DispatchWorkItem?
-        private var clangdItems: [String] = []
+        private var gitWork: DispatchWorkItem?
+        private var lspWork: DispatchWorkItem?
+        private var lspItems: [String] = []
+        private var lspDiagnosticsURI: String?
         var lastSyncedRevision = 0
         private let popup = CompletionPopup()
         private var completionRange: NSRange?
@@ -137,8 +145,11 @@ struct TextKit2EditorHost: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             document.applyEdit(text: textView.string)
             lastSyncedRevision = document.revision
+            // Markers from the last check are now stale — clear until the next one.
+            if !document.diagnostics.isEmpty { document.diagnostics = [] }
             scheduleHighlight()
-            scheduleClangd(in: textView)
+            scheduleGitDiff()
+            scheduleLSP(in: textView)
             updateCompletionPopup(in: textView)
         }
 
@@ -181,7 +192,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
                     ordered.append(CompletionItem(label: snippet.trigger, detail: snippet.detail, snippet: snippet))
                 }
             }
-            add(clangdItems)
+            add(lspItems)
             add(document.language.completionWords)
             add(globalCompletionWords)
             add(bufferSymbols(in: text, excluding: partial))
@@ -245,6 +256,26 @@ struct TextKit2EditorHost: NSViewRepresentable {
             }
             highlightWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+        }
+
+        /// Debounced recompute of the git gutter diff (buffer vs HEAD). Cleared
+        /// for documents with no on-disk URL.
+        func scheduleGitDiff() {
+            gitWork?.cancel()
+            // No gutter currently attached (see gutter-textkit2-pitfall): skip the
+            // git work entirely instead of computing a diff nothing can show.
+            guard ruler != nil else { return }
+            guard document.fileURL != nil else { ruler?.setGitDiff(nil); return }
+            let work = DispatchWorkItem { [weak self] in
+                guard let self, let tv = self.textView, let url = self.document.fileURL else { return }
+                let text = tv.string
+                Task { @MainActor [weak self] in
+                    let diff = await GitService.diff(for: url, currentText: text)
+                    self?.ruler?.setGitDiff(diff)
+                }
+            }
+            gitWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
         }
 
         /// Recomputes the suggestion list for the identifier at the caret and
@@ -314,47 +345,61 @@ struct TextKit2EditorHost: NSViewRepresentable {
             completionRange = nil
         }
 
-        /// Debounced semantic completion prefetch via clangd for C/C++ files
-        /// backed by a real path. Results land in `clangdItems` for the next
-        /// completion query; failures are silent.
-        private func scheduleClangd(in textView: NSTextView) {
+        /// Debounced semantic completion prefetch + buffer sync via the language
+        /// server for any supported language backed by a real path. Completions
+        /// land in `lspItems`; diagnostics arrive asynchronously over the bus.
+        /// Failures are silent — the editor keeps its keyword/buffer fallback.
+        private func scheduleLSP(in textView: NSTextView) {
             let language = document.language
-            guard language == .c || language == .cpp, let url = document.fileURL else {
-                clangdItems = []
+            guard LSPService.config(for: language) != nil, let url = document.fileURL else {
+                lspItems = []
                 return
             }
-            clangdWork?.cancel()
+            lspWork?.cancel()
 
             let text = textView.string
             let nsString = text as NSString
             let (line, character) = Self.lspPosition(in: nsString, location: textView.selectedRange().location)
             let uri = url.absoluteString
-            let languageId = language == .cpp ? "cpp" : "c"
             let root = url.deletingLastPathComponent().path
 
             let work = DispatchWorkItem { [weak self] in
                 Task { @MainActor [weak self] in
-                    let items = await ClangdService.shared.completions(
-                        uri: uri, languageId: languageId, text: text,
+                    let items = await LSPService.shared.completions(
+                        language: language, uri: uri, text: text,
                         line: line, character: character, root: root
                     )
                     guard let self, !items.isEmpty else { return }
-                    self.clangdItems = items
+                    self.lspItems = items
                     // Fold fresh semantic results into an already-open popup.
                     if self.popup.isVisible, let tv = self.textView {
                         self.updateCompletionPopup(in: tv)
                     }
                 }
             }
-            clangdWork = work
+            lspWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
         }
 
-        /// Spins up clangd as soon as a C/C++ file opens so the first real
-        /// completion is already warm instead of paying the launch cost mid-type.
-        func warmUpClangd() {
-            guard let textView else { return }
-            scheduleClangd(in: textView)
+        /// Starts the language server as soon as a supported file opens, registers
+        /// for its diagnostics, and primes the first completion so the launch cost
+        /// isn't paid mid-type.
+        func warmUpLSP() {
+            guard let textView, let url = document.fileURL else { return }
+            let language = document.language
+            guard LSPService.config(for: language) != nil else { return }
+            let uri = url.absoluteString
+            lspDiagnosticsURI = uri
+            // Route this server's diagnostics into the document for the gutter.
+            LSPDiagnosticsBus.shared.setHandler(uri: uri) { [weak self] diagnostics in
+                self?.document.diagnostics = diagnostics
+            }
+            let text = textView.string
+            let root = url.deletingLastPathComponent().path
+            Task { @MainActor in
+                await LSPService.shared.openDocument(language: language, uri: uri, text: text, root: root)
+            }
+            scheduleLSP(in: textView)
         }
 
         private static func lspPosition(in nsString: NSString, location: Int) -> (line: Int, character: Int) {

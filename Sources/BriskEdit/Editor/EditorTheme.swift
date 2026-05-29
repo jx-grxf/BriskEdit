@@ -19,6 +19,9 @@ struct EditorTheme: Sendable, Equatable {
     var string: NSColor
     var number: NSColor
     var comment: NSColor
+    var gitAdded: NSColor
+    var gitModified: NSColor
+    var gitDeleted: NSColor
     var tabWidth: Int
     var usesSpacesForTabs: Bool
 
@@ -70,6 +73,9 @@ struct EditorTheme: Sendable, Equatable {
         string: adaptive(dark: hex(0xCE9178), light: hex(0xA31515)),
         number: adaptive(dark: hex(0xB5CEA8), light: hex(0x098658)),
         comment: adaptive(dark: hex(0x6A9955), light: hex(0x008000)),
+        gitAdded: adaptive(dark: hex(0x4BB543), light: hex(0x2EA043)),
+        gitModified: adaptive(dark: hex(0x4A9EFF), light: hex(0x0969DA)),
+        gitDeleted: adaptive(dark: hex(0xE5534B), light: hex(0xCF222E)),
         tabWidth: 4,
         usesSpacesForTabs: true
     )

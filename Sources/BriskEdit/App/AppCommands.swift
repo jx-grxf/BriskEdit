@@ -38,6 +38,12 @@ struct AppCommands: Commands {
         }
 
         CommandMenu("Selection") {
+            Button("Go to File…") {
+                workspace?.showFileFinder = true
+            }
+            .keyboardShortcut("p", modifiers: .command)
+            .disabled(workspace?.rootURL == nil)
+
             Button("Command Palette…") {
                 workspace?.showCommandPalette = true
             }
@@ -50,6 +56,12 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("r", modifiers: .command)
             .disabled(workspace?.activeTab?.document.language.isRunnable != true)
+
+            Button("Check File") {
+                Task { await workspace?.checkActiveDocument() }
+            }
+            .keyboardShortcut("b", modifiers: .command)
+            .disabled(workspace?.activeTab == nil)
 
             Divider()
 

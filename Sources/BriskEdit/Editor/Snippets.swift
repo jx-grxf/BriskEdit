@@ -54,6 +54,7 @@ enum SnippetLibrary {
         CodeSnippet(trigger: "main", detail: "main function", body: "int main(int argc, char *argv[]) {\n\t$0\n\treturn 0;\n}"),
         CodeSnippet(trigger: "include", detail: "#include <…>", body: "#include <$1{stdio.h}>$0"),
         CodeSnippet(trigger: "define", detail: "#define", body: "#define $1{NAME} $0"),
+        CodeSnippet(trigger: "printDih", detail: "alias for printf", body: "printDih(\"$1{%d}\\n\", $0);"),
         CodeSnippet(trigger: "printf", detail: "printf", body: "printf(\"$1{%d}\\n\", $0);"),
         CodeSnippet(trigger: "scanf", detail: "scanf", body: "scanf(\"$1{%d}\", &$0);"),
         CodeSnippet(trigger: "struct", detail: "struct", body: "struct $1{Name} {\n\t$0\n};"),

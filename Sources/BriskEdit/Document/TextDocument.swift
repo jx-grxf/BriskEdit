@@ -10,6 +10,11 @@ final class TextDocument {
     var isDirty: Bool = false
     var cursorLine: Int = 1
     var cursorColumn: Int = 1
+    /// Set when the file changed on disk while this buffer still had unsaved
+    /// edits — the UI offers a reload instead of silently dropping either side.
+    var externalChangePending: Bool = false
+    /// Latest compiler/LSP findings, shown as gutter markers.
+    var diagnostics: [Diagnostic] = []
     /// Bumped on every text mutation so the editor can detect *external* changes
     /// cheaply, instead of comparing entire (possibly huge) strings each update.
     private(set) var revision: Int = 0
@@ -73,6 +78,33 @@ final class TextDocument {
     /// without touching the buffer or dirty state.
     func retarget(to url: URL) {
         fileURL = url
+    }
+
+    /// Replaces the buffer with formatter output just before a save. Bumps
+    /// `revision` so the editor re-seeds; the following save clears dirty state.
+    func applyFormatted(_ newText: String) {
+        guard newText != text else { return }
+        text = newText
+        revision &+= 1
+        rebuildLineIndex()
+    }
+
+    /// Re-reads the file from disk after an external change. Bumps `revision`
+    /// so the editor re-seeds its text view, and clears dirty/pending state.
+    func reloadFromDisk() async {
+        guard let url = fileURL else { return }
+        let loaded = try? await Task.detached(priority: .userInitiated) { () -> (String, String.Encoding) in
+            var used: String.Encoding = .utf8
+            let str = try String(contentsOf: url, usedEncoding: &used)
+            return (str, used)
+        }.value
+        guard let loaded else { return }
+        text = loaded.0
+        encoding = loaded.1
+        revision &+= 1
+        isDirty = false
+        externalChangePending = false
+        rebuildLineIndex()
     }
 
     func updateCursor(location: Int) {
@@ -225,7 +257,7 @@ enum SourceLanguage: String, Sendable, CaseIterable {
     var completionWords: [String] {
         switch self {
         case .c:
-            ["#include", "#define", "printf", "scanf", "malloc", "free", "sizeof", "int", "char", "double", "float", "void", "struct", "return", "for", "while", "if", "else"]
+            ["#include", "#define", "printDih", "printf", "scanf", "malloc", "free", "sizeof", "int", "char", "double", "float", "void", "struct", "return", "for", "while", "if", "else"]
         case .cpp:
             ["#include", "std::cout", "std::cin", "std::vector", "std::string", "namespace", "class", "template", "typename", "auto", "const", "return", "for", "while", "if", "else"]
         case .swift:

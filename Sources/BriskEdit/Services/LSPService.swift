@@ -1,0 +1,322 @@
+import Foundation
+
+/// Delivers live LSP `publishDiagnostics` to whichever editor owns a document
+/// URI. The editor coordinator registers a handler for its file; the LSP actor
+/// pushes findings here on the main actor.
+@MainActor
+final class LSPDiagnosticsBus {
+    static let shared = LSPDiagnosticsBus()
+    private var handlers: [String: ([Diagnostic]) -> Void] = [:]
+
+    func setHandler(uri: String, _ handler: @escaping ([Diagnostic]) -> Void) {
+        handlers[uri] = handler
+    }
+
+    func removeHandler(uri: String) {
+        handlers[uri] = nil
+    }
+
+    func deliver(uri: String, diagnostics: [Diagnostic]) {
+        handlers[uri]?(diagnostics)
+    }
+}
+
+/// Minimal multi-server LSP client. Speaks JSON-RPC over a server's stdio to
+/// provide semantic completion and live diagnostics, using the language servers
+/// the developer already has installed (clangd via Xcode, sourcekit-lsp, gopls,
+/// pyright, rust-analyzer, typescript-language-server). Everything is best
+/// effort: a missing or misbehaving server just yields no results and the editor
+/// falls back to keyword/buffer completion.
+actor LSPService {
+    static let shared = LSPService()
+
+    struct ServerConfig {
+        let id: String
+        let executable: String        // direct path, or "zsh" wrapper for PATH lookup
+        let arguments: [String]
+        let probe: String?            // command to verify availability, nil = always present
+        let languageId: String
+    }
+
+    /// Resolves the server launch for a language, or nil if BriskEdit drives no
+    /// server for it. Non-Xcode servers launch through a login shell so a GUI
+    /// process still sees Homebrew/`PATH`.
+    static func config(for language: SourceLanguage) -> ServerConfig? {
+        func shell(_ command: String) -> (String, [String]) {
+            ("/bin/zsh", ["-lc", "exec \(command)"])
+        }
+        switch language {
+        case .c, .cpp:
+            return ServerConfig(id: "clangd", executable: "/usr/bin/xcrun",
+                                arguments: ["clangd", "--log=error", "--background-index=false", "--limit-results=80"],
+                                probe: nil, languageId: language == .cpp ? "cpp" : "c")
+        case .swift:
+            return ServerConfig(id: "sourcekit", executable: "/usr/bin/xcrun",
+                                arguments: ["sourcekit-lsp"], probe: nil, languageId: "swift")
+        case .go:
+            let (exe, args) = shell("gopls")
+            return ServerConfig(id: "gopls", executable: exe, arguments: args, probe: "gopls", languageId: "go")
+        case .python:
+            let (exe, args) = shell("pyright-langserver --stdio")
+            return ServerConfig(id: "pyright", executable: exe, arguments: args, probe: "pyright-langserver", languageId: "python")
+        case .rust:
+            let (exe, args) = shell("rust-analyzer")
+            return ServerConfig(id: "rust-analyzer", executable: exe, arguments: args, probe: "rust-analyzer", languageId: "rust")
+        case .javascript, .typescript:
+            let (exe, args) = shell("typescript-language-server --stdio")
+            return ServerConfig(id: "tsserver", executable: exe, arguments: args, probe: "typescript-language-server",
+                                languageId: language == .typescript ? "typescript" : "javascript")
+        default:
+            return nil
+        }
+    }
+
+    private var servers: [String: Server] = [:]
+
+    /// Returns completion labels for the position, syncing the buffer first.
+    func completions(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> [String] {
+        guard let config = Self.config(for: language) else { return [] }
+        guard let server = await ensureServer(config, root: root) else { return [] }
+        await server.sync(uri: uri, languageId: config.languageId, text: text)
+        let params: [String: Any] = [
+            "textDocument": ["uri": uri],
+            "position": ["line": line, "character": character],
+            "context": ["triggerKind": 1]
+        ]
+        guard let data = await server.request(method: "textDocument/completion", params: params),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        return Self.parseCompletions(json["result"])
+    }
+
+    /// Opens (or refreshes) a document so the server starts emitting diagnostics
+    /// without waiting for a completion request.
+    func openDocument(language: SourceLanguage, uri: String, text: String, root: String?) async {
+        guard let config = Self.config(for: language) else { return }
+        guard let server = await ensureServer(config, root: root) else { return }
+        await server.sync(uri: uri, languageId: config.languageId, text: text)
+    }
+
+    private func ensureServer(_ config: ServerConfig, root: String?) async -> Server? {
+        if let existing = servers[config.id] {
+            return await existing.initialized ? existing : nil
+        }
+        let server = Server(config: config)
+        servers[config.id] = server
+        guard await server.start(root: root) else {
+            return nil
+        }
+        return server
+    }
+
+    // MARK: - Completion parsing
+
+    private static func parseCompletions(_ result: Any?) -> [String] {
+        let items: [[String: Any]]
+        if let dict = result as? [String: Any], let list = dict["items"] as? [[String: Any]] {
+            items = list
+        } else if let list = result as? [[String: Any]] {
+            items = list
+        } else {
+            return []
+        }
+        let ranked = items.sorted { lhs, rhs in
+            let l = (lhs["sortText"] as? String) ?? (lhs["label"] as? String) ?? ""
+            let r = (rhs["sortText"] as? String) ?? (rhs["label"] as? String) ?? ""
+            return l < r
+        }
+        var seen = Set<String>()
+        var labels: [String] = []
+        for item in ranked {
+            let raw = (item["insertText"] as? String) ?? (item["label"] as? String) ?? ""
+            let symbol = raw.prefix { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "#" }
+            let token = symbol.isEmpty ? raw.trimmingCharacters(in: .whitespaces) : String(symbol)
+            guard !token.isEmpty, seen.insert(token).inserted else { continue }
+            labels.append(token)
+        }
+        return labels
+    }
+}
+
+/// One language-server process and its JSON-RPC plumbing. An actor so its
+/// mutable buffer/continuation state stays serialized.
+private actor Server {
+    private let config: LSPService.ServerConfig
+    private var process: Process?
+    private var stdin: FileHandle?
+    private var failed = false
+    var initialized = false
+
+    private var nextId = 1
+    private var pending: [Int: CheckedContinuation<Data?, Never>] = [:]
+    private var openVersions: [String: Int] = [:]
+    private var lastText: [String: String] = [:]
+    private var inbox = Data()
+
+    init(config: LSPService.ServerConfig) {
+        self.config = config
+    }
+
+    func start(root: String?) async -> Bool {
+        if failed { return false }
+
+        if let probe = config.probe, !Self.isAvailable(probe) {
+            failed = true
+            return false
+        }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: config.executable)
+        proc.arguments = config.arguments
+        let inPipe = Pipe()
+        let outPipe = Pipe()
+        proc.standardInput = inPipe
+        proc.standardOutput = outPipe
+        proc.standardError = FileHandle.nullDevice
+
+        outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let data = handle.availableData
+            guard !data.isEmpty else { return }
+            Task { await self?.ingest(data) }
+        }
+
+        do { try proc.run() } catch {
+            failed = true
+            return false
+        }
+        process = proc
+        stdin = inPipe.fileHandleForWriting
+
+        let rootUri = root.map { "file://\($0)" }
+        let initParams: [String: Any] = [
+            "processId": NSNull(),
+            "rootUri": rootUri ?? NSNull(),
+            "capabilities": [
+                "textDocument": [
+                    "completion": ["completionItem": ["snippetSupport": false]],
+                    "publishDiagnostics": ["relatedInformation": false]
+                ]
+            ]
+        ]
+        guard await request(method: "initialize", params: initParams) != nil else {
+            failed = true
+            return false
+        }
+        notify(method: "initialized", params: [:])
+        initialized = true
+        return true
+    }
+
+    func sync(uri: String, languageId: String, text: String) {
+        if openVersions[uri] == nil {
+            openVersions[uri] = 1
+            lastText[uri] = text
+            notify(method: "textDocument/didOpen", params: [
+                "textDocument": ["uri": uri, "languageId": languageId, "version": 1, "text": text]
+            ])
+        } else if lastText[uri] != text {
+            let version = (openVersions[uri] ?? 1) + 1
+            openVersions[uri] = version
+            lastText[uri] = text
+            notify(method: "textDocument/didChange", params: [
+                "textDocument": ["uri": uri, "version": version],
+                "contentChanges": [["text": text]]
+            ])
+        }
+    }
+
+    // MARK: - JSON-RPC
+
+    func request(method: String, params: [String: Any]) async -> Data? {
+        let id = nextId
+        nextId += 1
+        send(message: ["jsonrpc": "2.0", "id": id, "method": method, "params": params])
+        return await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
+            pending[id] = continuation
+            Task {
+                try? await Task.sleep(for: .seconds(5))
+                self.timeout(id: id)
+            }
+        }
+    }
+
+    private func timeout(id: Int) {
+        if let continuation = pending.removeValue(forKey: id) {
+            continuation.resume(returning: nil)
+        }
+    }
+
+    private func notify(method: String, params: [String: Any]) {
+        send(message: ["jsonrpc": "2.0", "method": method, "params": params])
+    }
+
+    private func send(message: [String: Any]) {
+        guard let stdin, let body = try? JSONSerialization.data(withJSONObject: message) else { return }
+        var frame = Data("Content-Length: \(body.count)\r\n\r\n".utf8)
+        frame.append(body)
+        try? stdin.write(contentsOf: frame)
+    }
+
+    private func ingest(_ data: Data) {
+        inbox.append(data)
+        while let body = extractMessage() {
+            guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { continue }
+            if let id = json["id"] as? Int, let continuation = pending.removeValue(forKey: id) {
+                continuation.resume(returning: body)
+            } else if json["method"] as? String == "textDocument/publishDiagnostics" {
+                handlePublishDiagnostics(json["params"])
+            }
+        }
+    }
+
+    private func handlePublishDiagnostics(_ params: Any?) {
+        guard let params = params as? [String: Any],
+              let uri = params["uri"] as? String,
+              let raw = params["diagnostics"] as? [[String: Any]] else { return }
+        let diagnostics = raw.compactMap(Self.parseDiagnostic)
+        Task { @MainActor in
+            LSPDiagnosticsBus.shared.deliver(uri: uri, diagnostics: diagnostics)
+        }
+    }
+
+    private static func parseDiagnostic(_ raw: [String: Any]) -> Diagnostic? {
+        guard let range = raw["range"] as? [String: Any],
+              let start = range["start"] as? [String: Any],
+              let line = start["line"] as? Int,
+              let character = start["character"] as? Int else { return nil }
+        let severityCode = raw["severity"] as? Int ?? 1
+        let severity: Diagnostic.Severity = switch severityCode {
+        case 1: .error
+        case 2: .warning
+        default: .note
+        }
+        let message = (raw["message"] as? String) ?? ""
+        return Diagnostic(line: line + 1, column: character + 1, severity: severity, message: message)
+    }
+
+    private func extractMessage() -> Data? {
+        let separator = Data("\r\n\r\n".utf8)
+        guard let headerEnd = inbox.range(of: separator) else { return nil }
+        let header = String(decoding: inbox[inbox.startIndex..<headerEnd.lowerBound], as: UTF8.self)
+        var length = 0
+        for line in header.split(separator: "\r\n") where line.lowercased().hasPrefix("content-length:") {
+            length = Int(line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) ?? 0
+        }
+        let bodyStart = headerEnd.upperBound
+        guard length > 0, inbox.distance(from: bodyStart, to: inbox.endIndex) >= length else { return nil }
+        let bodyEnd = inbox.index(bodyStart, offsetBy: length)
+        let body = inbox[bodyStart..<bodyEnd]
+        inbox.removeSubrange(inbox.startIndex..<bodyEnd)
+        return Data(body)
+    }
+
+    private static func isAvailable(_ executable: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
+        process.arguments = ["-lc", "command -v \(executable)"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do { try process.run() } catch { return false }
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+}

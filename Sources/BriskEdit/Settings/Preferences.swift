@@ -17,6 +17,11 @@ final class Preferences {
     var usesSpacesForTabs: Bool {
         didSet { persist() }
     }
+    /// Run an installed external formatter (clang-format, swift-format, gofmt,
+    /// prettier, …) over the buffer right before each save. Off by default.
+    var formatOnSave: Bool {
+        didSet { persist() }
+    }
 
     init() {
         let defaults = UserDefaults.standard
@@ -24,6 +29,7 @@ final class Preferences {
         self.fontName = defaults.string(forKey: Keys.fontName) ?? "SF Mono"
         self.tabWidth = defaults.integer(forKey: Keys.tabWidth).nonZero ?? 4
         self.usesSpacesForTabs = defaults.object(forKey: Keys.usesSpacesForTabs) as? Bool ?? true
+        self.formatOnSave = defaults.bool(forKey: Keys.formatOnSave)
     }
 
     var editorTheme: EditorTheme {
@@ -41,6 +47,7 @@ final class Preferences {
         defaults.set(fontName, forKey: Keys.fontName)
         defaults.set(tabWidth, forKey: Keys.tabWidth)
         defaults.set(usesSpacesForTabs, forKey: Keys.usesSpacesForTabs)
+        defaults.set(formatOnSave, forKey: Keys.formatOnSave)
     }
 
     private enum Keys {
@@ -48,6 +55,7 @@ final class Preferences {
         static let fontName = "editor.fontName"
         static let tabWidth = "editor.tabWidth"
         static let usesSpacesForTabs = "editor.usesSpacesForTabs"
+        static let formatOnSave = "editor.formatOnSave"
     }
 }
 
