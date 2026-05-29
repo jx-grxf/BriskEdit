@@ -2,6 +2,7 @@ import SwiftUI
 
 @main
 struct BriskEditApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var preferences = Preferences()
     @State private var updates = UpdateService()
 

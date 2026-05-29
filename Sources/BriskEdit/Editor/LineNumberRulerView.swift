@@ -3,6 +3,7 @@ import AppKit
 final class LineNumberRulerView: NSRulerView {
     private weak var codeTextView: NSTextView?
     private var theme: EditorTheme
+    private var lineStartOffsets: [Int] = [0]
 
     init(textView: NSTextView, theme: EditorTheme) {
         self.codeTextView = textView
@@ -26,6 +27,8 @@ final class LineNumberRulerView: NSRulerView {
         if let clipView = textView.enclosingScrollView?.contentView {
             clipView.postsBoundsChangedNotifications = true
         }
+        rebuildLineIndex()
+        updateRuleThickness()
     }
 
     @available(*, unavailable)
@@ -33,10 +36,19 @@ final class LineNumberRulerView: NSRulerView {
 
     func setTheme(_ theme: EditorTheme) {
         self.theme = theme
+        updateRuleThickness()
+        needsDisplay = true
+    }
+
+    func invalidateLineNumbers() {
+        rebuildLineIndex()
+        updateRuleThickness()
         needsDisplay = true
     }
 
     @objc private func textDidChange(_ note: Notification) {
+        rebuildLineIndex()
+        updateRuleThickness()
         needsDisplay = true
     }
 
@@ -51,15 +63,92 @@ final class LineNumberRulerView: NSRulerView {
     }
 
     override func drawHashMarksAndLabels(in rect: NSRect) {
+        if drawTextKit1LineNumbers() {
+            return
+        }
+
         guard
             let textView = codeTextView,
             let textLayoutManager = textView.textLayoutManager,
-            let textContentManager = textLayoutManager.textContentManager,
             let scrollView = textView.enclosingScrollView
         else { return }
 
         let visibleRect = scrollView.contentView.bounds
         let textContainerOrigin = textView.textContainerOrigin
+        let font = NSFont.monospacedDigitSystemFont(ofSize: theme.fontSize - 1, weight: .regular)
+        let labelAttrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: theme.gutterForeground
+        ]
+
+        let visibleInContainer = NSRect(
+            x: visibleRect.minX,
+            y: visibleRect.minY - textContainerOrigin.y,
+            width: visibleRect.width,
+            height: visibleRect.height
+        )
+
+        textLayoutManager.enumerateTextLayoutFragments(
+            from: textLayoutManager.documentRange.location,
+            options: [.ensuresLayout]
+        ) { fragment in
+            let frame = fragment.layoutFragmentFrame
+            if frame.maxY < visibleInContainer.minY { return true }
+            if frame.minY > visibleInContainer.maxY { return false }
+
+            let fragmentStart = fragment.rangeInElement.location
+            let charOffset = textLayoutManager.textContentManager?.offset(
+                from: textLayoutManager.documentRange.location,
+                to: fragmentStart
+            ) ?? 0
+            var lineNumber = self.lineNumber(forCharacterOffset: charOffset)
+
+            for lineFragment in fragment.textLineFragments {
+                let isFirstLineOfFragment = lineFragment.characterRange.location == 0
+                if isFirstLineOfFragment {
+                    let bounds = lineFragment.typographicBounds
+                    let yInContainer = frame.minY + bounds.minY
+                    let yInView = yInContainer + textContainerOrigin.y - visibleRect.minY
+                    let label = NSAttributedString(string: "\(lineNumber)", attributes: labelAttrs)
+                    let labelSize = label.size()
+                    label.draw(at: NSPoint(
+                        x: self.ruleThickness - labelSize.width - 6,
+                        y: yInView + (bounds.height - labelSize.height) / 2
+                    ))
+                }
+                if let storage = (textLayoutManager.textContentManager as? NSTextContentStorage)?.textStorage {
+                    let substringRange = NSRange(
+                        location: charOffset + lineFragment.characterRange.location,
+                        length: lineFragment.characterRange.length
+                    )
+                    if NSMaxRange(substringRange) <= storage.length {
+                        let slice = (storage.string as NSString).substring(with: substringRange) as NSString
+                        lineNumber += slice.components(separatedBy: "\n").count - 1
+                    }
+                }
+            }
+            return true
+        }
+    }
+
+    private func drawTextKit1LineNumbers() -> Bool {
+        guard
+            let textView = codeTextView,
+            textView.textLayoutManager == nil,
+            let layoutManager = textView.layoutManager,
+            let textContainer = textView.textContainer,
+            let scrollView = textView.enclosingScrollView
+        else { return false }
+
+        let visibleRect = scrollView.contentView.bounds
+        let visibleInTextContainer = NSRect(
+            x: visibleRect.minX - textView.textContainerOrigin.x,
+            y: visibleRect.minY - textView.textContainerOrigin.y,
+            width: visibleRect.width,
+            height: visibleRect.height
+        )
+        let glyphRange = layoutManager.glyphRange(forBoundingRect: visibleInTextContainer, in: textContainer)
+        guard glyphRange.location != NSNotFound else { return true }
 
         let font = NSFont.monospacedDigitSystemFont(ofSize: theme.fontSize - 1, weight: .regular)
         let labelAttrs: [NSAttributedString.Key: Any] = [
@@ -67,68 +156,77 @@ final class LineNumberRulerView: NSRulerView {
             .foregroundColor: theme.gutterForeground
         ]
 
-        // Count newlines from document start to a given location.
-        let documentRange = textLayoutManager.documentRange
-        guard let documentString = (textContentManager as? NSTextContentStorage)?.textStorage?.string else {
+        var glyphIndex = glyphRange.location
+        while glyphIndex < NSMaxRange(glyphRange) {
+            var effectiveRange = NSRange(location: 0, length: 0)
+            let lineRect = layoutManager.lineFragmentRect(
+                forGlyphAt: glyphIndex,
+                effectiveRange: &effectiveRange,
+                withoutAdditionalLayout: true
+            )
+            let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
+            if isFirstVisualFragment(characterIndex: charIndex) {
+                let lineNumber = lineNumber(forCharacterOffset: charIndex)
+                let label = NSAttributedString(string: "\(lineNumber)", attributes: labelAttrs)
+                let labelSize = label.size()
+                let y = lineRect.minY + textView.textContainerOrigin.y - visibleRect.minY + (lineRect.height - labelSize.height) / 2
+                label.draw(at: NSPoint(x: ruleThickness - labelSize.width - 6, y: y))
+            }
+
+            glyphIndex = NSMaxRange(effectiveRange)
+            if effectiveRange.length == 0 {
+                glyphIndex += 1
+            }
+        }
+
+        return true
+    }
+
+    private func rebuildLineIndex() {
+        guard let text = codeTextView?.string else {
+            lineStartOffsets = [0]
             return
         }
-        let nsString = documentString as NSString
-
-        textLayoutManager.enumerateTextLayoutFragments(
-            from: textLayoutManager.documentRange.location,
-            options: [.ensuresLayout]
-        ) { fragment in
-            let fragmentFrame = fragment.layoutFragmentFrame
-            let fragmentBottomInView = fragmentFrame.maxY + textContainerOrigin.y
-            let fragmentTopInView = fragmentFrame.minY + textContainerOrigin.y
-
-            // Skip fragments above the visible region; stop when we go past it.
-            if fragmentBottomInView < visibleRect.minY {
-                return true
+        var starts = [0]
+        let nsString = text as NSString
+        nsString.enumerateSubstrings(
+            in: NSRange(location: 0, length: nsString.length),
+            options: [.byLines, .substringNotRequired]
+        ) { _, _, enclosingRange, _ in
+            let next = NSMaxRange(enclosingRange)
+            if next < nsString.length {
+                starts.append(next)
             }
-            if fragmentTopInView > visibleRect.maxY {
-                return false
-            }
+        }
+        lineStartOffsets = starts
+    }
 
-            // Compute starting line number for this fragment by counting newlines before it.
-            let fragmentStart = fragment.rangeInElement.location
-            let charOffset = textContentManager.offset(from: documentRange.location, to: fragmentStart)
-            let leadingRange = NSRange(location: 0, length: charOffset)
-            var lineNumber = 1
-            if leadingRange.length > 0 {
-                nsString.enumerateSubstrings(
-                    in: leadingRange,
-                    options: [.byLines, .substringNotRequired]
-                ) { _, _, _, _ in
-                    lineNumber += 1
-                }
-            }
+    private func updateRuleThickness() {
+        let digits = max(2, String(max(1, lineStartOffsets.count)).count)
+        let font = NSFont.monospacedDigitSystemFont(ofSize: theme.fontSize - 1, weight: .regular)
+        let sample = String(repeating: "8", count: digits) as NSString
+        let width = sample.size(withAttributes: [.font: font]).width
+        ruleThickness = max(44, ceil(width + 18))
+    }
 
-            for lineFragment in fragment.textLineFragments {
-                // Only label the first line fragment per logical line.
-                let isFirst = lineFragment.characterRange.location == 0
-                if isFirst {
-                    let lineRectInFragment = lineFragment.typographicBounds
-                    let yInView = fragmentFrame.minY + lineRectInFragment.minY + textContainerOrigin.y - visibleRect.minY
-                    let label = NSAttributedString(string: "\(lineNumber)", attributes: labelAttrs)
-                    let labelSize = label.size()
-                    let drawPoint = NSPoint(
-                        x: self.ruleThickness - labelSize.width - 6,
-                        y: yInView + (lineRectInFragment.height - labelSize.height) / 2
-                    )
-                    label.draw(at: drawPoint)
-                }
-
-                let substringRange = NSRange(
-                    location: charOffset + lineFragment.characterRange.location,
-                    length: lineFragment.characterRange.length
-                )
-                if NSMaxRange(substringRange) <= nsString.length {
-                    let lineString = nsString.substring(with: substringRange) as NSString
-                    lineNumber += lineString.components(separatedBy: "\n").count - 1
-                }
+    private func lineNumber(forCharacterOffset offset: Int) -> Int {
+        var low = 0
+        var high = lineStartOffsets.count
+        while low < high {
+            let mid = (low + high) / 2
+            if lineStartOffsets[mid] <= offset {
+                low = mid + 1
+            } else {
+                high = mid
             }
+        }
+        return max(1, low)
+    }
+
+    private func isFirstVisualFragment(characterIndex: Int) -> Bool {
+        guard characterIndex > 0, let text = codeTextView?.string as NSString? else {
             return true
         }
+        return text.character(at: characterIndex - 1) == 10
     }
 }

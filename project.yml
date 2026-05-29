@@ -23,6 +23,9 @@ packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
     from: "2.9.2"
+  SwiftTerm:
+    url: https://github.com/migueldeicaza/SwiftTerm
+    from: "1.13.0"
 
 targets:
   BriskEdit:
@@ -32,6 +35,7 @@ targets:
       - path: Sources/BriskEdit
     dependencies:
       - package: Sparkle
+      - package: SwiftTerm
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.johannesgrof.briskedit

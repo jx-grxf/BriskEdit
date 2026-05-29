@@ -21,6 +21,12 @@ struct AppCommands: Commands {
                 openFolder()
             }
             .keyboardShortcut("o", modifiers: [.command, .shift])
+
+            Button("Close Folder") {
+                workspace?.closeFolder()
+            }
+            .keyboardShortcut("w", modifiers: [.command, .shift])
+            .disabled(workspace?.rootURL == nil)
         }
 
         CommandGroup(after: .saveItem) {
@@ -36,6 +42,26 @@ struct AppCommands: Commands {
                 workspace?.showCommandPalette = true
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
+        }
+
+        CommandMenu("Run") {
+            Button("Run File") {
+                workspace?.runActiveDocument()
+            }
+            .keyboardShortcut("r", modifiers: .command)
+            .disabled(workspace?.activeTab?.document.language.isRunnable != true)
+
+            Divider()
+
+            Button("Toggle Terminal") {
+                workspace?.showTerminal.toggle()
+            }
+            .keyboardShortcut("`", modifiers: .control)
+
+            Button("Toggle Markdown Preview") {
+                workspace?.showMarkdownPreview.toggle()
+            }
+            .keyboardShortcut("m", modifiers: [.command, .shift])
         }
 
         CommandGroup(after: .appInfo) {
