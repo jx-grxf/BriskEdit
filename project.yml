@@ -54,3 +54,15 @@ targets:
         CODE_SIGNING_REQUIRED: NO
         ENABLE_HARDENED_RUNTIME: YES
         COMBINE_HIDPI_IMAGES: YES
+
+  BriskEditTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - path: Tests/BriskEditTests
+    dependencies:
+      - target: BriskEdit
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.johannesgrof.briskedit.tests
+        GENERATE_INFOPLIST_FILE: YES
