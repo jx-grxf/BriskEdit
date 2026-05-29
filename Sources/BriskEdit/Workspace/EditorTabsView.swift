@@ -5,6 +5,8 @@ struct EditorTabsView: View {
     @Environment(Preferences.self) private var preferences
     @SceneStorage("workspace.terminalHeight") private var terminalHeight: Double = 260
     @State private var terminalResizeStart: Double?
+    @SceneStorage("workspace.pdfSplitWidth") private var pdfSplitWidth: Double = 400
+    @State private var pdfResizeStart: Double?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -13,9 +15,20 @@ struct EditorTabsView: View {
             if let tab = workspace.activeTab {
                 GeometryReader { proxy in
                     VStack(spacing: 0) {
-                        editorSurface(for: tab)
-                            .frame(minHeight: 180)
-                            .layoutPriority(1)
+                        HStack(spacing: 0) {
+                            editorSurface(for: tab)
+                                .frame(minWidth: 320)
+                                .layoutPriority(1)
+                            if let pdf = workspace.splitPDFURL {
+                                PDFSplitHandle()
+                                    .gesture(resizePDFGesture(maxWidth: proxy.size.width - 360))
+                                SplitPDFPane(url: pdf) { workspace.splitPDFURL = nil }
+                                    .frame(width: clampedPDFWidth(maxWidth: proxy.size.width - 360))
+                                    .layoutPriority(0)
+                            }
+                        }
+                        .frame(minHeight: 180)
+                        .layoutPriority(1)
                         if workspace.showTerminal {
                             TerminalResizeHandle()
                                 .gesture(resizeTerminalGesture(maxHeight: proxy.size.height - 180))
@@ -37,6 +50,21 @@ struct EditorTabsView: View {
         }
     }
 
+    private func clampedPDFWidth(maxWidth: CGFloat) -> CGFloat {
+        min(max(CGFloat(pdfSplitWidth), 240), max(280, maxWidth))
+    }
+
+    private func resizePDFGesture(maxWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                let start = pdfResizeStart ?? pdfSplitWidth
+                pdfResizeStart = start
+                let proposed = start - Double(value.translation.width)
+                pdfSplitWidth = Double(min(max(CGFloat(proposed), 240), max(280, maxWidth)))
+            }
+            .onEnded { _ in pdfResizeStart = nil }
+    }
+
     private func clampedTerminalHeight(maxHeight: CGFloat) -> CGFloat {
         min(max(CGFloat(terminalHeight), 140), max(180, maxHeight))
     }
@@ -56,7 +84,10 @@ struct EditorTabsView: View {
 
     @ViewBuilder
     private func editorSurface(for tab: EditorTab) -> some View {
-        if workspace.showMarkdownPreview && tab.document.language == .markdown {
+        if let pdfURL = tab.pdfURL {
+            PDFViewerHost(url: pdfURL)
+                .id(tab.id)
+        } else if workspace.showMarkdownPreview && tab.document.language == .markdown {
             HStack(spacing: 0) {
                 TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme)
                     .id(tab.id)
@@ -70,6 +101,52 @@ struct EditorTabsView: View {
             TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme)
                 .id(tab.id)
                 .frame(minWidth: 360)
+        }
+    }
+}
+
+private struct PDFSplitHandle: View {
+    var body: some View {
+        ZStack {
+            Divider()
+            Rectangle()
+                .fill(.clear)
+                .frame(width: 8)
+                .overlay {
+                    Capsule()
+                        .fill(Color.secondary.opacity(0.35))
+                        .frame(width: 3, height: 36)
+                }
+        }
+        .frame(width: 8)
+        .contentShape(Rectangle())
+        .pointerStyle(.columnResize)
+        .accessibilityLabel("Resize PDF pane")
+    }
+}
+
+private struct SplitPDFPane: View {
+    let url: URL
+    let onClose: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "doc.richtext")
+                Text(url.lastPathComponent)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button("Close", systemImage: "xmark") { onClose() }
+                    .buttonStyle(.borderless)
+                    .labelStyle(.iconOnly)
+            }
+            .padding(.horizontal, 10)
+            .frame(height: 30)
+            .background(.bar)
+            Divider()
+            PDFViewerHost(url: url)
         }
     }
 }
@@ -89,6 +166,7 @@ private struct TerminalResizeHandle: View {
             Divider()
         }
         .contentShape(Rectangle())
+        .pointerStyle(.rowResize)
         .accessibilityLabel("Resize terminal")
     }
 }
@@ -104,7 +182,7 @@ private struct TabStrip: View {
                         tab: tab,
                         isActive: tab.id == workspace.activeTabID,
                         onSelect: { workspace.selectTab(tab.id) },
-                        onClose: { workspace.closeTab(tab.id) }
+                        onClose: { workspace.requestCloseTab(tab.id) }
                     )
                     Divider().frame(height: 18)
                 }
@@ -123,8 +201,7 @@ private struct TabChip: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(systemName: tab.document.language.iconName)
-                .foregroundStyle(languageColor(tab.document.language))
+            FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
             Text(tab.document.displayName)
                 .lineLimit(1)
                 .truncationMode(.middle)
@@ -144,23 +221,6 @@ private struct TabChip: View {
         .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
-    }
-
-    private func languageColor(_ language: SourceLanguage) -> Color {
-        switch language {
-        case .swift: .orange
-        case .c, .cpp: .blue
-        case .javascript, .typescript: .yellow
-        case .php: .indigo
-        case .python: .green
-        case .rust: .brown
-        case .markdown: .purple
-        case .json, .yaml: .cyan
-        case .html, .css, .xml: .pink
-        case .shell: .mint
-        case .go: .teal
-        case .plainText: .secondary
-        }
     }
 }
 

@@ -21,10 +21,10 @@ enum RunService {
         switch document.language {
         case .c:
             let output = shellQuote(tempBinaryPath())
-            line = "(xcrun clang \(file) -Wall -Wextra -o \(output) && \(output)); status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$status\""
+            line = "(xcrun clang \(file) -Wall -Wextra -o \(output) && \(output)); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
         case .cpp:
             let output = shellQuote(tempBinaryPath())
-            line = "(xcrun clang++ \(file) -Wall -Wextra -std=c++20 -o \(output) && \(output)); status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$status\""
+            line = "(xcrun clang++ \(file) -Wall -Wextra -std=c++20 -o \(output) && \(output)); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
         case .swift:
             if let packageRoot = ancestor(containing: "Package.swift", from: sourceURL.deletingLastPathComponent(), stopAt: workspaceRoot) {
                 return RunCommand(title: "swift run", shellLine: "swift run", cwd: packageRoot)
@@ -49,7 +49,7 @@ enum RunService {
                 return RunCommand(title: "cargo run", shellLine: "cargo run", cwd: cargoRoot)
             }
             let output = shellQuote(tempBinaryPath())
-            line = "(rustc \(file) -o \(output) && \(output)); status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$status\""
+            line = "(rustc \(file) -o \(output) && \(output)); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
         default:
             throw RunError.unsupported(document.language.rawValue)
         }

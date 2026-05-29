@@ -21,6 +21,9 @@ struct FileTreeView: View {
                 }
                 .listStyle(.sidebar)
                 .id(workspace.reloadToken)
+                .dropDestination(for: URL.self) { urls, _ in
+                    workspace.handleTreeDrop(urls, into: root)
+                }
             }
         }
         .onChange(of: workspace.selectedSidebarURL) { _, url in
@@ -44,8 +47,17 @@ struct FileTreeView: View {
 
     private var searchHeader: some View {
         VStack(spacing: 8) {
-            TextField("Search files or type .ext", text: $query)
-                .textFieldStyle(.roundedBorder)
+            HStack(spacing: 6) {
+                TextField("Search files or type .ext", text: $query)
+                    .textFieldStyle(.roundedBorder)
+                Button {
+                    workspace.promptNewFile()
+                } label: {
+                    Image(systemName: "doc.badge.plus")
+                }
+                .buttonStyle(.borderless)
+                .help("New file in current folder")
+            }
             HStack {
                 Toggle("Code only", isOn: $codeOnly)
                     .toggleStyle(.button)
@@ -122,6 +134,7 @@ private struct SearchResultsList: View {
                 }
                 .buttonStyle(.plain)
                 .tag(node.url)
+                .contextMenu { FileContextMenu(node: node, workspace: workspace) }
             }
         }
         .listStyle(.sidebar)
@@ -134,8 +147,7 @@ private struct FileResultRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: node.language.iconName)
-                .foregroundStyle(iconColor(node.language))
+            FileTypeIcon(url: node.url, isDirectory: node.isDirectory, language: node.language)
                 .frame(width: 18)
             VStack(alignment: .leading, spacing: 2) {
                 Text(node.name)
@@ -166,39 +178,55 @@ private struct FileTreeBranch: View {
     let node: FileNode
     let depth: Int
     @Environment(WorkspaceModel.self) private var workspace
-    @State private var isExpanded: Bool
     @State private var children: [FileNode] = []
     @State private var didLoad: Bool = false
 
     init(node: FileNode, depth: Int) {
         self.node = node
         self.depth = depth
-        _isExpanded = State(initialValue: depth == 0)
+    }
+
+    /// Expansion state lives in the model so reloads don't collapse the tree.
+    private var isExpanded: Binding<Bool> {
+        Binding(
+            get: { depth == 0 || workspace.expandedDirectories.contains(node.url) },
+            set: { expand in
+                if expand { workspace.expandedDirectories.insert(node.url) }
+                else { workspace.expandedDirectories.remove(node.url) }
+            }
+        )
     }
 
     var body: some View {
         if node.isDirectory {
-            DisclosureGroup(isExpanded: $isExpanded) {
+            DisclosureGroup(isExpanded: isExpanded) {
                 ForEach(children) { child in
                     FileTreeBranch(node: child, depth: depth + 1)
                         .environment(workspace)
                 }
             } label: {
-                FileTreeRow(node: node, isExpanded: isExpanded)
+                FileTreeRow(node: node, isExpanded: isExpanded.wrappedValue)
+                    .contextMenu { FileContextMenu(node: node, workspace: workspace) }
+                    .draggable(node.url)
+                    .dropDestination(for: URL.self) { urls, _ in
+                        workspace.handleTreeDrop(urls, into: node.url)
+                    }
             }
             .tag(node.url)
             .task(id: "\(node.id.path)|\(workspace.reloadToken)|\(workspace.showHiddenFiles)") {
-                if isExpanded {
+                if isExpanded.wrappedValue {
                     await loadChildren(force: true)
                 }
             }
-            .onChange(of: isExpanded) { _, expanded in
+            .onChange(of: isExpanded.wrappedValue) { _, expanded in
                 guard expanded else { return }
                 Task { await loadChildren(force: false) }
             }
         } else {
             FileTreeRow(node: node, isExpanded: false)
             .tag(node.url)
+            .contextMenu { FileContextMenu(node: node, workspace: workspace) }
+            .draggable(node.url)
         }
     }
 
@@ -217,8 +245,7 @@ private struct FileTreeRow: View {
 
     var body: some View {
         HStack(spacing: 8) {
-            Image(systemName: iconName)
-                .foregroundStyle(node.isDirectory ? Color.accentColor : iconColor(node.language))
+            FileTypeIcon(url: node.url, isDirectory: node.isDirectory, language: node.language)
                 .frame(width: 18)
             Text(node.name.isEmpty ? node.url.path : node.name)
                 .foregroundStyle(.primary)
@@ -227,29 +254,32 @@ private struct FileTreeRow: View {
         }
         .help(node.url.path)
     }
+}
 
-    private var iconName: String {
+private struct FileContextMenu: View {
+    let node: FileNode
+    let workspace: WorkspaceModel
+
+    var body: some View {
         if node.isDirectory {
-            isExpanded ? "folder.fill" : "folder"
+            Button("New File…") { workspace.promptNewFile(in: node.url) }
+            Divider()
         } else {
-            node.language.iconName
+            Button("Open") { workspace.selectedSidebarURL = node.url }
+            if node.url.pathExtension.lowercased() == "pdf" {
+                Button("Open in Split Screen") { workspace.toggleSplitPDF(node.url) }
+            }
+            Divider()
         }
+        Button("Reveal in Finder") { workspace.revealInFinder(node.url) }
+        Button("Copy Path") { workspace.copyToPasteboard(node.url.path) }
+        Button("Copy Relative Path") { workspace.copyToPasteboard(workspace.relativePath(of: node.url)) }
+        Button("Copy Name") { workspace.copyToPasteboard(node.name) }
+        Divider()
+        Button("Rename…") { workspace.renameFile(node.url) }
+        Button("Duplicate") { workspace.duplicateFile(node.url) }
+        Divider()
+        Button("Move to Trash", role: .destructive) { workspace.deleteFile(node.url) }
     }
 }
 
-private func iconColor(_ language: SourceLanguage) -> Color {
-    switch language {
-    case .swift: .orange
-    case .c, .cpp: .blue
-    case .javascript, .typescript: .yellow
-    case .php: .indigo
-    case .python: .green
-    case .rust: .brown
-    case .markdown: .purple
-    case .json, .yaml, .xml: .cyan
-    case .html, .css: .pink
-    case .shell: .mint
-    case .go: .teal
-    case .plainText: .secondary
-    }
-}

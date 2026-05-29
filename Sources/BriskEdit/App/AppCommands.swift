@@ -21,6 +21,12 @@ struct AppCommands: Commands {
                 openFolder()
             }
             .keyboardShortcut("o", modifiers: [.command, .shift])
+
+            Button("Close Folder") {
+                workspace?.closeFolder()
+            }
+            .keyboardShortcut("w", modifiers: [.command, .shift])
+            .disabled(workspace?.rootURL == nil)
         }
 
         CommandGroup(after: .saveItem) {

@@ -10,7 +10,11 @@ final class TextDocument {
     var isDirty: Bool = false
     var cursorLine: Int = 1
     var cursorColumn: Int = 1
+    /// Bumped on every text mutation so the editor can detect *external* changes
+    /// cheaply, instead of comparing entire (possibly huge) strings each update.
+    private(set) var revision: Int = 0
     private var lineStartOffsets: [Int] = [0]
+    private var lineIndexWork: DispatchWorkItem?
 
     var displayName: String {
         fileURL?.lastPathComponent ?? "Untitled"
@@ -47,8 +51,28 @@ final class TextDocument {
     func applyEdit(text newText: String) {
         guard text != newText else { return }
         text = newText
-        rebuildLineIndex()
+        revision &+= 1
         isDirty = true
+        scheduleLineIndexRebuild()
+    }
+
+    /// Small files rebuild the line index immediately (exact Ln/Col); large files
+    /// debounce it so typing in a 20 MB file stays smooth.
+    private func scheduleLineIndexRebuild() {
+        lineIndexWork?.cancel()
+        if (text as NSString).length <= 100_000 {
+            rebuildLineIndex()
+            return
+        }
+        let work = DispatchWorkItem { [weak self] in self?.rebuildLineIndex() }
+        lineIndexWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    /// Points the document at a new on-disk location (e.g. after a rename)
+    /// without touching the buffer or dirty state.
+    func retarget(to url: URL) {
+        fileURL = url
     }
 
     func updateCursor(location: Int) {

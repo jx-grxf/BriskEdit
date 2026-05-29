@@ -20,10 +20,6 @@ struct TerminalPanel: View {
                 Circle()
                     .fill(workspace.terminal.isRunning ? Color.green : Color.secondary)
                     .frame(width: 7, height: 7)
-                Button("Run", systemImage: "play.fill") {
-                    workspace.runActiveDocument()
-                }
-                .disabled(workspace.activeTab?.document.language.isRunnable != true)
                 Button("New Shell", systemImage: "plus") {
                     workspace.terminal.startShell(cwd: workspace.rootURL)
                 }

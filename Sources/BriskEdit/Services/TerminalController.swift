@@ -21,7 +21,9 @@ final class TerminalController {
     }
 
     var shellArguments: [String] {
-        ["-l"]
+        // Login + interactive: enables job control so Ctrl+C / Ctrl+Z behave
+        // like a real terminal and .zshrc/.bashrc are sourced.
+        ["-l", "-i"]
     }
 
     var shellDisplayName: String {
