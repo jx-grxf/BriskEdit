@@ -56,7 +56,14 @@ struct FileTreeView: View {
                     Image(systemName: "doc.badge.plus")
                 }
                 .buttonStyle(.borderless)
-                .help("New file in current folder")
+                .help("New file in selected folder (or root)")
+                Button {
+                    workspace.promptNewFolder()
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                }
+                .buttonStyle(.borderless)
+                .help("New folder in selected folder (or root)")
             }
             HStack {
                 Toggle("Code only", isOn: $codeOnly)
@@ -263,6 +270,7 @@ private struct FileContextMenu: View {
     var body: some View {
         if node.isDirectory {
             Button("New File…") { workspace.promptNewFile(in: node.url) }
+            Button("New Folder…") { workspace.promptNewFolder(in: node.url) }
             Divider()
         } else {
             Button("Open") { workspace.selectedSidebarURL = node.url }

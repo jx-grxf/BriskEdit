@@ -7,11 +7,13 @@ struct BriskEditApp: App {
     @State private var updates = UpdateService()
 
     var body: some Scene {
-        WindowGroup(id: "workspace") {
-            WorkspaceWindow()
+        WindowGroup(for: WindowKind.self) { $kind in
+            WorkspaceWindow(kind: kind)
                 .environment(preferences)
                 .environment(updates)
                 .frame(minWidth: 900, minHeight: 560)
+        } defaultValue: {
+            .primary
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))

@@ -2,18 +2,27 @@ import AppKit
 import SwiftUI
 
 struct WorkspaceWindow: View {
+    let kind: WindowKind
     @State private var workspace = WorkspaceModel()
+    @State private var sidebarTab: SidebarTab = .files
+    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @Environment(Preferences.self) private var preferences
+    @Environment(\.openWindow) private var openWindow
 
     var body: some View {
-        NavigationSplitView {
+        NavigationSplitView(columnVisibility: $columnVisibility) {
             sidebar
-                .frame(minWidth: 220)
+                .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 420)
         } detail: {
             detail
         }
         .navigationSplitViewStyle(.balanced)
-        .task { await workspace.restoreSession() }
+        .task {
+            if kind.restoresSession { await workspace.restoreWorkspace() }
+        }
+        .onAppear {
+            NewWindowCoordinator.shared.open = { openWindow(value: WindowKind.secondary(UUID())) }
+        }
         .background(WindowConfigurator(
             isDocumentEdited: workspace.hasUnsavedChanges,
             hasUnsavedChanges: workspace.hasUnsavedChanges,
@@ -54,8 +63,24 @@ struct WorkspaceWindow: View {
     @ViewBuilder
     private var sidebar: some View {
         if let root = workspace.rootURL {
-            FileTreeView(root: root, workspace: workspace)
-                .navigationTitle(root.lastPathComponent)
+            VStack(spacing: 0) {
+                Picker("", selection: $sidebarTab) {
+                    Image(systemName: "folder").tag(SidebarTab.files)
+                    Image(systemName: "arrow.triangle.branch").tag(SidebarTab.sourceControl)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                Divider()
+                switch sidebarTab {
+                case .files:
+                    FileTreeView(root: root, workspace: workspace)
+                case .sourceControl:
+                    GitSidebarView(workspace: workspace, root: root)
+                }
+            }
+            .navigationTitle(root.lastPathComponent)
         } else {
             ContentUnavailableView {
                 Label("No Folder Open", systemImage: "folder.badge.questionmark")

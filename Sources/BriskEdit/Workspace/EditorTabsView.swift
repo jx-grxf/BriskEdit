@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 struct EditorTabsView: View {
@@ -9,47 +10,68 @@ struct EditorTabsView: View {
     @State private var previewResizeStart: Double?
 
     var body: some View {
-        VStack(spacing: 0) {
-            TabStrip(workspace: workspace)
-            Divider()
-            if let tab = workspace.activeTab {
-                GeometryReader { proxy in
-                    VStack(spacing: 0) {
-                        if tab.document.externalChangePending {
-                            ExternalChangeBanner(document: tab.document)
-                        }
-                        HStack(spacing: 0) {
-                            editorSurface(for: tab)
-                                .frame(minWidth: 320)
-                                .layoutPriority(1)
-                            if let previewKind = workspace.splitPreviewKind {
-                                PreviewSplitHandle()
-                                    .gesture(resizePreviewGesture(maxWidth: proxy.size.width - 360))
-                                SplitPreviewPane(kind: previewKind) { workspace.splitPreviewKind = nil }
-                                    .frame(width: clampedPreviewWidth(maxWidth: proxy.size.width - 360))
-                                    .layoutPriority(0)
-                            }
-                        }
-                        .frame(minHeight: 180)
-                        .layoutPriority(1)
-                        if workspace.showTerminal {
-                            TerminalResizeHandle()
-                                .gesture(resizeTerminalGesture(maxHeight: proxy.size.height - 180))
-                            TerminalPanel(workspace: workspace)
-                                .frame(height: clampedTerminalHeight(maxHeight: proxy.size.height - 180))
+        editorArea
+            // The open-files tab strip and the status bar are pinned as
+            // safe-area *insets* rather than plain VStack siblings. On macOS 26
+            // (Tahoe) a code tab's `NSTextView`/`NSScrollView`
+            // (TextKit2EditorHost) gets pulled up under the nearest top bar by
+            // the system's "scroll edge effect", which painted the editor over a
+            // sibling tab strip and made it vanish (PDF/QuickLook hosts aren't
+            // scroll views, so they never triggered it). A safe-area inset is the
+            // surface that bar-under-scroll behavior is designed for: the strip
+            // reserves its own space and is composited *above* any content that
+            // underlaps it, so it can no longer be covered.
+            .safeAreaInset(edge: .top, spacing: 0) {
+                VStack(spacing: 0) {
+                    TabStrip(workspace: workspace)
+                    Divider()
+                }
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                VStack(spacing: 0) {
+                    Divider()
+                    StatusBar(workspace: workspace)
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var editorArea: some View {
+        if let tab = workspace.activeTab {
+            GeometryReader { proxy in
+                VStack(spacing: 0) {
+                    if tab.document.externalChangePending {
+                        ExternalChangeBanner(document: tab.document)
+                    }
+                    HStack(spacing: 0) {
+                        editorSurface(for: tab)
+                            .frame(minWidth: 320)
+                            .layoutPriority(1)
+                        if let previewKind = workspace.splitPreviewKind {
+                            PreviewSplitHandle()
+                                .gesture(resizePreviewGesture(maxWidth: proxy.size.width - 360))
+                            SplitPreviewPane(kind: previewKind) { workspace.splitPreviewKind = nil }
+                                .frame(width: clampedPreviewWidth(maxWidth: proxy.size.width - 360))
                                 .layoutPriority(0)
                         }
                     }
-                }
-            } else {
-                ContentUnavailableView {
-                    Label("No Active Tab", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text("Select a tab or open a file.")
+                    .frame(minHeight: 180)
+                    .layoutPriority(1)
+                    if workspace.showTerminal {
+                        TerminalResizeHandle()
+                            .gesture(resizeTerminalGesture(maxHeight: proxy.size.height - 180))
+                        TerminalPanel(workspace: workspace)
+                            .frame(height: clampedTerminalHeight(maxHeight: proxy.size.height - 180))
+                            .layoutPriority(0)
+                    }
                 }
             }
-            Divider()
-            StatusBar(workspace: workspace)
+        } else {
+            ContentUnavailableView {
+                Label("No Active Tab", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text("Select a tab or open a file.")
+            }
         }
     }
 
@@ -237,8 +259,14 @@ private struct TabStrip: View {
                 }
             }
         }
+        // Hard scroll edge so tabs are cut crisply at the strip's bounds instead
+        // of the macOS 26 soft fade, which let them bleed *under* the translucent
+        // sidebar when scrolled. `.clipped()` backs it up so nothing renders past
+        // the leading (sidebar) edge.
+        .scrollEdgeEffectStyle(.hard, for: .horizontal)
         .frame(height: 32)
         .background(.thinMaterial)
+        .clipped()
     }
 }
 
@@ -320,6 +348,7 @@ private struct StatusBar: View {
                 DiagnosticSummary(diagnostics: doc.diagnostics)
             }
             Spacer()
+            GitStatusBarView(root: workspace.rootURL)
             if let doc = workspace.activeTab?.document {
                 IntelliSenseStatusView(language: doc.language)
             }
@@ -338,6 +367,57 @@ private struct StatusBar: View {
         case .ascii: "ASCII"
         default: "Encoding \(encoding.rawValue)"
         }
+    }
+}
+
+/// Branch + ahead·behind + uncommitted-change count in the status bar. Reads
+/// `git` for the workspace root and refreshes itself whenever a git operation
+/// broadcasts `.gitDidChange` or the window becomes key (so a save elsewhere is
+/// reflected). Renders nothing outside a repository.
+private struct GitStatusBarView: View {
+    let root: URL?
+    @State private var status: GitStatus?
+
+    var body: some View {
+        Group {
+            if let status, let branch = status.branch {
+                HStack(spacing: 8) {
+                    Label(branch, systemImage: "arrow.triangle.branch")
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if status.hasRemote && (status.ahead > 0 || status.behind > 0) {
+                        HStack(spacing: 3) {
+                            if status.behind > 0 { Label("\(status.behind)", systemImage: "arrow.down") }
+                            if status.ahead > 0 { Label("\(status.ahead)", systemImage: "arrow.up") }
+                        }
+                    }
+                    if !status.isClean {
+                        Label("\(changedFileCount(status))", systemImage: "pencil")
+                            .foregroundStyle(.orange)
+                    }
+                }
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+                .labelStyle(.titleAndIcon)
+            }
+        }
+        .task(id: root) { await reload() }
+        .onReceive(NotificationCenter.default.publisher(for: .gitDidChange)) { _ in
+            Task { await reload() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            Task { await reload() }
+        }
+    }
+
+    /// Distinct files touched (a file staged *and* modified counts once).
+    private func changedFileCount(_ status: GitStatus) -> Int {
+        Set(status.changes.map(\.path)).count
+    }
+
+    private func reload() async {
+        guard let root else { status = nil; return }
+        status = await GitService.status(root: root)
     }
 }
 

@@ -163,9 +163,7 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
     func tableView(_ tableView: NSTableView, viewFor tableColumn: NSTableColumn?, row: Int) -> NSView? {
         let identifier = NSUserInterfaceItemIdentifier("cell")
         let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? CompletionCellView) ?? CompletionCellView(identifier: identifier)
-        let item = items[row]
-        cell.label.stringValue = item.label
-        cell.detail.stringValue = item.detail ?? ""
+        cell.configure(items[row])
         return cell
     }
 
@@ -180,14 +178,21 @@ private extension NSWindow {
     }
 }
 
-/// Cell with a monospaced label on the left and a dimmed detail hint on the right.
+/// Cell with a kind badge, a monospaced label, and a dimmed detail hint
+/// (signature/type) on the right.
 private final class CompletionCellView: NSTableCellView {
+    let icon = NSImageView()
     let label = NSTextField(labelWithString: "")
     let detail = NSTextField(labelWithString: "")
 
     init(identifier: NSUserInterfaceItemIdentifier) {
         super.init(frame: .zero)
         self.identifier = identifier
+
+        icon.translatesAutoresizingMaskIntoConstraints = false
+        icon.imageScaling = .scaleProportionallyDown
+        icon.symbolConfiguration = NSImage.SymbolConfiguration(pointSize: 12, weight: .medium)
+        icon.setContentHuggingPriority(.required, for: .horizontal)
 
         label.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
         label.lineBreakMode = .byTruncatingTail
@@ -198,18 +203,46 @@ private final class CompletionCellView: NSTableCellView {
         detail.alignment = .right
         detail.lineBreakMode = .byTruncatingTail
         detail.setContentHuggingPriority(.defaultHigh, for: .horizontal)
+        detail.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         detail.translatesAutoresizingMaskIntoConstraints = false
 
+        addSubview(icon)
         addSubview(label)
         addSubview(detail)
         textField = label
         NSLayoutConstraint.activate([
-            label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            icon.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            icon.centerYAnchor.constraint(equalTo: centerYAnchor),
+            icon.widthAnchor.constraint(equalToConstant: 15),
+            icon.heightAnchor.constraint(equalToConstant: 15),
+            label.leadingAnchor.constraint(equalTo: icon.trailingAnchor, constant: 6),
             label.centerYAnchor.constraint(equalTo: centerYAnchor),
             detail.leadingAnchor.constraint(greaterThanOrEqualTo: label.trailingAnchor, constant: 8),
             detail.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             detail.centerYAnchor.constraint(equalTo: centerYAnchor)
         ])
+    }
+
+    func configure(_ item: CompletionItem) {
+        label.stringValue = item.label
+        detail.stringValue = item.detail ?? ""
+        let tint = Self.tint(for: item.kind)
+        icon.image = NSImage(systemSymbolName: item.kind.symbolName, accessibilityDescription: nil)
+        icon.contentTintColor = tint
+    }
+
+    private static func tint(for kind: CompletionKind) -> NSColor {
+        switch kind {
+        case .function: .systemPurple
+        case .variable: .systemTeal
+        case .property: .systemTeal
+        case .type: .systemOrange
+        case .keyword: .systemPink
+        case .constant: .systemBlue
+        case .module: .systemGray
+        case .snippet: .systemGreen
+        case .text: .secondaryLabelColor
+        }
     }
 
     @available(*, unavailable)

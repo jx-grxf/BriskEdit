@@ -21,6 +21,45 @@ final class LSPDiagnosticsBus {
     }
 }
 
+/// Synchronously-reachable registry of the live language-server processes so the
+/// app can terminate them on quit. Without this, clangd/sourcekit-lsp/… would
+/// outlive the app as orphaned processes — exactly the bloat BriskEdit avoids.
+final class LSPProcessRegistry: @unchecked Sendable {
+    static let shared = LSPProcessRegistry()
+    private let lock = NSLock()
+    private var processes: [ObjectIdentifier: Process] = [:]
+
+    func register(_ process: Process) {
+        lock.lock(); defer { lock.unlock() }
+        processes[ObjectIdentifier(process)] = process
+    }
+
+    func unregister(_ process: Process) {
+        lock.lock(); defer { lock.unlock() }
+        processes[ObjectIdentifier(process)] = nil
+    }
+
+    /// Terminates every tracked server immediately. Safe to call from
+    /// `applicationWillTerminate` — `Process.terminate()` is synchronous.
+    func terminateAll() {
+        lock.lock()
+        let running = Array(processes.values)
+        processes.removeAll()
+        lock.unlock()
+        for process in running where process.isRunning {
+            process.terminate()
+        }
+    }
+}
+
+/// A semantic completion from a language server, carrying enough to render a
+/// rich popup row (label, signature/type detail, kind badge).
+struct LSPCompletion: Sendable, Equatable {
+    let label: String
+    let detail: String?
+    let kind: Int
+}
+
 struct LSPToolStatus: Sendable, Equatable {
     enum State: Sendable, Equatable {
         case available
@@ -114,8 +153,8 @@ actor LSPService {
 
     private var servers: [String: Server] = [:]
 
-    /// Returns completion labels for the position, syncing the buffer first.
-    func completions(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> [String] {
+    /// Returns semantic completions for the position, syncing the buffer first.
+    func completions(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> [LSPCompletion] {
         guard let config = Self.config(for: language) else { return [] }
         guard let server = await ensureServer(config, root: root) else { return [] }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
@@ -137,6 +176,23 @@ actor LSPService {
         await server.sync(uri: uri, languageId: config.languageId, text: text)
     }
 
+    /// Tells the server a document was closed (tab closed) so it drops the
+    /// buffer and stops emitting diagnostics for it.
+    func didClose(language: SourceLanguage, uri: String) async {
+        guard let config = Self.config(for: language), let server = servers[config.id] else { return }
+        await server.close(uri: uri)
+    }
+
+    /// Shuts every running server down (LSP `shutdown`/`exit`, then terminate).
+    /// Called on app quit.
+    func shutdownAll() async {
+        let running = Array(servers.values)
+        servers.removeAll()
+        for server in running {
+            await server.shutdown()
+        }
+    }
+
     private func ensureServer(_ config: ServerConfig, root: String?) async -> Server? {
         if let existing = servers[config.id] {
             return await existing.initialized ? existing : nil
@@ -151,7 +207,7 @@ actor LSPService {
 
     // MARK: - Completion parsing
 
-    private static func parseCompletions(_ result: Any?) -> [String] {
+    private static func parseCompletions(_ result: Any?) -> [LSPCompletion] {
         let items: [[String: Any]]
         if let dict = result as? [String: Any], let list = dict["items"] as? [[String: Any]] {
             items = list
@@ -166,15 +222,20 @@ actor LSPService {
             return l < r
         }
         var seen = Set<String>()
-        var labels: [String] = []
+        var completions: [LSPCompletion] = []
         for item in ranked {
             let raw = (item["insertText"] as? String) ?? (item["label"] as? String) ?? ""
             let symbol = raw.prefix { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "#" }
             let token = symbol.isEmpty ? raw.trimmingCharacters(in: .whitespaces) : String(symbol)
             guard !token.isEmpty, seen.insert(token).inserted else { continue }
-            labels.append(token)
+            // `detail` is clangd's signature/type; `labelDetails.detail` is its
+            // newer home. Fall back across both.
+            let detail = (item["detail"] as? String)
+                ?? ((item["labelDetails"] as? [String: Any])?["detail"] as? String)
+            let kind = (item["kind"] as? Int) ?? 1
+            completions.append(LSPCompletion(label: token, detail: detail?.trimmingCharacters(in: .whitespaces), kind: kind))
         }
-        return labels
+        return completions
     }
 
     private static func resolveExecutablePath(for config: ServerConfig) -> String? {
@@ -209,6 +270,7 @@ private actor Server {
     private let config: LSPService.ServerConfig
     private var process: Process?
     private var stdin: FileHandle?
+    private var outHandle: FileHandle?
     private var failed = false
     var initialized = false
 
@@ -251,6 +313,8 @@ private actor Server {
         }
         process = proc
         stdin = inPipe.fileHandleForWriting
+        outHandle = outPipe.fileHandleForReading
+        LSPProcessRegistry.shared.register(proc)
 
         let rootUri = root.map { "file://\($0)" }
         let initParams: [String: Any] = [
@@ -288,6 +352,37 @@ private actor Server {
                 "contentChanges": [["text": text]]
             ])
         }
+    }
+
+    /// Sends `textDocument/didClose` and forgets the buffer so the server stops
+    /// tracking/diagnosing it. No-op if the document was never opened.
+    func close(uri: String) {
+        guard openVersions[uri] != nil else { return }
+        openVersions[uri] = nil
+        lastText[uri] = nil
+        notify(method: "textDocument/didClose", params: [
+            "textDocument": ["uri": uri]
+        ])
+    }
+
+    /// Gracefully stops the server: LSP `shutdown` + `exit`, drop the read
+    /// handler, terminate the process. Resilient to a half-started server.
+    func shutdown() async {
+        guard let process else { return }
+        if initialized {
+            _ = await request(method: "shutdown", params: [:])
+            notify(method: "exit", params: [:])
+        }
+        outHandle?.readabilityHandler = nil
+        if process.isRunning { process.terminate() }
+        LSPProcessRegistry.shared.unregister(process)
+        self.process = nil
+        stdin = nil
+        outHandle = nil
+        initialized = false
+        // Fail any in-flight requests so their continuations don't leak.
+        for (_, continuation) in pending { continuation.resume(returning: nil) }
+        pending.removeAll()
     }
 
     // MARK: - JSON-RPC

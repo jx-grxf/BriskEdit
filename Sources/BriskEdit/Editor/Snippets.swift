@@ -9,17 +9,62 @@ struct CodeSnippet: Equatable, Sendable {
     let body: String
 }
 
+/// Semantic category of a completion row — drives the leading icon (and tint)
+/// in the popup, mirroring Xcode/VS Code. Maps from the LSP `CompletionItemKind`.
+enum CompletionKind: Equatable, Sendable {
+    case function
+    case variable
+    case property
+    case type
+    case keyword
+    case constant
+    case module
+    case snippet
+    case text
+
+    /// SF Symbol shown as the row badge.
+    var symbolName: String {
+        switch self {
+        case .function: "function"
+        case .variable: "v.square.fill"
+        case .property: "p.square.fill"
+        case .type: "t.square.fill"
+        case .keyword: "k.square.fill"
+        case .constant: "c.square.fill"
+        case .module: "shippingbox.fill"
+        case .snippet: "chevron.left.forwardslash.chevron.right"
+        case .text: "textformat"
+        }
+    }
+
+    /// Maps an LSP `CompletionItemKind` integer to our badge category.
+    init(lspKind: Int) {
+        switch lspKind {
+        case 2, 3, 4: self = .function          // method, function, constructor
+        case 5, 6, 10: self = .variable         // field, variable, property
+        case 7, 8, 13, 22, 25: self = .type     // class, interface, enum, struct, typeParam
+        case 9: self = .module                  // module
+        case 14: self = .keyword                // keyword
+        case 15: self = .snippet                // snippet
+        case 12, 20, 21: self = .constant       // value, enumMember, constant
+        default: self = .text
+        }
+    }
+}
+
 /// One row in the completion popup. A plain identifier has `snippet == nil`;
 /// snippet rows carry the structure to expand.
 struct CompletionItem: Equatable {
     let label: String
     let detail: String?
     let snippet: CodeSnippet?
+    let kind: CompletionKind
 
-    init(label: String, detail: String? = nil, snippet: CodeSnippet? = nil) {
+    init(label: String, detail: String? = nil, snippet: CodeSnippet? = nil, kind: CompletionKind = .text) {
         self.label = label
         self.detail = detail
         self.snippet = snippet
+        self.kind = kind
     }
 }
 
