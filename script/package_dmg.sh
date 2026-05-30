@@ -64,10 +64,14 @@ if [[ -n "${BRISKEDIT_SPARKLE_PUBLIC_KEY:-}" ]]; then
   EXTRA_SETTINGS+=("BRISKEDIT_SPARKLE_PUBLIC_KEY=$BRISKEDIT_SPARKLE_PUBLIC_KEY")
 fi
 if [[ -n "${BRISKEDIT_SIGN_IDENTITY:-}" ]]; then
+  # Real Developer ID signing: enable Hardened Runtime (required for
+  # notarization; Library Validation passes because everything is signed
+  # with the same team).
   EXTRA_SETTINGS+=(
     "CODE_SIGN_STYLE=Manual"
     "CODE_SIGN_IDENTITY=$BRISKEDIT_SIGN_IDENTITY"
     "CODE_SIGNING_REQUIRED=YES"
+    "ENABLE_HARDENED_RUNTIME=YES"
   )
 fi
 
