@@ -9,7 +9,6 @@
 
 import Foundation
 
-@MainActor
 final class AppcastDelegate: NSObject, XMLParserDelegate {
     var enclosureURL: String?
     var channel: String?

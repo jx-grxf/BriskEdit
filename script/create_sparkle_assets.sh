@@ -34,13 +34,30 @@ rm -f "$ZIP"
 # Sparkle expects a flat zip with BriskEdit.app at the root.
 (cd dist && /usr/bin/ditto -c -k --sequesterRsrc --keepParent BriskEdit.app "sparkle/BriskEdit-${BRISKEDIT_VERSION}.zip")
 
-# Locate Sparkle's sign_update binary from SwiftPM cache.
-SIGN_UPDATE="$(find ~/Library/Developer/Xcode/DerivedData -type f -name sign_update 2>/dev/null | head -n 1 || true)"
+# Locate Sparkle's EdDSA sign_update binary. It ships as an SPM binary artifact
+# (.../SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update). The legacy
+# old_dsa_scripts/sign_update next to it produces DSA, not EdDSA — exclude it.
+DERIVED_DATA="${BRISKEDIT_DERIVED_DATA:-$PWD/.build/release-derived-data}"
+
+find_sign_update() {
+  local root sign
+  for root in \
+    "$DERIVED_DATA/SourcePackages/artifacts" \
+    "$HOME/Library/Developer/Xcode/DerivedData" \
+    "$HOME/Library/Caches/org.swift.swiftpm"; do
+    [[ -d "$root" ]] || continue
+    sign="$(find "$root" -type f -name sign_update 2>/dev/null | grep -v old_dsa_scripts | head -n 1 || true)"
+    if [[ -n "$sign" ]]; then
+      printf '%s' "$sign"
+      return 0
+    fi
+  done
+  return 1
+}
+
+SIGN_UPDATE="$(find_sign_update || true)"
 if [[ -z "$SIGN_UPDATE" ]]; then
-  SIGN_UPDATE="$(find ~/Library/Caches/org.swift.swiftpm -type f -name sign_update 2>/dev/null | head -n 1 || true)"
-fi
-if [[ -z "$SIGN_UPDATE" ]]; then
-  echo "error: Sparkle sign_update binary not found — build the app at least once so SPM resolves Sparkle" >&2
+  echo "error: Sparkle EdDSA sign_update binary not found — run script/package_dmg.sh first so SPM resolves Sparkle" >&2
   exit 1
 fi
 
@@ -48,7 +65,14 @@ KEY_FILE="$(mktemp)"
 trap 'rm -f "$KEY_FILE"' EXIT
 printf '%s' "$BRISKEDIT_SPARKLE_PRIVATE_KEY" > "$KEY_FILE"
 
+# sign_update prints e.g.: sparkle:edSignature="…" length="12345"
+# Extract just the signature so we don't emit a duplicate length attribute below.
 SIGNATURE_LINE="$("$SIGN_UPDATE" "$ZIP" -f "$KEY_FILE")"
+ED_SIGNATURE="$(printf '%s' "$SIGNATURE_LINE" | sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p')"
+if [[ -z "$ED_SIGNATURE" ]]; then
+  echo "error: could not parse edSignature from sign_update output: $SIGNATURE_LINE" >&2
+  exit 1
+fi
 LENGTH="$(stat -f%z "$ZIP")"
 PUBDATE="$(LC_ALL=en_US date -u "+%a, %d %b %Y %H:%M:%S +0000")"
 DOWNLOAD_URL="${BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX%/}/BriskEdit-${BRISKEDIT_VERSION}.zip"
@@ -72,7 +96,7 @@ cat > dist/sparkle/appcast.xml <<EOF
         url="${DOWNLOAD_URL}"
         length="${LENGTH}"
         type="application/octet-stream"
-        ${SIGNATURE_LINE} />
+        sparkle:edSignature="${ED_SIGNATURE}" />
     </item>
   </channel>
 </rss>

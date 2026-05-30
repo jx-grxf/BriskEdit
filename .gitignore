@@ -22,6 +22,7 @@ Packages/
 # Editor
 .vscode/
 .idea/
+.patchpilot/
 
 # Builds
 *.app
@@ -30,6 +31,7 @@ Packages/
 *.zip
 release/
 artifacts/
+dist/
 
 # Sparkle private keys must never be committed
 sparkle_private_key
@@ -37,3 +39,7 @@ sparkle_private_key
 
 # Logs
 *.log
+
+# Lokale Projektnotizen / Agenten-Kontext (nicht versionieren)
+Brain/
+CLAUDE.md
