@@ -16,7 +16,7 @@ settings:
     SWIFT_UPCOMING_FEATURE_REGION_BASED_ISOLATION: YES
     SWIFT_UPCOMING_FEATURE_INFERRED_SENDABLE_CAPTURES: YES
     ENABLE_USER_SCRIPT_SANDBOXING: NO
-    MARKETING_VERSION: "0.1.0"
+    MARKETING_VERSION: "0.1.1"
     CURRENT_PROJECT_VERSION: "1"
     # Sparkle public key is injected at release time (script/package_dmg.sh
     # passes BRISKEDIT_SPARKLE_PUBLIC_KEY=<key>). Default empty for dev builds.
@@ -56,7 +56,12 @@ targets:
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: NO
-        ENABLE_HARDENED_RUNTIME: YES
+        # Hardened Runtime erzwingt Library Validation (alle Frameworks brauchen
+        # dieselbe Team-ID). Bei ad-hoc-Signatur killt das die App, weil Sparkle
+        # vorsigniert mit eigener Team-ID kommt. Daher AUS für unsignierte
+        # Previews; package_dmg.sh schaltet es bei echtem Developer-ID-Signing
+        # (BRISKEDIT_SIGN_IDENTITY) wieder an — was Notarization ohnehin verlangt.
+        ENABLE_HARDENED_RUNTIME: NO
         COMBINE_HIDPI_IMAGES: YES
 
   BriskEditTests:
