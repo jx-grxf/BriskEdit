@@ -36,7 +36,7 @@ The point is the absence of bloat. No telemetry, no account, no LSP extension ma
 ## Showcase
 
 <p align="center">
-  <i>Screenshots land here with the first preview release.</i>
+  <img src=".github/assets/showcase.png" width="900" alt="BriskEdit editing a Swift file with the file tree, tabs, and integrated terminal" />
 </p>
 
 ## Install
