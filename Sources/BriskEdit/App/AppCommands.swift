@@ -4,6 +4,7 @@ import AppKit
 struct AppCommands: Commands {
     let updates: UpdateService
     @FocusedValue(\.workspace) private var workspace
+    @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -11,6 +12,11 @@ struct AppCommands: Commands {
                 workspace?.newUntitled()
             }
             .keyboardShortcut("n", modifiers: .command)
+
+            Button("New Window") {
+                openWindow(value: WindowKind.secondary(UUID()))
+            }
+            .keyboardShortcut("n", modifiers: [.command, .shift])
 
             Button("Open File…") {
                 openFile()

@@ -2,6 +2,8 @@
 
 # BriskEdit
 
+<img src=".github/assets/logo.png" width="140" height="140" alt="BriskEdit app icon" />
+
 A native macOS text editor for developers. Built in SwiftUI and AppKit, not Electron. Opens instantly, stays under 120 MB idle, runs your code from a button that just figures out the toolchain itself.
 
 [![CI](https://github.com/jx-grxf/BriskEdit/actions/workflows/ci.yml/badge.svg)](https://github.com/jx-grxf/BriskEdit/actions/workflows/ci.yml)

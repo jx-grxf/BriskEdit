@@ -4,7 +4,10 @@ BriskEdit runs entirely on the local machine. It does not send telemetry, analyt
 
 ## Reporting a Vulnerability
 
-Please report security issues privately by emailing **[redacted]** with the subject line `BriskEdit security`. Do **not** open a public issue for vulnerabilities.
+Report security issues through GitHub:
+
+- **Preferred — private report:** open the repository's **Security** tab and choose **“Report a vulnerability”** (GitHub private vulnerability reporting). This keeps the details confidential until a fix ships.
+- **Otherwise — open an issue:** if private reporting is unavailable to you, open a [GitHub issue](https://github.com/jx-grxf/BriskEdit/issues). In that case describe the impact but **do not include a working exploit or sensitive details** in the public thread — note that you have them and they will be requested privately.
 
 A response within 72 hours is the target. If a fix is shipped, the release notes will credit the reporter unless they request otherwise.
 

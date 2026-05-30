@@ -5,10 +5,17 @@ import SwiftUI
 /// the floating completion popup can be dismissed.
 final class BriskCodeTextView: NSTextView {
     var onResignFirstResponder: (() -> Void)?
+    var onBecomeFirstResponder: (() -> Void)?
 
     override func resignFirstResponder() -> Bool {
         onResignFirstResponder?()
         return super.resignFirstResponder()
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let became = super.becomeFirstResponder()
+        if became { onBecomeFirstResponder?() }
+        return became
     }
 }
 
@@ -16,7 +23,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
     @Bindable var document: TextDocument
     let theme: EditorTheme
 
-    func makeNSView(context: Context) -> NSScrollView {
+    func makeNSView(context: Context) -> NSView {
         let textView = BriskCodeTextView(usingTextLayoutManager: true)
         textView.delegate = context.coordinator
         textView.string = document.text
@@ -27,6 +34,11 @@ struct TextKit2EditorHost: NSViewRepresentable {
         textView.onResignFirstResponder = { [weak coordinator = context.coordinator] in
             coordinator?.dismissCompletions()
         }
+        // Returning to the editor (e.g. after committing in the terminal) should
+        // refresh the gutter's git diff, which is otherwise stale.
+        textView.onBecomeFirstResponder = { [weak coordinator = context.coordinator] in
+            coordinator?.scheduleGitDiff()
+        }
         context.coordinator.configurePopup()
 
         let scrollView = NSScrollView()
@@ -36,6 +48,14 @@ struct TextKit2EditorHost: NSViewRepresentable {
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
+        // The editor has its own `textContainerInset` for top spacing and never
+        // sits against the window title bar (it's below the tab strip), so it
+        // doesn't want AppKit auto-managing title-bar/toolbar content insets.
+        // NOTE: this does *not* fix the open-files tab strip vanishing on code
+        // tabs — that's the macOS 26 scroll-edge effect pulling this scroll view
+        // up under the bar, and is solved by pinning the strip as a
+        // `.safeAreaInset` in EditorTabsView, not here.
+        scrollView.automaticallyAdjustsContentInsets = false
         scrollView.documentView = textView
 
         textView.minSize = .zero
@@ -47,6 +67,40 @@ struct TextKit2EditorHost: NSViewRepresentable {
         textView.textContainer?.heightTracksTextView = false
         textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
 
+        // TextKit 2-native gutter as a sibling left of the scroll view — never
+        // an NSRulerView (which blanks the text). See TextKit2GutterView.
+        let gutter = TextKit2GutterView(theme: theme)
+        gutter.textView = textView
+        context.coordinator.gutter = gutter
+        context.coordinator.scrollView = scrollView
+
+        let container = NSView()
+        // Let SwiftUI own the container's frame (TAMIC = true, the AppKit
+        // default — same as the PDF/QuickLook preview hosts). Keeping this
+        // `false` left the container's *own* size undefined: its subviews are
+        // pinned to its edges, but nothing constrains its height, so SwiftUI
+        // measured it ambiguously and the editor overflowed upward — collapsing
+        // the open-files tab strip to zero height. Only the subviews use
+        // Auto Layout; they lay out inside whatever frame SwiftUI assigns.
+        gutter.translatesAutoresizingMaskIntoConstraints = false
+        scrollView.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(gutter)
+        container.addSubview(scrollView)
+        NSLayoutConstraint.activate([
+            gutter.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+            gutter.topAnchor.constraint(equalTo: container.topAnchor),
+            gutter.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            gutter.widthAnchor.constraint(equalToConstant: TextKit2GutterView.width),
+            scrollView.leadingAnchor.constraint(equalTo: gutter.trailingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scrollView.topAnchor.constraint(equalTo: container.topAnchor),
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+        ])
+
+        // Repaint the gutter as the text scrolls or the viewport resizes.
+        scrollView.contentView.postsBoundsChangedNotifications = true
+        context.coordinator.observeScroll(of: scrollView)
+
         context.coordinator.lastSyncedRevision = document.revision
         context.coordinator.applyHighlight()
         context.coordinator.warmUpLSP()
@@ -54,10 +108,10 @@ struct TextKit2EditorHost: NSViewRepresentable {
         DispatchQueue.main.async { [weak scrollView, weak textView] in
             scrollView?.window?.makeFirstResponder(textView)
         }
-        return scrollView
+        return container
     }
 
-    func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    func updateNSView(_ container: NSView, context: Context) {
         guard let textView = context.coordinator.textView else { return }
         let coordinator = context.coordinator
         coordinator.document = document
@@ -77,9 +131,23 @@ struct TextKit2EditorHost: NSViewRepresentable {
             coordinator.scheduleGitDiff()
         }
         coordinator.applyHighlight()
-        coordinator.ruler?.setTheme(theme)
-        coordinator.ruler?.setDiagnostics(document.diagnostics)
-        scrollView.backgroundColor = theme.background
+        coordinator.gutter?.setTheme(theme)
+        coordinator.gutter?.setDiagnostics(document.diagnostics)
+        coordinator.scrollView?.backgroundColor = theme.background
+    }
+
+    /// Report the *proposed* size as our fitting size instead of letting
+    /// SwiftUI fall back to the AppKit intrinsic/`fittingSize` measurement.
+    /// The container hosts a vertically-resizable `NSTextView` whose height
+    /// tracks the document's content, so its `fittingSize` is the full text
+    /// height. Without this, SwiftUI reads that oversized height, over-subscribes
+    /// the editor's row in the surrounding `VStack` and compresses the fixed-
+    /// height open-files tab strip above it to zero. Returning the proposal makes
+    /// the editor a fully flexible cell that fills whatever space SwiftUI grants,
+    /// exactly like the simple PDF/QuickLook preview hosts. See the Brain note
+    /// "Editor-ScrollView verschiebt Tab-Leiste".
+    func sizeThatFits(_ proposal: ProposedViewSize, nsView: NSView, context: Context) -> CGSize? {
+        proposal.replacingUnspecifiedDimensions()
     }
 
     func makeCoordinator() -> Coordinator {
@@ -119,11 +187,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
         var document: TextDocument
         var theme: EditorTheme
         weak var textView: NSTextView?
-        weak var ruler: LineNumberRulerView?
+        weak var gutter: TextKit2GutterView?
+        weak var scrollView: NSScrollView?
         private var highlightWork: DispatchWorkItem?
         private var gitWork: DispatchWorkItem?
         private var lspWork: DispatchWorkItem?
-        private var lspItems: [String] = []
+        private var lspItems: [LSPCompletion] = []
         private var lspDiagnosticsURI: String?
         var lastSyncedRevision = 0
         private let popup = CompletionPopup()
@@ -133,6 +202,29 @@ struct TextKit2EditorHost: NSViewRepresentable {
         init(document: TextDocument, theme: EditorTheme) {
             self.document = document
             self.theme = theme
+        }
+
+        deinit {
+            NotificationCenter.default.removeObserver(self)
+        }
+
+        /// Repaints the gutter on scroll/resize, and recomputes the git diff when
+        /// a git operation happens or the window regains focus (the diff would
+        /// otherwise go stale after an external commit/checkout).
+        func observeScroll(of scrollView: NSScrollView) {
+            let center = NotificationCenter.default
+            center.addObserver(self, selector: #selector(viewportChanged), name: NSView.boundsDidChangeNotification, object: scrollView.contentView)
+            center.addObserver(self, selector: #selector(viewportChanged), name: NSView.frameDidChangeNotification, object: scrollView)
+            center.addObserver(self, selector: #selector(gitMaybeChanged), name: .gitDidChange, object: nil)
+            center.addObserver(self, selector: #selector(gitMaybeChanged), name: NSWindow.didBecomeKeyNotification, object: nil)
+        }
+
+        @objc private func viewportChanged() {
+            gutter?.refresh()
+        }
+
+        @objc private func gitMaybeChanged() {
+            scheduleGitDiff()
         }
 
         func configurePopup() {
@@ -151,6 +243,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             scheduleGitDiff()
             scheduleLSP(in: textView)
             updateCompletionPopup(in: textView)
+            gutter?.refresh()
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -180,22 +273,27 @@ struct TextKit2EditorHost: NSViewRepresentable {
             func matches(_ label: String) -> Bool {
                 !label.isEmpty && (lowered.isEmpty || label.lowercased().hasPrefix(lowered)) && label != partial
             }
-            func add(_ words: [String], detail: String? = nil) {
+            func add(_ words: [String], detail: String? = nil, kind: CompletionKind = .text) {
                 for word in words where matches(word) {
-                    if seen.insert(word).inserted { ordered.append(CompletionItem(label: word, detail: detail)) }
+                    if seen.insert(word).inserted { ordered.append(CompletionItem(label: word, detail: detail, kind: kind)) }
                 }
             }
 
             // Snippets (for/while/do/if/switch/main/…) lead the list.
             for snippet in SnippetLibrary.snippets(for: document.language) where matches(snippet.trigger) {
                 if seen.insert(snippet.trigger).inserted {
-                    ordered.append(CompletionItem(label: snippet.trigger, detail: snippet.detail, snippet: snippet))
+                    ordered.append(CompletionItem(label: snippet.trigger, detail: snippet.detail, snippet: snippet, kind: .snippet))
                 }
             }
-            add(lspItems)
-            add(document.language.completionWords)
-            add(globalCompletionWords)
-            add(bufferSymbols(in: text, excluding: partial))
+            // Semantic results from the language server carry signature + kind.
+            for completion in lspItems where matches(completion.label) {
+                if seen.insert(completion.label).inserted {
+                    ordered.append(CompletionItem(label: completion.label, detail: completion.detail, kind: CompletionKind(lspKind: completion.kind)))
+                }
+            }
+            add(document.language.completionWords, kind: .keyword)
+            add(globalCompletionWords, kind: .keyword)
+            add(bufferSymbols(in: text, excluding: partial), kind: .variable)
             return Array(ordered.prefix(120))
         }
 
@@ -262,16 +360,14 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// for documents with no on-disk URL.
         func scheduleGitDiff() {
             gitWork?.cancel()
-            // No gutter currently attached (see gutter-textkit2-pitfall): skip the
-            // git work entirely instead of computing a diff nothing can show.
-            guard ruler != nil else { return }
-            guard document.fileURL != nil else { ruler?.setGitDiff(nil); return }
+            guard gutter != nil else { return }
+            guard document.fileURL != nil else { gutter?.setGitDiff(nil); return }
             let work = DispatchWorkItem { [weak self] in
                 guard let self, let tv = self.textView, let url = self.document.fileURL else { return }
                 let text = tv.string
                 Task { @MainActor [weak self] in
                     let diff = await GitService.diff(for: url, currentText: text)
-                    self?.ruler?.setGitDiff(diff)
+                    self?.gutter?.setGitDiff(diff)
                 }
             }
             gitWork = work

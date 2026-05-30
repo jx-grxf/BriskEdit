@@ -20,6 +20,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
         }
+        // Kill any language servers we spawned so they don't outlive the app.
+        LSPProcessRegistry.shared.terminateAll()
+    }
+
+    /// Right-click the Dock icon → "New Window". Routes through the SwiftUI
+    /// `openWindow` action captured by a live window.
+    func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
+        let menu = NSMenu()
+        let item = NSMenuItem(title: "New Window", action: #selector(newWindowFromDock), keyEquivalent: "")
+        item.target = self
+        menu.addItem(item)
+        return menu
+    }
+
+    /// Re-open a window when the user clicks the Dock icon with none open.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag { NewWindowCoordinator.shared.openNewWindow() }
+        return true
+    }
+
+    @objc private func newWindowFromDock() {
+        NewWindowCoordinator.shared.openNewWindow()
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

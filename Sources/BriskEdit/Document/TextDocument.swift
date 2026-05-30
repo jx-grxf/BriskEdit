@@ -20,6 +20,7 @@ final class TextDocument {
     private(set) var revision: Int = 0
     private var lineStartOffsets: [Int] = [0]
     private var lineIndexWork: DispatchWorkItem?
+    private var autosaveWork: DispatchWorkItem?
 
     var displayName: String {
         fileURL?.lastPathComponent ?? "Untitled"
@@ -59,6 +60,23 @@ final class TextDocument {
         revision &+= 1
         isDirty = true
         scheduleLineIndexRebuild()
+        scheduleAutosave()
+    }
+
+    /// "After delay" autosave: writes the buffer to disk ~1 s after the last
+    /// edit, when enabled and the document is file-backed. Untitled
+    /// documents are skipped (no path to write to, and we don't pop a panel mid-
+    /// typing). Plain save — no format-on-save, so the buffer isn't mutated while
+    /// the user is typing.
+    private func scheduleAutosave() {
+        autosaveWork?.cancel()
+        guard fileURL != nil, UserDefaults.standard.bool(forKey: "editor.autosave") else { return }
+        let work = DispatchWorkItem { [weak self] in
+            guard let self, self.isDirty, self.fileURL != nil else { return }
+            Task { @MainActor in try? await self.save() }
+        }
+        autosaveWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
     }
 
     /// Small files rebuild the line index immediately (exact Ln/Col); large files

@@ -18,6 +18,9 @@ settings:
     ENABLE_USER_SCRIPT_SANDBOXING: NO
     MARKETING_VERSION: "0.1.0"
     CURRENT_PROJECT_VERSION: "1"
+    # Sparkle public key is injected at release time (script/package_dmg.sh
+    # passes BRISKEDIT_SPARKLE_PUBLIC_KEY=<key>). Default empty for dev builds.
+    BRISKEDIT_SPARKLE_PUBLIC_KEY: ""
 
 packages:
   Sparkle:
@@ -40,14 +43,15 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.johannesgrof.briskedit
         PRODUCT_NAME: BriskEdit
+        # Generated Info.plist keys are merged on top of Config/Info.plist,
+        # which carries the custom Sparkle keys (SUFeedURL, SUPublicEDKey,
+        # SUEnableInstallerLauncherService) that INFOPLIST_KEY_* cannot express.
         GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_FILE: Config/Info.plist
         INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Johannes Grof"
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.developer-tools"
         INFOPLIST_KEY_CFBundleDisplayName: BriskEdit
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
-        INFOPLIST_KEY_SUFeedURL: "https://github.com/jx-grxf/BriskEdit/releases/latest/download/appcast.xml"
-        INFOPLIST_KEY_SUPublicEDKey: $(BRISKEDIT_SPARKLE_PUBLIC_KEY)
-        INFOPLIST_KEY_SUEnableInstallerLauncherService: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"

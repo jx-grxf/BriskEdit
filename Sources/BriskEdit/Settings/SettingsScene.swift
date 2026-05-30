@@ -59,7 +59,17 @@ private struct EditorPreferencesView: View {
                 }
                 Toggle("Insert spaces for tab", isOn: $prefs.usesSpacesForTabs)
             }
+            Section("Source Control") {
+                Toggle("Show git change bars in gutter", isOn: $prefs.showGitGutter)
+                Text("The colored bars next to the line numbers mark lines added, modified or deleted since the last commit.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("On Save") {
+                Toggle("Autosave after a short delay", isOn: $prefs.autosave)
+                Text("Writes the file to disk about a second after you stop typing. Only applies to files that already have a location.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Toggle("Format with installed tools", isOn: $prefs.formatOnSave)
                 Text("Runs clang-format, swift-format, gofmt, rustfmt, black or prettier if present on your PATH. Skipped silently when the tool isn't installed.")
                     .font(.caption)

@@ -24,6 +24,8 @@ struct EditorTheme: Sendable, Equatable {
     var gitDeleted: NSColor
     var tabWidth: Int
     var usesSpacesForTabs: Bool
+    /// Draw the green/orange/red git-change bars in the gutter. User-toggleable.
+    var showGitGutter: Bool = true
 
     var nsFont: NSFont {
         NSFont(name: fontName, size: fontSize) ?? .monospacedSystemFont(ofSize: fontSize, weight: .regular)

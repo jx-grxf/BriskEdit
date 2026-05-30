@@ -23,10 +23,21 @@ final class WorkspaceModel {
     /// When set, a native preview is shown in a resizable pane beside the editor.
     var splitPreviewKind: PreviewKind?
     let terminal = TerminalController()
+    /// Only the primary window persists its folder + open tabs to the shared
+    /// defaults; secondary windows are ephemeral so they never clobber the
+    /// session that gets restored on the next launch.
+    private var persistsSession = false
     private var childCache: [FileTreeCacheKey: [FileNode]] = [:]
     private var watchers: [EditorTab.ID: FileWatcher] = [:]
 
     init() {
+        WorkspaceRegistry.register(self)
+    }
+
+    /// Restores the last opened folder and file tabs. Called only for the
+    /// primary window; also flips on session persistence for this model.
+    func restoreWorkspace() async {
+        persistsSession = true
         if let path = UserDefaults.standard.string(forKey: Keys.lastWorkspaceRoot) {
             let url = URL(fileURLWithPath: path)
             if FileManager.default.fileExists(atPath: url.path) {
@@ -34,7 +45,7 @@ final class WorkspaceModel {
                 expandedDirectories = [url]
             }
         }
-        WorkspaceRegistry.register(self)
+        await restoreSession()
     }
 
     var hasUnsavedChanges: Bool {
@@ -109,6 +120,7 @@ final class WorkspaceModel {
     func closeTab(_ id: EditorTab.ID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         stopWatching(id)
+        releaseLSP(tabs[index])
         tabs.remove(at: index)
         if activeTabID == id {
             let fallback = tabs.indices.contains(index) ? tabs[index] : tabs.last
@@ -190,7 +202,9 @@ final class WorkspaceModel {
         expandedDirectories = [url]
         childCache.removeAll(keepingCapacity: true)
         reloadToken = UUID()
-        UserDefaults.standard.set(url.path, forKey: Keys.lastWorkspaceRoot)
+        if persistsSession {
+            UserDefaults.standard.set(url.path, forKey: Keys.lastWorkspaceRoot)
+        }
     }
 
     func closeFolder() {
@@ -200,7 +214,9 @@ final class WorkspaceModel {
         childCache.removeAll(keepingCapacity: true)
         splitPreviewKind = nil
         reloadToken = UUID()
-        UserDefaults.standard.removeObject(forKey: Keys.lastWorkspaceRoot)
+        if persistsSession {
+            UserDefaults.standard.removeObject(forKey: Keys.lastWorkspaceRoot)
+        }
     }
 
     func refreshFileTree() {
@@ -311,6 +327,19 @@ final class WorkspaceModel {
         watchers[id] = nil
     }
 
+    /// Unregisters the closed tab from the language server: drops its diagnostics
+    /// handler and sends `didClose`. Only for file-backed tabs with an LSP.
+    private func releaseLSP(_ tab: EditorTab) {
+        guard tab.previewKind == nil, let url = tab.document.fileURL,
+              LSPService.config(for: tab.document.language) != nil else { return }
+        // Skip if the same file is still open in another tab of this window.
+        if tabs.contains(where: { $0.id != tab.id && $0.document.fileURL == url }) { return }
+        let uri = url.absoluteString
+        let language = tab.document.language
+        LSPDiagnosticsBus.shared.removeHandler(uri: uri)
+        Task { await LSPService.shared.didClose(language: language, uri: uri) }
+    }
+
     /// Reloads a clean buffer from disk; flags a dirty buffer for the reload
     /// banner instead of clobbering unsaved edits. Our own saves land here too,
     /// but disk == buffer then, so they're a no-op.
@@ -353,6 +382,7 @@ final class WorkspaceModel {
     /// them. Untitled (URL-less) and the encoding of each tab are intentionally
     /// not persisted — only on-disk files come back.
     private func persistSession() {
+        guard persistsSession else { return }
         let defaults = UserDefaults.standard
         defaults.set(tabs.compactMap { $0.document.fileURL?.path }, forKey: Keys.openSessionFiles)
         if let activePath = activeTab?.document.fileURL?.path {
@@ -364,15 +394,13 @@ final class WorkspaceModel {
 
     // MARK: - File operations
 
-    /// Folder the user is "in": the selected directory, the parent of the
-    /// selected file, or the workspace root.
+    /// Folder a new file/folder lands in: the selected directory, the parent of
+    /// the selected file, or — when nothing is selected (e.g. the user clicked
+    /// the empty area of the file tree) — the workspace root.
     var currentDirectory: URL? {
         if let selected = selectedSidebarURL {
             let isDirectory = (try? selected.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
             return isDirectory ? selected : selected.deletingLastPathComponent()
-        }
-        if let fileURL = activeTab?.document.fileURL {
-            return fileURL.deletingLastPathComponent()
         }
         return rootURL
     }
@@ -391,6 +419,25 @@ final class WorkspaceModel {
             refreshFileTree()
             selectedSidebarURL = url
             Task { await openFile(at: url) }
+        } catch {
+            lastError = "Could not create \(name): \(error.localizedDescription)"
+        }
+    }
+
+    func promptNewFolder(in directory: URL? = nil) {
+        guard let dir = directory ?? currentDirectory else { return }
+        guard let name = promptForName(title: "New Folder", message: "Create a folder in “\(dir.lastPathComponent)”", placeholder: "untitled folder", defaultValue: "") else { return }
+        let url = dir.appendingPathComponent(name, isDirectory: true)
+        guard !FileManager.default.fileExists(atPath: url.path) else {
+            lastError = "“\(name)” already exists."
+            return
+        }
+        do {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+            expandedDirectories.insert(dir)
+            expandedDirectories.insert(url)
+            refreshFileTree()
+            selectedSidebarURL = url
         } catch {
             lastError = "Could not create \(name): \(error.localizedDescription)"
         }

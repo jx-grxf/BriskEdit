@@ -1,29 +1,28 @@
 # Release Notes
 
-## 0.1.0 — unreleased preview
+## 0.1.0 — first public preview
 
-First public scaffold. Not yet a usable editor for daily work.
+The first public build of BriskEdit. An unsigned developer preview — on first launch, right-click `BriskEdit.app` → **Open** → confirm. Developer ID notarization is queued for a later release.
 
 ### What works
 
-- App shell, single-window workspace with `NavigationSplitView`.
-- Open file / open folder, recent tabs, basic file tree sidebar.
-- `NSTextView` editor with TextKit 2 backing and a custom line-number gutter.
-- Tab-to-spaces, configurable tab width, font size in Settings.
-- Find bar (`⌘F`) via the standard AppKit find UI.
-- Command Palette (`⇧⌘P`).
-- Save / Save As… with encoding round-trip.
-- Sparkle update channel selector (stable / beta), wiring in place, no published feed yet.
+- **Instant editor.** TextKit 2 `NSTextView`, no launch-time indexing. Large files open without freezing the UI.
+- **Workspace.** Open a folder, file-tree sidebar, persistent tabs, session restore for the primary window, multi-window support.
+- **Gutter.** Line numbers, live git change bars (added / modified / deleted), and inline diagnostics markers — drawn by a TextKit 2-native gutter.
+- **Source Control sidebar.** Branch switch / create, fetch · pull · push with ahead/behind counts, stage / unstage / discard, and a commit box — all through your own `git`.
+- **Run from a button.** Detects the toolchain for the active file (clang/gcc, swiftc/SwiftPM, python3, node/deno, cargo/rustc, go) and runs it in the integrated terminal. No `tasks.json`.
+- **Integrated terminal.** SwiftTerm-backed, real zsh, cwd follows the workspace root, terminated cleanly on quit.
+- **Markdown preview** as a live, scroll-synced, sanitized split.
+- **Code intelligence from installed tools.** Completion and live diagnostics via the language servers already on your machine (clangd, sourcekit-lsp, gopls, pyright, rust-analyzer, typescript-language-server). Rich completion popup with kind badges and signatures. A zero-config `Check File` (⌘B) syntax-checks C/C++/Swift without a server. Servers are terminated on quit and on tab close.
+- **Find / replace** in-file (regex) and in-folder (respecting `.gitignore`), Command Palette (⇧⌘P) and fuzzy Go-to-File (⌘P).
+- **Format-on-save** with your installed formatter, optional after-delay autosave, and live reload when a file changes on disk.
+- **Native macOS.** Menus, Settings scene, Quick Look / PDF preview hosts, Sparkle updates with stable / beta channels.
 
 ### Known gaps
 
-- No syntax highlighting yet (Tree-sitter lands in MVP-1).
-- No integrated terminal yet (SwiftTerm lands in MVP-1).
-- No Markdown preview yet (lands in MVP-1).
-- No Run button yet (lands in MVP-1).
-- No external file-change reload (FSEvents lands in MVP-1).
-- Find-in-folder is in-file only.
+- No syntax highlighting theme engine yet (Tree-sitter is on the roadmap).
 - Multi-cursor and column selection are not implemented.
+- The app is not yet notarized; Gatekeeper requires the right-click → Open step on first launch.
 
 ### Compatibility
 
