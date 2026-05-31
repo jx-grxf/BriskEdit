@@ -26,6 +26,15 @@ final class TextKit2GutterView: NSView {
 
     override var isFlipped: Bool { true }
 
+    /// Repaint whenever Auto Layout (re)positions the gutter. The scroll view
+    /// reaches its real size a layout pass *after* the editor first appears
+    /// (tab switch, restored session); without this hook the gutter could draw
+    /// once against a zero-height viewport and never get asked to redraw.
+    override func layout() {
+        super.layout()
+        needsDisplay = true
+    }
+
     // MARK: - Inputs
 
     func setTheme(_ theme: EditorTheme) {
@@ -60,7 +69,19 @@ final class TextKit2GutterView: NSView {
         guard let textView, let tlm = textView.textLayoutManager else { return }
         let inset = textView.textContainerInset.height
         let visible = textView.visibleRect
-        guard visible.height > 0 else { return }
+        // The viewport can momentarily report zero height *mid-relayout* (a tab
+        // becoming visible, a restored session, the window activating). Painting
+        // now would commit a blank gutter — and because nothing re-marks us for
+        // display afterwards, it would stay blank until the next unrelated edit
+        // or scroll. So when we're attached to a window but the viewport isn't
+        // measured yet, skip this paint and ask for another once layout settles
+        // instead of leaving an empty gutter behind.
+        guard visible.height > 0 else {
+            if window != nil {
+                DispatchQueue.main.async { [weak self] in self?.needsDisplay = true }
+            }
+            return
+        }
 
         let nsString = textView.string as NSString
         let numberFont = NSFont.monospacedDigitSystemFont(ofSize: max(9, theme.fontSize - 1), weight: .regular)
