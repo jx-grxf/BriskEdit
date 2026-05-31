@@ -30,7 +30,10 @@ private struct UpdatePreferencesView: View {
                 .pickerStyle(.segmented)
             }
             Section("Automatic checks") {
-                Toggle("Check automatically", isOn: $updates.automaticallyChecksForUpdates)
+                Toggle("Check for updates automatically", isOn: $updates.automaticallyChecksForUpdates)
+                Text("On by default — BriskEdit checks in the background and on launch. Turn this off to only check manually.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 if let date = updates.lastCheckDate {
                     LabeledContent("Last check", value: date.formatted(date: .abbreviated, time: .shortened))
                 }

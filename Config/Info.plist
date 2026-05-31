@@ -8,5 +8,9 @@
 	<string>$(BRISKEDIT_SPARKLE_PUBLIC_KEY)</string>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
+	<key>SUEnableAutomaticChecks</key>
+	<true/>
+	<key>SUScheduledCheckInterval</key>
+	<integer>3600</integer>
 </dict>
 </plist>
