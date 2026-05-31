@@ -75,15 +75,37 @@ struct AppCommands: Commands {
 
             Divider()
 
-            Button("Toggle Terminal") {
-                workspace?.showTerminal.toggle()
-            }
-            .keyboardShortcut("`", modifiers: .control)
-
             Button("Toggle Markdown Preview") {
                 workspace?.showMarkdownPreview.toggle()
             }
             .keyboardShortcut("m", modifiers: [.command, .shift])
+        }
+
+        CommandMenu("Terminal") {
+            Button("New Terminal") {
+                workspace?.openNewTerminal()
+            }
+            .keyboardShortcut("`", modifiers: [.control, .shift])
+            .disabled(workspace == nil)
+
+            Button(workspace?.showTerminal == true ? "Hide Terminal" : "Show Terminal") {
+                workspace?.toggleTerminal()
+            }
+            .keyboardShortcut("`", modifiers: .control)
+            .disabled(workspace == nil)
+
+            Divider()
+
+            Button("Clear Terminal") {
+                workspace?.activeTerminal?.clear()
+            }
+            .disabled(workspace?.activeTerminal == nil)
+
+            Button("Close Terminal Session") {
+                workspace?.closeActiveTerminal()
+            }
+            .keyboardShortcut("w", modifiers: [.control, .shift])
+            .disabled(workspace?.activeTerminal == nil)
         }
 
         CommandGroup(after: .appInfo) {
