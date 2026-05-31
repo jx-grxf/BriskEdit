@@ -4,10 +4,18 @@ import SwiftUI
 struct EditorTabsView: View {
     @Bindable var workspace: WorkspaceModel
     @Environment(Preferences.self) private var preferences
-    @SceneStorage("workspace.terminalHeight") private var terminalHeight: Double = 260
+    @SceneStorage("workspace.terminalHeight") private var storedTerminalHeight: Double = 260
     @State private var terminalResizeStart: Double?
-    @SceneStorage("workspace.previewSplitWidth") private var previewSplitWidth: Double = 400
+    /// Live drag value. While the handle is dragged we update this transient
+    /// state every frame and only write `SceneStorage` once on release — writing
+    /// the persisted store on every frame was what made the resize lag/stutter.
+    @State private var liveTerminalHeight: Double?
+    @SceneStorage("workspace.previewSplitWidth") private var storedPreviewSplitWidth: Double = 400
     @State private var previewResizeStart: Double?
+    @State private var livePreviewSplitWidth: Double?
+
+    private var terminalHeight: Double { liveTerminalHeight ?? storedTerminalHeight }
+    private var previewSplitWidth: Double { livePreviewSplitWidth ?? storedPreviewSplitWidth }
 
     var body: some View {
         editorArea
@@ -85,9 +93,13 @@ struct EditorTabsView: View {
                 let start = previewResizeStart ?? previewSplitWidth
                 previewResizeStart = start
                 let proposed = start - Double(value.translation.width)
-                previewSplitWidth = Double(min(max(CGFloat(proposed), 240), max(280, maxWidth)))
+                livePreviewSplitWidth = Double(min(max(CGFloat(proposed), 240), max(280, maxWidth)))
             }
-            .onEnded { _ in previewResizeStart = nil }
+            .onEnded { _ in
+                if let live = livePreviewSplitWidth { storedPreviewSplitWidth = live }
+                previewResizeStart = nil
+                livePreviewSplitWidth = nil
+            }
     }
 
     private func clampedTerminalHeight(maxHeight: CGFloat) -> CGFloat {
@@ -100,10 +112,12 @@ struct EditorTabsView: View {
                 let start = terminalResizeStart ?? terminalHeight
                 terminalResizeStart = start
                 let proposed = start - Double(value.translation.height)
-                terminalHeight = Double(min(max(CGFloat(proposed), 140), max(180, maxHeight)))
+                liveTerminalHeight = Double(min(max(CGFloat(proposed), 140), max(180, maxHeight)))
             }
             .onEnded { _ in
+                if let live = liveTerminalHeight { storedTerminalHeight = live }
                 terminalResizeStart = nil
+                liveTerminalHeight = nil
             }
     }
 

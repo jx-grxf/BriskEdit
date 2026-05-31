@@ -22,7 +22,10 @@ final class WorkspaceModel {
     var expandedDirectories: Set<URL> = []
     /// When set, a native preview is shown in a resizable pane beside the editor.
     var splitPreviewKind: PreviewKind?
-    let terminal = TerminalController()
+    /// Open terminal sessions (VS Code-style). Each stays alive while the panel
+    /// is shown; the list lets the user add, switch and close them.
+    var terminals: [TerminalController] = []
+    var activeTerminalID: TerminalController.ID?
     /// Only the primary window persists its folder + open tabs to the shared
     /// defaults; secondary windows are ephemeral so they never clobber the
     /// session that gets restored on the next launch.
@@ -202,6 +205,7 @@ final class WorkspaceModel {
         expandedDirectories = [url]
         childCache.removeAll(keepingCapacity: true)
         reloadToken = UUID()
+        activeTerminal?.relocate(to: url)
         if persistsSession {
             UserDefaults.standard.set(url.path, forKey: Keys.lastWorkspaceRoot)
         }
@@ -264,8 +268,60 @@ final class WorkspaceModel {
 
     func runActiveDocument() {
         showTerminal = true
-        terminal.runActiveDocument(activeTab?.document, workspaceRoot: rootURL)
+        ensureTerminal().runActiveDocument(activeTab?.document, workspaceRoot: rootURL)
         Task { await checkActiveDocument() }
+    }
+
+    // MARK: - Terminal sessions
+
+    var activeTerminal: TerminalController? {
+        if let id = activeTerminalID, let match = terminals.first(where: { $0.id == id }) {
+            return match
+        }
+        return terminals.first
+    }
+
+    /// Returns the active session, creating the first one on demand.
+    @discardableResult
+    func ensureTerminal() -> TerminalController {
+        if let active = activeTerminal { return active }
+        return addTerminal()
+    }
+
+    @discardableResult
+    func addTerminal() -> TerminalController {
+        let controller = TerminalController()
+        controller.name = nextTerminalName()
+        terminals.append(controller)
+        activeTerminalID = controller.id
+        controller.startShell(cwd: rootURL)
+        return controller
+    }
+
+    func selectTerminal(_ id: TerminalController.ID) {
+        guard terminals.contains(where: { $0.id == id }) else { return }
+        activeTerminalID = id
+    }
+
+    func closeTerminal(_ id: TerminalController.ID) {
+        guard let index = terminals.firstIndex(where: { $0.id == id }) else { return }
+        terminals.remove(at: index)
+        if activeTerminalID == id {
+            let fallback = min(index, terminals.count - 1)
+            activeTerminalID = terminals.indices.contains(fallback) ? terminals[fallback].id : nil
+        }
+    }
+
+    /// Names sessions zsh, zsh 2, zsh 3 … reusing the lowest free number so the
+    /// list stays tidy after closing tabs in the middle.
+    private func nextTerminalName() -> String {
+        let base = (ProcessInfo.processInfo.environment["SHELL"]
+            .map { URL(fileURLWithPath: $0).lastPathComponent }) ?? "zsh"
+        let used = Set(terminals.map(\.name))
+        if !used.contains(base) { return base }
+        var n = 2
+        while used.contains("\(base) \(n)") { n += 1 }
+        return "\(base) \(n)"
     }
 
     /// Runs the configured on-save formatter over the buffer, if enabled and a

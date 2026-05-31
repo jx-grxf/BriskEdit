@@ -18,10 +18,14 @@ struct FileNode: Identifiable, Hashable, Sendable {
 
     static func children(of url: URL, includeHidden: Bool = false) -> [FileNode] {
         let fm = FileManager.default
+        // Never pass `.skipsHiddenFiles`: it drops every dotfile at the
+        // FileManager layer before `shouldHide` can decide. We want meaningful
+        // dotfiles (.github, .gitignore, …) visible by default — `shouldHide`
+        // does the filtering instead.
         guard let entries = try? fm.contentsOfDirectory(
             at: url,
             includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey],
-            options: includeHidden ? [.skipsPackageDescendants] : [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsPackageDescendants]
         ) else {
             return []
         }
@@ -43,7 +47,7 @@ struct FileNode: Identifiable, Hashable, Sendable {
         guard let enumerator = fm.enumerator(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey, .isHiddenKey],
-            options: includeHidden ? [.skipsPackageDescendants] : [.skipsHiddenFiles, .skipsPackageDescendants]
+            options: [.skipsPackageDescendants]
         ) else {
             return []
         }
@@ -83,22 +87,30 @@ struct FileNode: Identifiable, Hashable, Sendable {
 
     static func shouldHide(url: URL, includeHidden: Bool = false) -> Bool {
         let name = url.lastPathComponent
-        if alwaysHiddenDirectoryNames.contains(name) { return true }
-        if !includeHidden, name.hasPrefix(".") { return true }
+        // VCS metadata and macOS noise stay hidden even with "Hidden" on — they
+        // are never useful to browse.
+        if alwaysHiddenNames.contains(name) { return true }
+        // "Hidden" toggle = show everything else: dotfiles *and* heavy build /
+        // dependency output (.build, build, dist, node_modules, …), mirroring
+        // how VS Code surfaces (greyed) git-ignored entries.
+        if includeHidden { return false }
+        // Default view: keep meaningful dotfiles (.github, .gitignore, …) but
+        // suppress generated / dependency directories and build noise.
         if hiddenDirectoryNames.contains(name) { return true }
         for suffix in hiddenSuffixes where name.hasSuffix(suffix) { return true }
         return false
     }
 
-    private static let alwaysHiddenDirectoryNames: Set<String> = [
-        ".git", ".svn", ".hg", ".build"
+    private static let alwaysHiddenNames: Set<String> = [
+        ".git", ".svn", ".hg", ".DS_Store"
     ]
 
     private static let hiddenDirectoryNames: Set<String> = [
-        "build", "dist", "out", "bin", "obj",
+        ".build", "build", "dist", "out", "bin", "obj",
         "DerivedData", "Pods", "Carthage",
         "node_modules", "bower_components",
-        "__pycache__", "venv", "env",
+        "__pycache__", ".venv", "venv", "env",
+        ".tox", ".next", ".turbo",
         "target", "vendor", "coverage", "tmp", "temp"
     ]
 

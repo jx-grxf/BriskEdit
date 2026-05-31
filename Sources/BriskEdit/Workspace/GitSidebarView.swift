@@ -169,6 +169,11 @@ struct GitSidebarView: View {
             } description: {
                 Text(status == nil ? "This folder isn't tracked by git." : "Your working tree is clean.")
             }
+            // Fill the column so the header stays pinned to the top. Without an
+            // explicit greedy frame the empty-state view only claims its
+            // intrinsic height, the whole sidebar VStack collapses, and the
+            // split view centers it — leaving a large gap above the header.
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 

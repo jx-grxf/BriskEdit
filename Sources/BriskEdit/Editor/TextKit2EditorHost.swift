@@ -115,13 +115,25 @@ struct TextKit2EditorHost: NSViewRepresentable {
         guard let textView = context.coordinator.textView else { return }
         let coordinator = context.coordinator
         coordinator.document = document
+        let themeChanged = coordinator.theme != theme
         coordinator.theme = theme
 
-        configure(textView, theme: theme)
+        // Re-applying the text view's static config (font, paragraph style,
+        // container inset) forces a full TextKit 2 relayout. Running it on every
+        // keystroke and cursor move made the viewport briefly mis-measure its
+        // height and overscroll past the document end — the editor "jumped" and
+        // line numbers slid off-screen. Only reconfigure when the theme actually
+        // changed; everything `configure` sets is otherwise constant.
+        if themeChanged {
+            configure(textView, theme: theme)
+            coordinator.scrollView?.backgroundColor = theme.background
+            coordinator.gutter?.setTheme(theme)
+        }
 
         // Only touch the (potentially huge) text when the change came from
         // outside this editor — detected via the cheap revision counter rather
         // than comparing whole strings on every cursor move.
+        var didReseed = false
         if document.revision != coordinator.lastSyncedRevision {
             let selection = textView.selectedRange()
             let newText = document.text
@@ -129,11 +141,14 @@ struct TextKit2EditorHost: NSViewRepresentable {
             textView.setSelectedRange(NSRange(location: min(selection.location, (newText as NSString).length), length: 0))
             coordinator.lastSyncedRevision = document.revision
             coordinator.scheduleGitDiff()
+            didReseed = true
         }
-        coordinator.applyHighlight()
-        coordinator.gutter?.setTheme(theme)
+        // In-editor edits drive their own debounced re-highlight; only re-run it
+        // here for an external re-seed or a theme switch.
+        if didReseed || themeChanged {
+            coordinator.applyHighlight()
+        }
         coordinator.gutter?.setDiagnostics(document.diagnostics)
-        coordinator.scrollView?.backgroundColor = theme.background
     }
 
     /// Report the *proposed* size as our fitting size instead of letting
@@ -225,6 +240,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         @objc private func gitMaybeChanged() {
             scheduleGitDiff()
+            // Window reactivation can land on a gutter that was painted blank
+            // while the window was inactive — repaint it too.
+            gutter?.refresh()
         }
 
         func configurePopup() {

@@ -16,11 +16,15 @@ settings:
     SWIFT_UPCOMING_FEATURE_REGION_BASED_ISOLATION: YES
     SWIFT_UPCOMING_FEATURE_INFERRED_SENDABLE_CAPTURES: YES
     ENABLE_USER_SCRIPT_SANDBOXING: NO
-    MARKETING_VERSION: "0.1.1"
+    MARKETING_VERSION: "0.2.0"
     CURRENT_PROJECT_VERSION: "1"
-    # Sparkle public key is injected at release time (script/package_dmg.sh
-    # passes BRISKEDIT_SPARKLE_PUBLIC_KEY=<key>). Default empty for dev builds.
-    BRISKEDIT_SPARKLE_PUBLIC_KEY: ""
+    # Sparkle EdDSA public key (NOT secret — it ships in every binary). This is
+    # the project's canonical release key; the matching private key lives only in
+    # GitHub secrets and signs the appcast. Hardcoding the default here means every
+    # build path (build_and_run.sh, plain xcodebuild, CI) embeds a valid key, so
+    # the updater always starts and can verify downloaded releases. CI still
+    # overrides it via BRISKEDIT_SPARKLE_PUBLIC_KEY (same value).
+    BRISKEDIT_SPARKLE_PUBLIC_KEY: "17gHGJ4Uk9XDRql8JYoVK+RMPPlB+zPQDSOBNbyvs1k="
 
 packages:
   Sparkle:
