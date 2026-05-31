@@ -46,3 +46,7 @@ CLAUDE.md
 
 # Coverage
 *.profraw
+
+# Tooling scratch dirs (not versioned)
+.commandcode
+.claude/
