@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Observation
 import SwiftUI
@@ -33,6 +34,14 @@ final class Preferences {
     var autosave: Bool {
         didSet { persist() }
     }
+    /// Font used by the integrated terminal. Defaults to the Nerd Font most
+    /// users set in Terminal.app so glyphs/powerline prompts render correctly.
+    var terminalFontName: String {
+        didSet { persist() }
+    }
+    var terminalFontSize: CGFloat {
+        didSet { persist() }
+    }
 
     init() {
         let defaults = UserDefaults.standard
@@ -43,6 +52,29 @@ final class Preferences {
         self.formatOnSave = defaults.bool(forKey: Keys.formatOnSave)
         self.showGitGutter = defaults.object(forKey: Keys.showGitGutter) as? Bool ?? true
         self.autosave = defaults.bool(forKey: Keys.autosave)
+        self.terminalFontName = defaults.string(forKey: Keys.terminalFontName) ?? "MesloLGS Nerd Font"
+        self.terminalFontSize = CGFloat(defaults.double(forKey: Keys.terminalFontSize).nonZero ?? 14)
+    }
+
+    /// Resolves the configured terminal font, falling back to the system
+    /// monospaced face when the named font isn't installed. Accepts both
+    /// PostScript names (`MesloLGSNerdFont-Regular`) and the family name shown
+    /// in Terminal.app's profile (`MesloLGS Nerd Font`).
+    var terminalFont: NSFont {
+        Self.resolveFont(named: terminalFontName, size: terminalFontSize)
+    }
+
+    static func resolveFont(named name: String, size: CGFloat) -> NSFont {
+        if let exact = NSFont(name: name, size: size) {
+            return exact
+        }
+        // Terminal.app shows the *family* name; map it to the regular face.
+        if let fromFamily = NSFontManager.shared.font(
+            withFamily: name, traits: [], weight: 5, size: size
+        ) {
+            return fromFamily
+        }
+        return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
     var editorTheme: EditorTheme {
@@ -64,6 +96,8 @@ final class Preferences {
         defaults.set(formatOnSave, forKey: Keys.formatOnSave)
         defaults.set(showGitGutter, forKey: Keys.showGitGutter)
         defaults.set(autosave, forKey: Keys.autosave)
+        defaults.set(terminalFontName, forKey: Keys.terminalFontName)
+        defaults.set(Double(terminalFontSize), forKey: Keys.terminalFontSize)
     }
 
     private enum Keys {
@@ -74,6 +108,8 @@ final class Preferences {
         static let formatOnSave = "editor.formatOnSave"
         static let showGitGutter = "editor.showGitGutter"
         static let autosave = "editor.autosave"
+        static let terminalFontName = "terminal.fontName"
+        static let terminalFontSize = "terminal.fontSize"
     }
 }
 

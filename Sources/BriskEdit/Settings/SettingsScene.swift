@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct SettingsScene: View {
@@ -5,10 +6,12 @@ struct SettingsScene: View {
         TabView {
             EditorPreferencesView()
                 .tabItem { Label("Editor", systemImage: "text.cursor") }
+            TerminalPreferencesView()
+                .tabItem { Label("Terminal", systemImage: "terminal") }
             UpdatePreferencesView()
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
         }
-        .frame(width: 480, height: 320)
+        .frame(width: 480, height: 340)
     }
 }
 
@@ -34,6 +37,31 @@ private struct UpdatePreferencesView: View {
             }
             Section {
                 Button("Check Now") { updates.checkForUpdates() }
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+    }
+}
+
+private struct TerminalPreferencesView: View {
+    @Environment(Preferences.self) private var preferences
+
+    var body: some View {
+        @Bindable var prefs = preferences
+        Form {
+            Section("Font") {
+                TextField("Font name", text: $prefs.terminalFontName)
+                Stepper(value: $prefs.terminalFontSize, in: 9...28, step: 1) {
+                    Text("Size: \(Int(prefs.terminalFontSize)) pt")
+                }
+                let installed = NSFont(name: prefs.terminalFontName, size: prefs.terminalFontSize) != nil
+                    || NSFontManager.shared.availableFontFamilies.contains(prefs.terminalFontName)
+                Text(installed
+                    ? "Match your Terminal.app profile, e.g. “MesloLGS Nerd Font”, so powerline prompts and glyphs render correctly."
+                    : "“\(prefs.terminalFontName)” isn't installed — falling back to the system monospaced font.")
+                    .font(.caption)
+                    .foregroundStyle(installed ? Color.secondary : Color.orange)
             }
         }
         .formStyle(.grouped)

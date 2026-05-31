@@ -8,7 +8,11 @@ struct TerminalInputRequest: Equatable, Sendable {
 
 @MainActor
 @Observable
-final class TerminalController {
+final class TerminalController: Identifiable {
+    let id = UUID()
+    /// Stable label shown in the session list (the toolbar title may be
+    /// overwritten by the shell via OSC, so the list uses this instead).
+    var name: String = "zsh"
     var title: String = "Terminal"
     var isRunning: Bool = false
     var currentDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
@@ -47,6 +51,18 @@ final class TerminalController {
         title = shellDisplayName
         isRunning = true
         restartToken = UUID()
+    }
+
+    /// Called when the workspace switches to a different root folder. Points the
+    /// terminal at the new directory; if a shell is already running it is
+    /// restarted there so the prompt lands in the freshly opened folder.
+    func relocate(to url: URL?) {
+        guard let url, url != currentDirectory else { return }
+        currentDirectory = url
+        if isRunning {
+            title = shellDisplayName
+            restartToken = UUID()
+        }
     }
 
     func send(_ text: String) {
