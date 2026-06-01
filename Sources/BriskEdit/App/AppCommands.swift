@@ -55,6 +55,12 @@ struct AppCommands: Commands {
                 workspace?.showCommandPalette = true
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
+
+            Button("Find in Files…") {
+                workspace?.revealSearch()
+            }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(workspace?.rootURL == nil)
         }
 
         CommandMenu("View") {

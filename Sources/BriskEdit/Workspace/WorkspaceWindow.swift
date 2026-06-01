@@ -4,7 +4,6 @@ import SwiftUI
 struct WorkspaceWindow: View {
     let kind: WindowKind
     @State private var workspace = WorkspaceModel()
-    @State private var sidebarTab: SidebarTab = .files
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @Environment(Preferences.self) private var preferences
     @Environment(UpdateService.self) private var updates
@@ -76,8 +75,9 @@ struct WorkspaceWindow: View {
     private var sidebar: some View {
         if let root = workspace.rootURL {
             VStack(spacing: 0) {
-                Picker("", selection: $sidebarTab) {
+                Picker("", selection: Bindable(workspace).sidebarTab) {
                     Image(systemName: "folder").tag(SidebarTab.files)
+                    Image(systemName: "magnifyingglass").tag(SidebarTab.search)
                     Image(systemName: "arrow.triangle.branch").tag(SidebarTab.sourceControl)
                 }
                 .pickerStyle(.segmented)
@@ -85,9 +85,11 @@ struct WorkspaceWindow: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 Divider()
-                switch sidebarTab {
+                switch workspace.sidebarTab {
                 case .files:
                     FileTreeView(root: root, workspace: workspace)
+                case .search:
+                    SearchSidebarView(workspace: workspace)
                 case .sourceControl:
                     GitSidebarView(workspace: workspace, root: root)
                 }

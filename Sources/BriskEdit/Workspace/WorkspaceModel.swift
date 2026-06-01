@@ -17,6 +17,18 @@ final class WorkspaceModel {
     var reloadToken = UUID()
     var selectedSidebarURL: URL?
     var lastError: String?
+    /// Which sidebar pane is shown (files / search / source control). Lives here
+    /// so menu commands can switch to it (e.g. Find in Files focuses search).
+    var sidebarTab: SidebarTab = .files
+
+    // MARK: - Project search (Find in Files)
+    var searchQuery = SearchQuery(text: "")
+    var searchReplacement = ""
+    var searchResults: [SearchFileResult] = []
+    var isSearching = false
+    /// Bumped to ask the search sidebar to focus its input field.
+    var focusSearchToken = 0
+    private var searchTask: Task<Void, Never>?
     /// Directories the user has expanded in the file tree — kept here (not in
     /// per-row @State) so the tree survives reloads without collapsing.
     var expandedDirectories: Set<URL> = []
@@ -88,6 +100,64 @@ final class WorkspaceModel {
         } catch {
             NSLog("BriskEdit: failed to load %@: %@", url.path, String(describing: error))
             lastError = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
+        }
+    }
+
+    /// Opens a file and scrolls to / selects a 1-based line/column target — used
+    /// by Find in Files, the symbol outline and go-to-definition.
+    func openFile(at url: URL, line: Int, column: Int = 1, length: Int = 0) async {
+        await openFile(at: url)
+        guard let doc = tabs.first(where: { $0.document.fileURL == url })?.document else { return }
+        doc.requestReveal(line: line, column: column, length: length)
+    }
+
+    // MARK: - Project search
+
+    /// Reveals the search pane and asks it to focus the input (Find in Files).
+    func revealSearch() {
+        sidebarTab = .search
+        focusSearchToken &+= 1
+    }
+
+    var searchTotalMatches: Int {
+        searchResults.reduce(0) { $0 + $1.matches.count }
+    }
+
+    /// Runs the current query across the workspace, replacing any in-flight search.
+    func runProjectSearch() {
+        searchTask?.cancel()
+        guard let root = rootURL, !searchQuery.text.trimmingCharacters(in: .whitespaces).isEmpty else {
+            searchResults = []
+            isSearching = false
+            return
+        }
+        isSearching = true
+        let query = searchQuery
+        let includeHidden = showHiddenFiles
+        searchTask = Task { [weak self] in
+            let results = await SearchService.search(query, root: root, includeHidden: includeHidden)
+            guard let self, !Task.isCancelled else { return }
+            self.searchResults = results
+            self.isSearching = false
+        }
+    }
+
+    /// Rewrites every match on disk after a confirmation prompt, then re-searches.
+    func replaceAllInProject() {
+        guard !searchQuery.text.isEmpty, !searchResults.isEmpty else { return }
+        let files = searchResults.map(\.url)
+        let matches = searchTotalMatches
+        let alert = NSAlert()
+        alert.messageText = "Replace \(matches) match\(matches == 1 ? "" : "es") across \(files.count) file\(files.count == 1 ? "" : "s")?"
+        alert.informativeText = "The files are rewritten on disk. This can't be undone from the editor."
+        alert.addButton(withTitle: "Replace All")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        let query = searchQuery
+        let replacement = searchReplacement
+        Task { [weak self] in
+            _ = await SearchService.replaceAll(query, replacement: replacement, in: files)
+            self?.runProjectSearch()
         }
     }
 
