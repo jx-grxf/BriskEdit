@@ -47,8 +47,8 @@ struct TerminalPanel: View {
             Button("Clear", systemImage: "trash") {
                 activeTerminal?.clear()
             }
-            Button("Close", systemImage: "xmark") {
-                workspace.showTerminal = false
+            Button("Hide", systemImage: "rectangle.bottomthird.inset.filled") {
+                workspace.hideTerminal()
             }
         }
         .buttonStyle(.borderless)

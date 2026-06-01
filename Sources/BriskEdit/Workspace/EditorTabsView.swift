@@ -55,11 +55,18 @@ struct EditorTabsView: View {
                 mainSurface(width: proxy.size.width)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .layoutPriority(1)
-                if workspace.showsTerminalPanel {
-                    TerminalResizeHandle()
-                        .gesture(resizeTerminalGesture(maxHeight: proxy.size.height - 180))
+                if workspace.shouldMountTerminalPanel {
+                    let isVisible = workspace.showsTerminalPanel
+                    if isVisible {
+                        TerminalResizeHandle()
+                            .gesture(resizeTerminalGesture(maxHeight: proxy.size.height - 180))
+                    }
                     TerminalPanel(workspace: workspace)
-                        .frame(height: clampedTerminalHeight(maxHeight: proxy.size.height - 180))
+                        .frame(height: isVisible ? clampedTerminalHeight(maxHeight: proxy.size.height - 180) : 0)
+                        .opacity(isVisible ? 1 : 0)
+                        .allowsHitTesting(isVisible)
+                        .accessibilityHidden(!isVisible)
+                        .clipped()
                         .layoutPriority(0)
                 }
             }

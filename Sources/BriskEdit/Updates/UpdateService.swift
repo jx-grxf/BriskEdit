@@ -29,6 +29,7 @@ final class UpdateService: NSObject {
     var channel: Channel {
         didSet {
             UserDefaults.standard.set(channel.rawValue, forKey: Keys.channel)
+            availableUpdateVersion = nil
             updaterDelegate.channel = channel
             controller.updater.resetUpdateCycle()
         }
@@ -52,10 +53,15 @@ final class UpdateService: NSObject {
         )
         super.init()
         delegate.onFoundUpdate = { [weak self] version in
-            self?.availableUpdateVersion = version
+            Task { @MainActor in self?.availableUpdateVersion = version }
         }
         delegate.onUserChoice = { [weak self] keepsReminder in
-            if !keepsReminder { self?.availableUpdateVersion = nil }
+            Task { @MainActor in
+                if !keepsReminder { self?.availableUpdateVersion = nil }
+            }
+        }
+        delegate.onNoPendingUpdate = { [weak self] in
+            Task { @MainActor in self?.availableUpdateVersion = nil }
         }
         // Default-on background checks come from Info.plist `SUEnableAutomaticChecks`
         // (which also skips the first-run opt-in prompt). We deliberately do NOT
@@ -74,8 +80,8 @@ final class UpdateService: NSObject {
     }
 }
 
-/// Bridges Sparkle's `SPUUpdaterDelegate` callbacks to the @MainActor
-/// `UpdateService`. Sparkle delivers these on the main thread.
+/// Bridges Sparkle's `SPUUpdaterDelegate` callbacks to `UpdateService`; the
+/// closures hop back to the main actor before touching observable state.
 private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
     var channel: UpdateService.Channel
     /// Called with the display version when a valid update is found.
@@ -83,6 +89,8 @@ private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
     /// Called when the user acts on the update dialog. `true` means the choice
     /// keeps the update pending (Remind Me Later); `false` clears it (Skip/Install).
     var onUserChoice: ((Bool) -> Void)?
+    /// Called when Sparkle reports no usable update or aborts the cycle.
+    var onNoPendingUpdate: (() -> Void)?
 
     init(channel: UpdateService.Channel) {
         self.channel = channel
@@ -97,7 +105,7 @@ private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
 
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
         let version = item.displayVersionString
-        MainActor.assumeIsolated { onFoundUpdate?(version) }
+        onFoundUpdate?(version)
     }
 
     func updater(
@@ -107,6 +115,14 @@ private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
         state: SPUUserUpdateState
     ) {
         let keepsReminder = (choice == .dismiss)
-        MainActor.assumeIsolated { onUserChoice?(keepsReminder) }
+        onUserChoice?(keepsReminder)
+    }
+
+    func updaterDidNotFindUpdate(_ updater: SPUUpdater, error: Error) {
+        onNoPendingUpdate?()
+    }
+
+    func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
+        onNoPendingUpdate?()
     }
 }

@@ -285,9 +285,19 @@ final class WorkspaceModel {
         showTerminal && (rootURL != nil || activeTab != nil || !terminals.isEmpty)
     }
 
+    /// Keep existing terminal views mounted when the panel is hidden so shell
+    /// processes and scrollback survive a simple hide/show cycle.
+    var shouldMountTerminalPanel: Bool {
+        showsTerminalPanel || !terminals.isEmpty
+    }
+
     func toggleTerminal() {
         showTerminal.toggle()
         if showTerminal { ensureTerminal() }
+    }
+
+    func hideTerminal() {
+        showTerminal = false
     }
 
     /// Reveals the terminal and adds a fresh shell session.

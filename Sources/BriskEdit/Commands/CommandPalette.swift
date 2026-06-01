@@ -20,16 +20,20 @@ struct CommandPaletteView: View {
             Divider()
             List(selection: $selection) {
                 ForEach(results) { command in
-                    HStack {
-                        Text(command.title)
-                        Spacer()
-                        Text(command.group).foregroundStyle(.secondary).font(.caption)
-                        if let s = command.shortcut {
-                            Text(s).foregroundStyle(.secondary).font(.caption.monospaced())
+                    Button {
+                        selection = command.id
+                        runSelection()
+                    } label: {
+                        HStack {
+                            Text(command.title)
+                            Spacer()
+                            Text(command.group).foregroundStyle(.secondary).font(.caption)
+                            if let s = command.shortcut {
+                                Text(s).foregroundStyle(.secondary).font(.caption.monospaced())
+                            }
                         }
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture { selection = command.id; runSelection() }
+                    .buttonStyle(.plain)
                     .tag(command.id)
                 }
             }

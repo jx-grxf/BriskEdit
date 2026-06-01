@@ -40,7 +40,10 @@ enum CommandRegistry {
             ws.showToolHealth = true
         },
         EditorCommand(id: "terminal.toggle", title: "Toggle Terminal", group: "View", shortcut: "⌃`") { ws in
-            ws.showTerminal.toggle()
+            ws.toggleTerminal()
+        },
+        EditorCommand(id: "terminal.new", title: "New Terminal", group: "View", shortcut: "⇧⌃`") { ws in
+            ws.openNewTerminal()
         },
         EditorCommand(id: "markdown.toggle", title: "Toggle Markdown Preview", group: "View", shortcut: nil) { ws in
             ws.showMarkdownPreview.toggle()
