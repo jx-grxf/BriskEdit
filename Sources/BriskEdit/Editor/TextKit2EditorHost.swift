@@ -8,6 +8,8 @@ final class BriskCodeTextView: NSTextView {
     var onBecomeFirstResponder: (() -> Void)?
     /// ⌘D — add the next occurrence of the selection as another cursor.
     var onSelectNextOccurrence: (() -> Void)?
+    /// Go to definition for the symbol at a character index (⌘-click or F12).
+    var onGoToDefinition: ((Int) -> Void)?
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
@@ -16,6 +18,23 @@ final class BriskCodeTextView: NSTextView {
             return true
         }
         return super.performKeyEquivalent(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 111 { // F12
+            onGoToDefinition?(selectedRange().location)
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command) {
+            let point = convert(event.locationInWindow, from: nil)
+            onGoToDefinition?(characterIndexForInsertion(at: point))
+            return
+        }
+        super.mouseDown(with: event)
     }
 
     override func resignFirstResponder() -> Bool {
@@ -34,6 +53,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
     @Bindable var document: TextDocument
     let theme: EditorTheme
     var showMinimap: Bool = true
+    /// Opens a (possibly different) file at a 1-based line/column — used for
+    /// go-to-definition. Provided by the host view, which owns the workspace.
+    var onOpenLocation: ((URL, Int, Int) -> Void)?
 
     func makeNSView(context: Context) -> NSView {
         let textView = BriskCodeTextView(usingTextLayoutManager: true)
@@ -54,6 +76,10 @@ struct TextKit2EditorHost: NSViewRepresentable {
         textView.onSelectNextOccurrence = { [weak coordinator = context.coordinator] in
             coordinator?.selectNextOccurrence()
         }
+        textView.onGoToDefinition = { [weak coordinator = context.coordinator] index in
+            coordinator?.goToDefinition(at: index)
+        }
+        context.coordinator.openLocation = onOpenLocation
         context.coordinator.configurePopup()
 
         let scrollView = NSScrollView()
@@ -149,6 +175,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         guard let textView = context.coordinator.textView else { return }
         let coordinator = context.coordinator
         coordinator.document = document
+        coordinator.openLocation = onOpenLocation
         let themeChanged = coordinator.theme != theme
         coordinator.theme = theme
 
@@ -269,6 +296,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var ignoreNextSelectionChange = false
         private var lastRevealToken = 0
         var lastLanguage: SourceLanguage?
+        var openLocation: ((URL, Int, Int) -> Void)?
 
         init(document: TextDocument, theme: EditorTheme) {
             self.document = document
@@ -369,6 +397,26 @@ struct TextKit2EditorHost: NSViewRepresentable {
             ranges.append(found)
             textView.selectedRanges = ranges.map { NSValue(range: $0) }
             textView.scrollRangeToVisible(found)
+        }
+
+        /// Resolves the definition of the symbol at a character index via the LSP
+        /// and asks the host to open it (⌘-click / F12). Silent when unavailable.
+        func goToDefinition(at index: Int) {
+            guard let textView, let url = document.fileURL,
+                  LSPService.config(for: document.language) != nil else { return }
+            let ns = textView.string as NSString
+            let safe = max(0, min(index, ns.length))
+            textView.setSelectedRange(NSRange(location: safe, length: 0))
+            let (line, character) = Self.lspPosition(in: ns, location: safe)
+            let language = document.language
+            let uri = url.absoluteString
+            let text = textView.string
+            let root = url.deletingLastPathComponent().path
+            Task { @MainActor [weak self] in
+                guard let location = await LSPService.shared.definition(language: language, uri: uri, text: text, line: line, character: character, root: root),
+                      let targetURL = URL(string: location.uri) else { return }
+                self?.openLocation?(targetURL, location.line, location.column)
+            }
         }
 
         private static func wordRange(at location: Int, in ns: NSString) -> NSRange {

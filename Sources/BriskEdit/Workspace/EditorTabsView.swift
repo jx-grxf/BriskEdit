@@ -157,7 +157,9 @@ struct EditorTabsView: View {
                 .id(tab.id)
         } else if workspace.showMarkdownPreview && tab.document.language == .markdown {
             HStack(spacing: 0) {
-                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap)
+                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, onOpenLocation: { url, line, column in
+                    Task { await workspace.openFile(at: url, line: line, column: column) }
+                })
                     .id(tab.id)
                     .frame(minWidth: 360)
                     .layoutPriority(1)
@@ -166,7 +168,9 @@ struct EditorTabsView: View {
                     .frame(width: 340)
             }
         } else {
-            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap)
+            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, onOpenLocation: { url, line, column in
+                    Task { await workspace.openFile(at: url, line: line, column: column) }
+                })
                 .id(tab.id)
                 .frame(minWidth: 360)
         }

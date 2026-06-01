@@ -97,6 +97,10 @@ struct WorkspaceWindow: View {
                     GitSidebarView(workspace: workspace, root: root)
                 }
             }
+            // Pin to the top and fill the column — otherwise a short pane (empty
+            // search, "No symbols" outline) lets the whole stack center itself and
+            // leaves a gap above the tab picker.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .navigationTitle(root.lastPathComponent)
         } else {
             ContentUnavailableView {
