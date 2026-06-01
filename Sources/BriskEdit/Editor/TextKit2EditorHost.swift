@@ -10,6 +10,28 @@ final class BriskCodeTextView: NSTextView {
     var onSelectNextOccurrence: (() -> Void)?
     /// Go to definition for the symbol at a character index (⌘-click or F12).
     var onGoToDefinition: ((Int) -> Void)?
+    /// Mouse paused over a point (hover) / left the view.
+    var onHover: ((NSPoint) -> Void)?
+    var onHoverExit: (() -> Void)?
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        onHover?(convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        onHoverExit?()
+    }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
@@ -78,6 +100,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
         textView.onGoToDefinition = { [weak coordinator = context.coordinator] index in
             coordinator?.goToDefinition(at: index)
+        }
+        textView.onHover = { [weak coordinator = context.coordinator] point in
+            coordinator?.scheduleHover(at: point)
+        }
+        textView.onHoverExit = { [weak coordinator = context.coordinator] in
+            coordinator?.hideHover()
         }
         context.coordinator.openLocation = onOpenLocation
         context.coordinator.configurePopup()
@@ -292,6 +320,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var lspDiagnosticsURI: String?
         var lastSyncedRevision = 0
         private let popup = CompletionPopup()
+        private let hoverPanel = HoverPanel()
+        private var hoverWork: DispatchWorkItem?
+        private var hoverIndex = -1
         private var completionRange: NSRange?
         private var ignoreNextSelectionChange = false
         private var lastRevealToken = 0
@@ -321,6 +352,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         @objc private func viewportChanged() {
             gutter?.refresh()
             minimap?.refresh()
+            hideHover()
         }
 
         @objc private func gitMaybeChanged() {
@@ -350,6 +382,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             updateCompletionPopup(in: textView)
             gutter?.refresh()
             minimap?.invalidateContent()
+            hideHover()
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -397,6 +430,42 @@ struct TextKit2EditorHost: NSViewRepresentable {
             ranges.append(found)
             textView.selectedRanges = ranges.map { NSValue(range: $0) }
             textView.scrollRangeToVisible(found)
+        }
+
+        /// Debounced LSP hover: when the mouse rests over a symbol, show its
+        /// type/docs in a floating panel. Cancelled by movement, edits and scroll.
+        func scheduleHover(at point: NSPoint) {
+            hoverWork?.cancel()
+            guard let textView, document.fileURL != nil, LSPService.config(for: document.language) != nil else { return }
+            let work = DispatchWorkItem { [weak self] in self?.performHover(at: point, in: textView) }
+            hoverWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
+        }
+
+        func hideHover() {
+            hoverWork?.cancel()
+            hoverPanel.hide()
+            hoverIndex = -1
+        }
+
+        private func performHover(at point: NSPoint, in textView: NSTextView) {
+            guard let url = document.fileURL else { return }
+            let ns = textView.string as NSString
+            let index = textView.characterIndexForInsertion(at: point)
+            guard index >= 0, index < ns.length, index != hoverIndex else { return }
+            let (line, character) = Self.lspPosition(in: ns, location: index)
+            let language = document.language
+            let uri = url.absoluteString
+            let text = textView.string
+            let root = url.deletingLastPathComponent().path
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let info = await LSPService.shared.hover(language: language, uri: uri, text: text, line: line, character: character, root: root)
+                guard let info, !info.isEmpty else { self.hoverPanel.hide(); return }
+                let rect = textView.firstRect(forCharacterRange: NSRange(location: index, length: 1), actualRange: nil)
+                self.hoverIndex = index
+                self.hoverPanel.show(text: info, at: rect, theme: self.theme)
+            }
         }
 
         /// Resolves the definition of the symbol at a character index via the LSP
