@@ -20,7 +20,9 @@ The Sparkle controller filters channels via `allowedChannels(for:)` in `UpdateSe
 ## Per-release checklist
 
 1. Update `RELEASE_NOTES.md` with the new section at the top.
-2. Bump `MARKETING_VERSION` in `project.yml` and run `xcodegen`.
+2. Bump `MARKETING_VERSION` in `project.yml` and run `xcodegen`. For a reissued
+   build of the same visible version, keep `MARKETING_VERSION` unchanged and use
+   a higher Sparkle build number.
 3. Open a PR, get a green CI run.
 4. After merge, tag from `main`:
    ```bash
@@ -28,6 +30,10 @@ The Sparkle controller filters channels via `allowedChannels(for:)` in `UpdateSe
    git tag -a v0.2.0 -m "BriskEdit 0.2.0"
    git push origin v0.2.0
    ```
+   If a broken preview already used the same tag, delete the GitHub Release and
+   remote tag first, then recreate the annotated tag from the fixed `main`
+   commit. Do not leave assets built from one commit attached to a tag pointing
+   at another commit.
 5. The `release.yml` workflow runs:
    - regenerates the Xcode project
    - builds Release
@@ -36,6 +42,8 @@ The Sparkle controller filters channels via `allowedChannels(for:)` in `UpdateSe
    - verifies the appcast points at the right release URL
    - (when secrets are present) notarizes the DMG and staples the ticket
    - attaches everything to the GitHub Release
+   Manual `workflow_dispatch` accepts an optional `build` input when a specific
+   Sparkle build number is needed; otherwise it uses the GitHub run number.
 6. Manually verify on a fresh machine:
    - Download the DMG.
    - Open, drag to Applications, launch.

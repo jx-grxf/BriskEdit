@@ -205,6 +205,10 @@ final class WorkspaceModel {
         expandedDirectories = [url]
         childCache.removeAll(keepingCapacity: true)
         reloadToken = UUID()
+        // Opening a folder reveals the integrated terminal at the workspace root
+        // by default; an existing session is relocated, otherwise the panel
+        // spins one up on appear.
+        showTerminal = true
         activeTerminal?.relocate(to: url)
         if persistsSession {
             UserDefaults.standard.set(url.path, forKey: Keys.lastWorkspaceRoot)
@@ -273,6 +277,41 @@ final class WorkspaceModel {
     }
 
     // MARK: - Terminal sessions
+
+    /// Whether the terminal panel should be rendered. It only makes sense inside
+    /// a workspace context (a folder, an open file, or an explicitly created
+    /// shell), so the bare welcome screen stays clean.
+    var showsTerminalPanel: Bool {
+        showTerminal && (rootURL != nil || activeTab != nil || !terminals.isEmpty)
+    }
+
+    /// Keep existing terminal views mounted when the panel is hidden so shell
+    /// processes and scrollback survive a simple hide/show cycle.
+    var shouldMountTerminalPanel: Bool {
+        showsTerminalPanel || !terminals.isEmpty
+    }
+
+    func toggleTerminal() {
+        showTerminal.toggle()
+        if showTerminal { ensureTerminal() }
+    }
+
+    func hideTerminal() {
+        showTerminal = false
+    }
+
+    /// Reveals the terminal and adds a fresh shell session.
+    func openNewTerminal() {
+        showTerminal = true
+        addTerminal()
+    }
+
+    /// Closes the active shell; hides the panel when the last one is gone.
+    func closeActiveTerminal() {
+        guard let id = activeTerminal?.id else { return }
+        closeTerminal(id)
+        if terminals.isEmpty { showTerminal = false }
+    }
 
     var activeTerminal: TerminalController? {
         if let id = activeTerminalID, let match = terminals.first(where: { $0.id == id }) {

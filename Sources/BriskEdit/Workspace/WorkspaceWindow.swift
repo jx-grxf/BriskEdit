@@ -7,6 +7,7 @@ struct WorkspaceWindow: View {
     @State private var sidebarTab: SidebarTab = .files
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @Environment(Preferences.self) private var preferences
+    @Environment(UpdateService.self) private var updates
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -29,9 +30,20 @@ struct WorkspaceWindow: View {
             saveAll: { await workspace.saveAllForQuit() }
         ))
         .toolbar {
+            if updates.isUpdateAvailable {
+                ToolbarItem(placement: .navigation) {
+                    Button {
+                        updates.checkForUpdates()
+                    } label: {
+                        Image(systemName: "arrow.down.circle.fill")
+                    }
+                    .tint(.blue)
+                    .help("Update available: BriskEdit \(updates.availableUpdateVersion ?? ""). Click to install.")
+                }
+            }
             ToolbarItemGroup(placement: .primaryAction) {
                 Button {
-                    workspace.showTerminal.toggle()
+                    workspace.toggleTerminal()
                 } label: {
                     Image(systemName: "terminal")
                 }
@@ -92,30 +104,13 @@ struct WorkspaceWindow: View {
         }
     }
 
-    @ViewBuilder
     private var detail: some View {
-        Group {
-            if workspace.tabs.isEmpty {
-                ContentUnavailableView {
-                    Label("BriskEdit", systemImage: "text.cursor")
-                } description: {
-                    Text("Open a file or drop files here.")
-                } actions: {
-                    HStack {
-                        Button("New File") { workspace.newUntitled() }
-                            .keyboardShortcut("n", modifiers: .command)
-                        Button("Open File…") { openFile() }
-                    }
-                }
-            } else {
-                EditorTabsView(workspace: workspace)
-                    .environment(preferences)
+        EditorTabsView(workspace: workspace, onOpenFile: { openFile() })
+            .environment(preferences)
+            .dropDestination(for: URL.self) { urls, _ in
+                workspace.openDropped(urls)
+                return true
             }
-        }
-        .dropDestination(for: URL.self) { urls, _ in
-            workspace.openDropped(urls)
-            return true
-        }
     }
 
     @MainActor

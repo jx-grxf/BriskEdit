@@ -58,27 +58,10 @@ struct FileFinderView: View {
     @Bindable var workspace: WorkspaceModel
     @State private var query: String = ""
     @State private var allFiles: [URL] = []
+    @State private var displayedResults: [URL] = []
     @State private var selection: URL?
+    @State private var searchTask: Task<Void, Never>?
     @FocusState private var fieldFocused: Bool
-
-    private var results: [URL] {
-        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        guard !trimmed.isEmpty else { return Array(allFiles.prefix(200)) }
-        let q = Array(trimmed.filter { !$0.isWhitespace })
-        return allFiles
-            .compactMap { url -> (URL, Int)? in
-                // Match the filename first (weighted), fall back to relative path.
-                let name = url.lastPathComponent
-                let rel = workspace.relativePath(of: url)
-                let nameScore = FuzzyMatch.score(query: q, candidate: name).map { $0 + 12 }
-                let pathScore = FuzzyMatch.score(query: q, candidate: rel)
-                guard let best = [nameScore, pathScore].compactMap({ $0 }).max() else { return nil }
-                return (url, best)
-            }
-            .sorted { $0.1 > $1.1 }
-            .prefix(200)
-            .map(\.0)
-    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -91,21 +74,25 @@ struct FileFinderView: View {
                 .onSubmit { openSelection() }
             Divider()
             List(selection: $selection) {
-                ForEach(results, id: \.self) { url in
-                    HStack(spacing: 8) {
-                        Image(systemName: FileNode(url: url, isDirectory: false).language.iconName)
-                            .foregroundStyle(.secondary)
-                            .frame(width: 18)
-                        Text(url.lastPathComponent)
-                        Spacer()
-                        Text(workspace.relativePath(of: url.deletingLastPathComponent()))
-                            .foregroundStyle(.secondary)
-                            .font(.caption)
-                            .lineLimit(1)
-                            .truncationMode(.head)
+                ForEach(displayedResults, id: \.self) { url in
+                    Button {
+                        selection = url
+                        openSelection()
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: FileNode(url: url, isDirectory: false).language.iconName)
+                                .foregroundStyle(.secondary)
+                                .frame(width: 18)
+                            Text(url.lastPathComponent)
+                            Spacer()
+                            Text(workspace.relativePath(of: url.deletingLastPathComponent()))
+                                .foregroundStyle(.secondary)
+                                .font(.caption)
+                                .lineLimit(1)
+                                .truncationMode(.head)
+                        }
                     }
-                    .contentShape(Rectangle())
-                    .onTapGesture { selection = url; openSelection() }
+                    .buttonStyle(.plain)
                     .tag(url)
                 }
             }
@@ -115,15 +102,66 @@ struct FileFinderView: View {
         .frame(width: 560)
         .task {
             allFiles = await workspace.collectWorkspaceFiles()
-            selection = results.first
+            updateResults()
+            fieldFocused = true
         }
-        .onChange(of: query) { _, _ in selection = results.first }
+        .onChange(of: query) { _, _ in updateResults() }
+        .onChange(of: allFiles) { _, _ in updateResults() }
+        .onDisappear {
+            searchTask?.cancel()
+        }
         .onExitCommand { workspace.showFileFinder = false }
     }
 
     private func openSelection() {
-        guard let url = selection ?? results.first else { return }
+        guard let url = selection ?? displayedResults.first else { return }
         workspace.showFileFinder = false
         Task { await workspace.openFile(at: url) }
+    }
+
+    private func updateResults() {
+        searchTask?.cancel()
+        let querySnapshot = query
+        let candidates = allFiles.map { url in
+            FileSearchCandidate(
+                url: url,
+                name: url.lastPathComponent,
+                relativePath: workspace.relativePath(of: url)
+            )
+        }
+        searchTask = Task {
+            let matches = await Task.detached(priority: .userInitiated) {
+                FileSearch.search(query: querySnapshot, candidates: candidates)
+            }.value
+            guard !Task.isCancelled else { return }
+            displayedResults = matches
+            selection = matches.first
+        }
+    }
+}
+
+private struct FileSearchCandidate: Sendable {
+    let url: URL
+    let name: String
+    let relativePath: String
+}
+
+private enum FileSearch {
+    static func search(query: String, candidates: [FileSearchCandidate]) -> [URL] {
+        let trimmed = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !trimmed.isEmpty else {
+            return Array(candidates.prefix(200).map(\.url))
+        }
+        let q = Array(trimmed.filter { !$0.isWhitespace })
+        return candidates
+            .compactMap { candidate -> (URL, Int)? in
+                let nameScore = FuzzyMatch.score(query: q, candidate: candidate.name).map { $0 + 12 }
+                let pathScore = FuzzyMatch.score(query: q, candidate: candidate.relativePath)
+                guard let best = [nameScore, pathScore].compactMap({ $0 }).max() else { return nil }
+                return (candidate.url, best)
+            }
+            .sorted { $0.1 > $1.1 }
+            .prefix(200)
+            .map(\.0)
     }
 }

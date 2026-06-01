@@ -3,6 +3,7 @@ import SwiftUI
 
 struct EditorTabsView: View {
     @Bindable var workspace: WorkspaceModel
+    var onOpenFile: () -> Void = {}
     @Environment(Preferences.self) private var preferences
     @SceneStorage("workspace.terminalHeight") private var storedTerminalHeight: Double = 260
     @State private var terminalResizeStart: Double?
@@ -30,9 +31,11 @@ struct EditorTabsView: View {
             // reserves its own space and is composited *above* any content that
             // underlaps it, so it can no longer be covered.
             .safeAreaInset(edge: .top, spacing: 0) {
-                VStack(spacing: 0) {
-                    TabStrip(workspace: workspace)
-                    Divider()
+                if !workspace.tabs.isEmpty {
+                    VStack(spacing: 0) {
+                        TabStrip(workspace: workspace)
+                        Divider()
+                    }
                 }
             }
             .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -43,42 +46,68 @@ struct EditorTabsView: View {
             }
     }
 
-    @ViewBuilder
+    /// The editor (or empty state) stacked above the optional terminal panel.
+    /// The terminal renders regardless of whether a file is open so it can be
+    /// used in a freshly opened folder.
     private var editorArea: some View {
-        if let tab = workspace.activeTab {
-            GeometryReader { proxy in
-                VStack(spacing: 0) {
-                    if tab.document.externalChangePending {
-                        ExternalChangeBanner(document: tab.document)
-                    }
-                    HStack(spacing: 0) {
-                        editorSurface(for: tab)
-                            .frame(minWidth: 320)
-                            .layoutPriority(1)
-                        if let previewKind = workspace.splitPreviewKind {
-                            PreviewSplitHandle()
-                                .gesture(resizePreviewGesture(maxWidth: proxy.size.width - 360))
-                            SplitPreviewPane(kind: previewKind) { workspace.splitPreviewKind = nil }
-                                .frame(width: clampedPreviewWidth(maxWidth: proxy.size.width - 360))
-                                .layoutPriority(0)
-                        }
-                    }
-                    .frame(minHeight: 180)
+        GeometryReader { proxy in
+            VStack(spacing: 0) {
+                mainSurface(width: proxy.size.width)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .layoutPriority(1)
-                    if workspace.showTerminal {
+                if workspace.shouldMountTerminalPanel {
+                    let isVisible = workspace.showsTerminalPanel
+                    if isVisible {
                         TerminalResizeHandle()
                             .gesture(resizeTerminalGesture(maxHeight: proxy.size.height - 180))
-                        TerminalPanel(workspace: workspace)
-                            .frame(height: clampedTerminalHeight(maxHeight: proxy.size.height - 180))
+                    }
+                    TerminalPanel(workspace: workspace)
+                        .frame(height: isVisible ? clampedTerminalHeight(maxHeight: proxy.size.height - 180) : 0)
+                        .opacity(isVisible ? 1 : 0)
+                        .allowsHitTesting(isVisible)
+                        .accessibilityHidden(!isVisible)
+                        .clipped()
+                        .layoutPriority(0)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func mainSurface(width: CGFloat) -> some View {
+        if let tab = workspace.activeTab {
+            VStack(spacing: 0) {
+                if tab.document.externalChangePending {
+                    ExternalChangeBanner(document: tab.document)
+                }
+                HStack(spacing: 0) {
+                    editorSurface(for: tab)
+                        .frame(minWidth: 320)
+                        .layoutPriority(1)
+                    if let previewKind = workspace.splitPreviewKind {
+                        PreviewSplitHandle()
+                            .gesture(resizePreviewGesture(maxWidth: width - 360))
+                        SplitPreviewPane(kind: previewKind) { workspace.splitPreviewKind = nil }
+                            .frame(width: clampedPreviewWidth(maxWidth: width - 360))
                             .layoutPriority(0)
                     }
                 }
             }
         } else {
-            ContentUnavailableView {
-                Label("No Active Tab", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text("Select a tab or open a file.")
+            emptyState
+        }
+    }
+
+    private var emptyState: some View {
+        ContentUnavailableView {
+            Label("BriskEdit", systemImage: "text.cursor")
+        } description: {
+            Text("Open a file or drop files here.")
+        } actions: {
+            HStack {
+                Button("New File") { workspace.newUntitled() }
+                    .keyboardShortcut("n", modifiers: .command)
+                Button("Open File…") { onOpenFile() }
             }
         }
     }

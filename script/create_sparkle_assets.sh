@@ -77,6 +77,43 @@ LENGTH="$(stat -f%z "$ZIP")"
 PUBDATE="$(LC_ALL=en_US date -u "+%a, %d %b %Y %H:%M:%S +0000")"
 DOWNLOAD_URL="${BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX%/}/BriskEdit-${BRISKEDIT_VERSION}.zip"
 
+# Build a concise HTML release-notes summary for the Sparkle update dialog from
+# the topmost (current) version section of RELEASE_NOTES.md — headings + bullet
+# highlights only, so the prompt stays short. Embedded inline as <description>;
+# the enclosure's edSignature still covers only the ZIP, so this needs no signing.
+DESCRIPTION_HTML=""
+if [[ -f RELEASE_NOTES.md ]]; then
+  DESCRIPTION_HTML="$(perl -0777 -ne '
+    if (/^##[ ].*?\n(.*?)(?=^##[ ]|\z)/ms) {
+      my $body = $1; my @out; my $inlist = 0;
+      for my $line (split /\n/, $body) {
+        if ($line =~ /^###\s+(.+?)\s*$/) {
+          my $h = $1; next if $h =~ /^Compatibility/i;
+          push @out, "</ul>" if $inlist; $inlist = 0;
+          $h =~ s/&/&amp;/g; $h =~ s/</&lt;/g; $h =~ s/>/&gt;/g;
+          push @out, "<h4>$h</h4>";
+        } elsif ($line =~ /^[-*]\s+(.+?)\s*$/) {
+          my $t = $1;
+          # Keep only the bold lead-in as a concise highlight; this also avoids
+          # truncation from soft-wrapped bullet continuation lines.
+          $t = $1 if $t =~ /^\*\*(.+?)\*\*/;
+          $t =~ s/\s*[.:]\s*$//;
+          $t =~ s/&/&amp;/g; $t =~ s/</&lt;/g; $t =~ s/>/&gt;/g;
+          $t =~ s/`(.+?)`/<code>$1<\/code>/g;
+          push @out, "<ul>" unless $inlist; $inlist = 1;
+          push @out, "<li>$t</li>";
+        }
+      }
+      push @out, "</ul>" if $inlist;
+      print join("", @out);
+    }
+  ' RELEASE_NOTES.md)"
+fi
+DESCRIPTION_BLOCK=""
+if [[ -n "$DESCRIPTION_HTML" ]]; then
+  DESCRIPTION_BLOCK="      <description><![CDATA[${DESCRIPTION_HTML}]]></description>"
+fi
+
 cat > dist/sparkle/appcast.xml <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
@@ -87,6 +124,7 @@ cat > dist/sparkle/appcast.xml <<EOF
     <language>en</language>
     <item>
       <title>BriskEdit ${BRISKEDIT_VERSION}</title>
+${DESCRIPTION_BLOCK}
       <sparkle:channel>${CHANNEL}</sparkle:channel>
       <sparkle:version>${BUILD}</sparkle:version>
       <sparkle:shortVersionString>${BRISKEDIT_VERSION}</sparkle:shortVersionString>

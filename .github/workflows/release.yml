@@ -10,6 +10,10 @@ on:
         description: "Release version without the leading v"
         required: true
         type: string
+      build:
+        description: "Sparkle build number; leave empty to use the GitHub run number"
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -48,6 +52,10 @@ jobs:
             tag="v${version#v}"
             version="${version#v}"
           fi
+          build="${{ inputs.build }}"
+          if [[ -z "$build" ]]; then
+            build="$GITHUB_RUN_NUMBER"
+          fi
           if [[ "$tag" == *"-beta."* || "$tag" == *"-beta"* ]]; then
             channel="beta"
             prerelease="--prerelease"
@@ -57,13 +65,14 @@ jobs:
           fi
           echo "tag=$tag" >>"$GITHUB_OUTPUT"
           echo "version=$version" >>"$GITHUB_OUTPUT"
+          echo "build=$build" >>"$GITHUB_OUTPUT"
           echo "channel=$channel" >>"$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >>"$GITHUB_OUTPUT"
 
       - name: Build DMG
         env:
           BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
-          BRISKEDIT_BUILD: ${{ github.run_number }}
+          BRISKEDIT_BUILD: ${{ steps.version.outputs.build }}
           BRISKEDIT_SPARKLE_PUBLIC_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PUBLIC_KEY }}
           BRISKEDIT_SIGN_IDENTITY: ${{ secrets.BRISKEDIT_SIGN_IDENTITY }}
         run: ./script/package_dmg.sh
@@ -71,7 +80,7 @@ jobs:
       - name: Build Sparkle assets
         env:
           BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
-          BRISKEDIT_BUILD: ${{ github.run_number }}
+          BRISKEDIT_BUILD: ${{ steps.version.outputs.build }}
           BRISKEDIT_UPDATE_CHANNEL: ${{ steps.version.outputs.channel }}
           BRISKEDIT_SPARKLE_PRIVATE_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PRIVATE_KEY }}
           BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}
