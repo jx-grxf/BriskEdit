@@ -255,8 +255,10 @@ struct TextKit2EditorHost: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             document.applyEdit(text: textView.string)
             lastSyncedRevision = document.revision
-            // Markers from the last check are now stale — clear until the next one.
-            if !document.diagnostics.isEmpty { document.diagnostics = [] }
+            // Keep the last check's markers visible until the debounced re-check
+            // (LSP push or DiagnosticsService) replaces them wholesale. Clearing
+            // eagerly on every keystroke made the gutter dot and the status-bar
+            // count flash on each character.
             scheduleHighlight()
             scheduleGitDiff()
             scheduleLSP(in: textView)
