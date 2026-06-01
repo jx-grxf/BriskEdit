@@ -368,6 +368,43 @@ private struct DiagnosticSummary: View {
     }
 }
 
+/// Nova-style clickable language label in the status bar: opens a menu of every
+/// supported syntax, with an "Auto-detect" option that clears the manual choice.
+private struct LanguagePicker: View {
+    let document: TextDocument
+
+    var body: some View {
+        Menu {
+            Button {
+                document.languageOverride = nil
+            } label: {
+                Label("Auto-detect (\(document.detectedLanguage.rawValue))",
+                      systemImage: document.languageOverride == nil ? "checkmark" : "wand.and.stars")
+            }
+            Divider()
+            ForEach(SourceLanguage.allCases, id: \.self) { language in
+                Button {
+                    document.languageOverride = language
+                } label: {
+                    if document.language == language {
+                        Label(language.rawValue, systemImage: "checkmark")
+                    } else {
+                        Text(language.rawValue)
+                    }
+                }
+            }
+        } label: {
+            Text(document.language.rawValue)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Select syntax language")
+    }
+}
+
 private struct StatusBar: View {
     let workspace: WorkspaceModel
 
@@ -380,8 +417,7 @@ private struct StatusBar: View {
                     .frame(maxWidth: 220, alignment: .leading)
                 Text(encodingLabel(doc.encoding)).font(.caption.monospaced())
                     .lineLimit(1)
-                Text(doc.language.rawValue).font(.caption.monospaced()).foregroundStyle(.secondary)
-                    .lineLimit(1)
+                LanguagePicker(document: doc)
                 Text("Ln \(doc.cursorLine), Col \(doc.cursorColumn)").font(.caption.monospaced()).foregroundStyle(.secondary)
                     .lineLimit(1)
                 Text(doc.fileSizeLabel).font(.caption.monospaced()).foregroundStyle(.secondary)

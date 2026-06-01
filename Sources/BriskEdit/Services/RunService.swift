@@ -38,6 +38,12 @@ enum RunService {
             line = "if command -v deno >/dev/null 2>&1; then deno run \(file); elif command -v tsx >/dev/null 2>&1; then tsx \(file); else echo 'BriskEdit: install deno or tsx to run TypeScript files.'; false; fi\(cleanup)"
         case .shell:
             line = "chmod +x \(file) 2>/dev/null || true; \(file)\(cleanup)"
+        case .ruby:
+            line = "ruby \(file)\(cleanup)"
+        case .lua:
+            line = "lua \(file)\(cleanup)"
+        case .perl:
+            line = "perl \(file)\(cleanup)"
         case .go:
             if ancestor(containing: "go.mod", from: sourceURL.deletingLastPathComponent(), stopAt: workspaceRoot) != nil {
                 line = "go run ."

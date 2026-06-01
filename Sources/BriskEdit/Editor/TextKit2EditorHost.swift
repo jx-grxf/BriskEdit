@@ -118,6 +118,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.observeScroll(of: scrollView)
 
         context.coordinator.lastSyncedRevision = document.revision
+        context.coordinator.lastLanguage = document.language
         context.coordinator.applyHighlight()
         context.coordinator.warmUpLSP()
         context.coordinator.scheduleGitDiff()
@@ -174,8 +175,11 @@ struct TextKit2EditorHost: NSViewRepresentable {
             didReseed = true
         }
         // In-editor edits drive their own debounced re-highlight; only re-run it
-        // here for an external re-seed or a theme switch.
-        if didReseed || themeChanged {
+        // here for an external re-seed, a theme switch, or a language change
+        // (the user picked a different syntax in the status bar).
+        let languageChanged = coordinator.lastLanguage != document.language
+        coordinator.lastLanguage = document.language
+        if didReseed || themeChanged || languageChanged {
             coordinator.applyHighlight()
         }
         if didReseed {
@@ -250,6 +254,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var completionRange: NSRange?
         private var ignoreNextSelectionChange = false
         private var lastRevealToken = 0
+        var lastLanguage: SourceLanguage?
 
         init(document: TextDocument, theme: EditorTheme) {
             self.document = document
@@ -743,10 +748,16 @@ private enum TextKit2SyntaxHighlighter {
     private static func highlightComments(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
         let patterns: [String]
         switch language {
-        case .markdown:
+        case .markdown, .html, .xml:
             patterns = ["<!--(?s:.*?)-->"]
-        case .python, .shell, .yaml:
+        case .python, .shell, .yaml, .ruby, .perl, .toml:
             patterns = ["#.*$"]
+        case .ini:
+            patterns = ["[#;].*$"]
+        case .lua:
+            patterns = ["--\\[\\[(?s:.*?)\\]\\]", "--.*$"]
+        case .sql:
+            patterns = ["--.*$", "/\\*(?s:.*?)\\*/"]
         default:
             patterns = ["//.*$", "/\\*(?s:.*?)\\*/"]
         }
@@ -835,6 +846,27 @@ private enum TextKit2SyntaxHighlighter {
         case .go:
             control = ["break", "case", "continue", "default", "else", "fallthrough", "for", "goto", "if", "range", "return", "select", "switch"]
             keywords = ["chan", "const", "defer", "func", "go", "import", "interface", "map", "package", "struct", "type", "var", "nil", "true", "false"]
+        case .java:
+            control = ["break", "case", "catch", "continue", "default", "do", "else", "finally", "for", "if", "return", "switch", "throw", "try", "while"]
+            keywords = ["abstract", "class", "enum", "extends", "final", "implements", "import", "instanceof", "interface", "native", "new", "package", "private", "protected", "public", "static", "super", "synchronized", "this", "throws", "transient", "void", "volatile", "boolean", "byte", "char", "double", "float", "int", "long", "short", "true", "false", "null", "var", "record", "sealed"]
+        case .kotlin:
+            control = ["break", "catch", "continue", "do", "else", "finally", "for", "if", "return", "throw", "try", "when", "while"]
+            keywords = ["abstract", "as", "class", "companion", "const", "data", "enum", "fun", "import", "in", "interface", "internal", "is", "lateinit", "object", "open", "override", "package", "private", "protected", "public", "sealed", "suspend", "val", "var", "vararg", "by", "true", "false", "null", "this", "super"]
+        case .ruby:
+            control = ["begin", "break", "case", "else", "elsif", "ensure", "for", "if", "next", "redo", "rescue", "retry", "return", "unless", "until", "when", "while", "yield"]
+            keywords = ["alias", "and", "attr_accessor", "attr_reader", "attr_writer", "class", "def", "do", "end", "module", "nil", "not", "or", "require", "require_relative", "self", "super", "then", "true", "false", "lambda", "proc"]
+        case .lua:
+            control = ["break", "do", "else", "elseif", "end", "for", "goto", "if", "repeat", "return", "then", "until", "while"]
+            keywords = ["and", "false", "function", "in", "local", "nil", "not", "or", "true", "self", "require"]
+        case .sql:
+            control = ["CASE", "WHEN", "THEN", "ELSE", "END", "IF", "WHILE", "LOOP"]
+            keywords = ["SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "VIEW", "INDEX", "ALTER", "DROP", "JOIN", "INNER", "LEFT", "RIGHT", "OUTER", "ON", "GROUP", "BY", "ORDER", "HAVING", "LIMIT", "OFFSET", "DISTINCT", "AS", "AND", "OR", "NOT", "NULL", "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "DEFAULT", "UNIQUE", "INT", "INTEGER", "VARCHAR", "TEXT", "BOOLEAN", "TIMESTAMP", "DATE"]
+        case .perl:
+            control = ["if", "elsif", "else", "unless", "for", "foreach", "while", "until", "do", "return", "last", "next", "redo"]
+            keywords = ["use", "no", "my", "our", "local", "sub", "package", "require", "print", "printf", "say", "undef", "qw"]
+        case .dart:
+            control = ["break", "case", "catch", "continue", "default", "do", "else", "finally", "for", "if", "return", "switch", "throw", "try", "while", "await", "yield"]
+            keywords = ["abstract", "as", "async", "class", "const", "enum", "extends", "factory", "final", "get", "implements", "import", "is", "late", "library", "mixin", "new", "set", "static", "super", "this", "typedef", "var", "void", "with", "true", "false", "null", "required"]
         default:
             control = []
             keywords = []

@@ -31,7 +31,16 @@ final class TextDocument {
         fileURL?.lastPathComponent ?? "Untitled"
     }
 
+    /// User-chosen language from the status-bar/menu picker. When nil the
+    /// language is auto-detected from the file name/extension.
+    var languageOverride: SourceLanguage?
+
     var language: SourceLanguage {
+        languageOverride ?? SourceLanguage(url: fileURL, displayName: displayName)
+    }
+
+    /// The language that auto-detection would pick, ignoring any manual override.
+    var detectedLanguage: SourceLanguage {
         SourceLanguage(url: fileURL, displayName: displayName)
     }
 
@@ -214,16 +223,27 @@ enum SourceLanguage: String, Sendable, CaseIterable {
     case c = "C"
     case cpp = "C++"
     case css = "CSS"
+    case dart = "Dart"
     case go = "Go"
     case html = "HTML"
+    case ini = "INI"
+    case java = "Java"
     case javascript = "JavaScript"
     case json = "JSON"
+    case kotlin = "Kotlin"
+    case less = "Less"
+    case lua = "Lua"
     case markdown = "Markdown"
+    case perl = "Perl"
     case php = "PHP"
     case python = "Python"
+    case ruby = "Ruby"
     case rust = "Rust"
+    case scss = "SCSS"
     case shell = "Shell"
+    case sql = "SQL"
     case swift = "Swift"
+    case toml = "TOML"
     case typescript = "TypeScript"
     case xml = "XML"
     case yaml = "YAML"
@@ -231,22 +251,40 @@ enum SourceLanguage: String, Sendable, CaseIterable {
 
     init(url: URL?, displayName: String) {
         let ext = (url?.pathExtension.isEmpty == false ? url?.pathExtension : (displayName as NSString).pathExtension)?.lowercased() ?? ""
+        // A few files are identified by name, not extension.
+        let name = ((url?.lastPathComponent ?? displayName) as NSString).lastPathComponent.lowercased()
+        switch name {
+        case "makefile", "dockerfile": self = .shell; return
+        case ".gitconfig", ".npmrc", ".editorconfig": self = .ini; return
+        default: break
+        }
         switch ext {
         case "c", "h": self = .c
         case "cc", "cpp", "cxx", "hpp", "hh": self = .cpp
         case "css": self = .css
+        case "dart": self = .dart
         case "go": self = .go
         case "htm", "html": self = .html
+        case "ini", "cfg", "conf", "properties": self = .ini
+        case "java": self = .java
         case "js", "jsx", "mjs", "cjs": self = .javascript
-        case "json": self = .json
+        case "json", "jsonc": self = .json
+        case "kt", "kts": self = .kotlin
+        case "less": self = .less
+        case "lua": self = .lua
         case "md", "markdown": self = .markdown
+        case "pl", "pm", "perl": self = .perl
         case "php": self = .php
-        case "py": self = .python
+        case "py", "pyw": self = .python
+        case "rb", "rake", "gemspec": self = .ruby
         case "rs": self = .rust
+        case "scss", "sass": self = .scss
         case "sh", "bash", "zsh": self = .shell
+        case "sql": self = .sql
         case "swift": self = .swift
+        case "toml": self = .toml
         case "ts", "tsx": self = .typescript
-        case "xml", "plist", "xib", "storyboard": self = .xml
+        case "xml", "plist", "xib", "storyboard", "svg": self = .xml
         case "yaml", "yml": self = .yaml
         default: self = .plainText
         }
@@ -257,16 +295,27 @@ enum SourceLanguage: String, Sendable, CaseIterable {
         case .c: "c.circle"
         case .cpp: "plus.forwardslash.minus"
         case .css: "paintbrush"
+        case .dart: "bird"
         case .go: "bolt.horizontal"
         case .html: "globe"
+        case .ini: "gearshape"
+        case .java: "cup.and.saucer"
         case .javascript: "curlybraces"
         case .json: "curlybraces.square"
+        case .kotlin: "k.square"
+        case .less: "paintbrush.pointed"
+        case .lua: "moon.stars"
         case .markdown: "doc.richtext"
+        case .perl: "p.circle"
         case .php: "p.square"
         case .python: "chevron.left.forwardslash.chevron.right"
+        case .ruby: "diamond"
         case .rust: "gearshape.2"
+        case .scss: "paintbrush.pointed"
         case .shell: "terminal"
+        case .sql: "cylinder.split.1x2"
         case .swift: "swift"
+        case .toml: "doc.plaintext"
         case .typescript: "t.square"
         case .xml: "chevron.left.forwardslash.chevron.right"
         case .yaml: "list.bullet.rectangle"
@@ -276,7 +325,7 @@ enum SourceLanguage: String, Sendable, CaseIterable {
 
     var isRunnable: Bool {
         switch self {
-        case .c, .cpp, .go, .javascript, .php, .python, .rust, .shell, .swift, .typescript:
+        case .c, .cpp, .go, .javascript, .lua, .perl, .php, .python, .ruby, .rust, .shell, .swift, .typescript:
             true
         default:
             false
@@ -287,12 +336,23 @@ enum SourceLanguage: String, Sendable, CaseIterable {
         switch self {
         case .c: "c"
         case .cpp: "cpp"
+        case .dart: "dart"
         case .go: "go"
+        case .ini: "ini"
+        case .java: "java"
         case .javascript: "js"
+        case .kotlin: "kt"
+        case .less: "less"
+        case .lua: "lua"
+        case .perl: "pl"
         case .python: "py"
+        case .ruby: "rb"
         case .rust: "rs"
+        case .scss: "scss"
         case .shell: "sh"
+        case .sql: "sql"
         case .swift: "swift"
+        case .toml: "toml"
         case .typescript: "ts"
         case .css: "css"
         case .html: "html"
@@ -325,9 +385,21 @@ enum SourceLanguage: String, Sendable, CaseIterable {
             ["#!/usr/bin/env bash", "set -euo pipefail", "if", "then", "else", "fi", "for", "do", "done", "case", "esac"]
         case .html, .xml:
             ["html", "head", "body", "script", "style", "div", "span", "section", "article", "link", "meta"]
-        case .css:
-            ["display", "grid", "flex", "align-items", "justify-content", "color", "background", "font-size", "padding", "margin"]
-        case .json, .yaml, .markdown, .php, .plainText:
+        case .css, .scss, .less:
+            ["display", "grid", "flex", "align-items", "justify-content", "color", "background", "font-size", "padding", "margin", "@media", "@mixin", "@include"]
+        case .java:
+            ["import", "package", "public", "private", "protected", "class", "interface", "extends", "implements", "static", "final", "void", "return", "new", "if", "else", "for", "while", "try", "catch"]
+        case .kotlin:
+            ["import", "package", "fun", "val", "var", "class", "object", "interface", "data", "sealed", "when", "return", "if", "else", "for", "while", "suspend", "override"]
+        case .ruby:
+            ["require", "def", "end", "class", "module", "if", "elsif", "else", "unless", "do", "return", "yield", "attr_accessor", "puts"]
+        case .lua:
+            ["local", "function", "end", "if", "then", "else", "elseif", "for", "while", "do", "return", "require", "nil", "true", "false"]
+        case .sql:
+            ["SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "ALTER", "DROP", "JOIN", "INNER", "LEFT", "GROUP BY", "ORDER BY", "LIMIT"]
+        case .perl:
+            ["use", "my", "our", "sub", "if", "elsif", "else", "unless", "foreach", "while", "return", "print"]
+        case .json, .yaml, .markdown, .php, .toml, .ini, .dart, .plainText:
             []
         }
     }
