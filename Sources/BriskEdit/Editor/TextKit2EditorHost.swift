@@ -6,6 +6,17 @@ import SwiftUI
 final class BriskCodeTextView: NSTextView {
     var onResignFirstResponder: (() -> Void)?
     var onBecomeFirstResponder: (() -> Void)?
+    /// ⌘D — add the next occurrence of the selection as another cursor.
+    var onSelectNextOccurrence: (() -> Void)?
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers == "d" {
+            onSelectNextOccurrence?()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
 
     override func resignFirstResponder() -> Bool {
         onResignFirstResponder?()
@@ -39,6 +50,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
         // refresh the gutter's git diff, which is otherwise stale.
         textView.onBecomeFirstResponder = { [weak coordinator = context.coordinator] in
             coordinator?.scheduleGitDiff()
+        }
+        textView.onSelectNextOccurrence = { [weak coordinator = context.coordinator] in
+            coordinator?.selectNextOccurrence()
         }
         context.coordinator.configurePopup()
 
@@ -327,6 +341,47 @@ struct TextKit2EditorHost: NSViewRepresentable {
             textView?.needsDisplay = true
         }
 
+        /// VS Code-style ⌘D: with an empty caret, select the word under it; with a
+        /// selection, add the next occurrence of that text as an additional cursor
+        /// (NSTextView edits all selected ranges at once when you then type).
+        func selectNextOccurrence() {
+            guard let textView else { return }
+            let ns = textView.string as NSString
+            var ranges = textView.selectedRanges.map { $0.rangeValue }
+
+            if ranges.count == 1, ranges[0].length == 0 {
+                let word = Self.wordRange(at: ranges[0].location, in: ns)
+                if word.length > 0 {
+                    textView.selectedRanges = [NSValue(range: word)]
+                    textView.scrollRangeToVisible(word)
+                }
+                return
+            }
+
+            guard let last = ranges.max(by: { $0.location < $1.location }), last.length > 0 else { return }
+            let needle = ns.substring(with: last)
+            let from = NSMaxRange(last)
+            var found = ns.range(of: needle, options: [], range: NSRange(location: from, length: ns.length - from))
+            if found.location == NSNotFound {
+                found = ns.range(of: needle, options: [], range: NSRange(location: 0, length: ns.length)) // wrap
+            }
+            guard found.location != NSNotFound, !ranges.contains(where: { NSEqualRanges($0, found) }) else { return }
+            ranges.append(found)
+            textView.selectedRanges = ranges.map { NSValue(range: $0) }
+            textView.scrollRangeToVisible(found)
+        }
+
+        private static func wordRange(at location: Int, in ns: NSString) -> NSRange {
+            func isWord(_ u: unichar) -> Bool {
+                guard let scalar = UnicodeScalar(u) else { return false }
+                return CharacterSet.alphanumerics.contains(scalar) || scalar == "_"
+            }
+            var start = location, end = location
+            while start > 0, isWord(ns.character(at: start - 1)) { start -= 1 }
+            while end < ns.length, isWord(ns.character(at: end)) { end += 1 }
+            return NSRange(location: start, length: end - start)
+        }
+
         /// Builds the ordered code-completion list: structure snippets first,
         /// then clangd's semantic results, language keywords, and symbols
         /// scraped from the current buffer. No dictionary words.
@@ -362,6 +417,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
+            // With multiple cursors, let AppKit apply the edit to every range
+            // verbatim — auto-pairing one range would desync the others.
+            if textView.selectedRanges.count > 1 { return true }
             guard let string = replacementString, range.length == 0, string.count == 1 else { return true }
             let pairs: [Character: Character] = ["{": "}", "(": ")", "[": "]", "\"": "\"", "'": "'"]
             guard let opener = string.first, let closer = pairs[opener] else { return true }
@@ -401,6 +459,14 @@ struct TextKit2EditorHost: NSViewRepresentable {
             case #selector(NSResponder.complete(_:)):
                 updateCompletionPopup(in: textView, minimumPrefix: 0)
                 return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                // Collapse multiple cursors back to a single caret.
+                if textView.selectedRanges.count > 1 {
+                    let primary = textView.selectedRanges.last?.rangeValue ?? textView.selectedRange()
+                    textView.setSelectedRange(NSRange(location: NSMaxRange(primary), length: 0))
+                    return true
+                }
+                return false
             default:
                 return false
             }

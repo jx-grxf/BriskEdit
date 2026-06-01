@@ -133,9 +133,11 @@ final class WorkspaceModel {
         }
         isSearching = true
         let query = searchQuery
-        let includeHidden = showHiddenFiles
+        // Search dotfiles too (.gitignore, .env, …); ripgrep still honors
+        // .gitignore and we exclude .git, so this only adds meaningful hidden
+        // files — independent of the file tree's "show hidden" toggle.
         searchTask = Task { [weak self] in
-            let results = await SearchService.search(query, root: root, includeHidden: includeHidden)
+            let results = await SearchService.search(query, root: root, includeHidden: true)
             guard let self, !Task.isCancelled else { return }
             self.searchResults = results
             self.isSearching = false
