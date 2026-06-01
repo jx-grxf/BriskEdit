@@ -236,6 +236,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         @objc private func viewportChanged() {
             gutter?.refresh()
+            // Highlighting is viewport-scoped, so lines scrolled into view need a
+            // recolor. Debounced and cheap (touches only the visible range).
+            scheduleHighlight()
         }
 
         @objc private func gitMaybeChanged() {
@@ -613,8 +616,16 @@ private enum TextKit2SyntaxHighlighter {
         return compiled
     }
 
-    /// Full-document highlight. Skipped entirely for plain text and very large
-    /// files, which then render with the text view's uniform font/color.
+    /// Highlights only the on-screen viewport (plus padding), not the whole
+    /// document. Re-setting attributes over *off-screen* text invalidates its
+    /// TextKit 2 layout fragments, which makes the viewport controller churn and
+    /// the visible text flash/blank for a frame while typing or scrolling. By
+    /// scoping the attribute edit to what's actually laid out, off-screen
+    /// fragments are never touched and the flicker is gone. Newly revealed lines
+    /// get colored by the scroll-driven re-highlight in the coordinator.
+    ///
+    /// Skipped entirely for plain text and very large files, which then render
+    /// with the text view's uniform font/color.
     static func apply(to textView: NSTextView, language: SourceLanguage, theme: EditorTheme) {
         guard let contentStorage = textView.textContentStorage, let storage = contentStorage.textStorage else { return }
         let length = storage.length
@@ -622,11 +633,12 @@ private enum TextKit2SyntaxHighlighter {
             textView.typingAttributes = baseAttributes(theme: theme)
             return
         }
-        let range = NSRange(location: 0, length: length)
+        let source = storage.string as NSString
+        let range = visibleHighlightRange(in: textView, source: source, fullLength: length)
+        guard range.length > 0 else { return }
 
         contentStorage.performEditingTransaction {
             storage.setAttributes(baseAttributes(theme: theme), range: range)
-            let source = storage.string as NSString
             // Order matters: later passes win on overlapping ranges, so tokens
             // that must always survive (strings, comments) run last.
             highlightFunctions(in: storage, source: source, range: range, language: language, color: theme.function)
@@ -638,7 +650,29 @@ private enum TextKit2SyntaxHighlighter {
             highlightComments(in: storage, source: source, range: range, language: language, color: theme.comment)
         }
         textView.typingAttributes = baseAttributes(theme: theme)
-        textView.needsDisplay = true
+    }
+
+    /// The character range to recolor: the currently laid-out TextKit 2 viewport
+    /// grown by a padding window and snapped to line boundaries (so line-anchored
+    /// patterns and `^`/`$` behave). Falls back to the whole document before the
+    /// first layout pass, when the viewport range isn't available yet.
+    private static func visibleHighlightRange(in textView: NSTextView, source: NSString, fullLength: Int) -> NSRange {
+        let full = NSRange(location: 0, length: fullLength)
+        guard let layoutManager = textView.textLayoutManager,
+              let contentManager = layoutManager.textContentManager,
+              let viewport = layoutManager.textViewportLayoutController.viewportRange else {
+            return full
+        }
+        let docStart = contentManager.documentRange.location
+        let start = contentManager.offset(from: docStart, to: viewport.location)
+        let end = contentManager.offset(from: docStart, to: viewport.endLocation)
+        guard start != NSNotFound, end != NSNotFound, end >= start else { return full }
+
+        let padding = 4000
+        let lo = source.lineRange(for: NSRange(location: max(0, start - padding), length: 0)).location
+        let anchor = min(max(0, end + padding), max(0, fullLength - 1))
+        let hi = min(fullLength, NSMaxRange(source.lineRange(for: NSRange(location: anchor, length: 0))))
+        return NSRange(location: lo, length: max(0, hi - lo))
     }
 
     private static func baseAttributes(theme: EditorTheme) -> [NSAttributedString.Key: Any] {
