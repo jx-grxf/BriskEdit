@@ -90,6 +90,12 @@ private struct EditorPreferencesView: View {
                 }
                 Toggle("Insert spaces for tab", isOn: $prefs.usesSpacesForTabs)
             }
+            Section("Appearance") {
+                Toggle("Show minimap", isOn: $prefs.showMinimap)
+                Text("A zoomed-out overview of the file at the right edge of the editor. Click or drag it to scroll.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("Source Control") {
                 Toggle("Show git change bars in gutter", isOn: $prefs.showGitGutter)
                 Text("The colored bars next to the line numbers mark lines added, modified or deleted since the last commit.")

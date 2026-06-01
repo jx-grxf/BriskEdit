@@ -22,6 +22,7 @@ final class BriskCodeTextView: NSTextView {
 struct TextKit2EditorHost: NSViewRepresentable {
     @Bindable var document: TextDocument
     let theme: EditorTheme
+    var showMinimap: Bool = true
 
     func makeNSView(context: Context) -> NSView {
         let textView = BriskCodeTextView(usingTextLayoutManager: true)
@@ -74,6 +75,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.gutter = gutter
         context.coordinator.scrollView = scrollView
 
+        // Zoomed-out overview on the right, a read-only sibling like the gutter.
+        let minimap = MinimapView(theme: theme)
+        minimap.textView = textView
+        minimap.scrollView = scrollView
+        context.coordinator.minimap = minimap
+
         let container = NSView()
         // Let SwiftUI own the container's frame (TAMIC = true, the AppKit
         // default — same as the PDF/QuickLook preview hosts). Keeping this
@@ -84,17 +91,26 @@ struct TextKit2EditorHost: NSViewRepresentable {
         // Auto Layout; they lay out inside whatever frame SwiftUI assigns.
         gutter.translatesAutoresizingMaskIntoConstraints = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        minimap.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(gutter)
         container.addSubview(scrollView)
+        container.addSubview(minimap)
+        let minimapWidth = minimap.widthAnchor.constraint(equalToConstant: showMinimap ? MinimapView.width : 0)
+        context.coordinator.minimapWidthConstraint = minimapWidth
+        minimap.isHidden = !showMinimap
         NSLayoutConstraint.activate([
             gutter.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             gutter.topAnchor.constraint(equalTo: container.topAnchor),
             gutter.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             gutter.widthAnchor.constraint(equalToConstant: TextKit2GutterView.width),
             scrollView.leadingAnchor.constraint(equalTo: gutter.trailingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: minimap.leadingAnchor),
             scrollView.topAnchor.constraint(equalTo: container.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            minimap.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            minimap.topAnchor.constraint(equalTo: container.topAnchor),
+            minimap.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            minimapWidth
         ])
 
         // Repaint the gutter as the text scrolls or the viewport resizes.
@@ -105,8 +121,11 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.applyHighlight()
         context.coordinator.warmUpLSP()
         context.coordinator.scheduleGitDiff()
-        DispatchQueue.main.async { [weak scrollView, weak textView] in
+        DispatchQueue.main.async { [weak scrollView, weak textView, weak coordinator = context.coordinator] in
             scrollView?.window?.makeFirstResponder(textView)
+            // Honor a navigation target set before the view existed (e.g. opened
+            // from Find in Files / the symbol outline).
+            coordinator?.applyPendingReveal()
         }
         return container
     }
@@ -128,6 +147,17 @@ struct TextKit2EditorHost: NSViewRepresentable {
             configure(textView, theme: theme)
             coordinator.scrollView?.backgroundColor = theme.background
             coordinator.gutter?.setTheme(theme)
+            coordinator.minimap?.setTheme(theme)
+        }
+
+        // Toggle the minimap without rebuilding the editor.
+        if let minimap = coordinator.minimap, let width = coordinator.minimapWidthConstraint {
+            let target: CGFloat = showMinimap ? MinimapView.width : 0
+            if width.constant != target {
+                width.constant = target
+                minimap.isHidden = !showMinimap
+                if showMinimap { minimap.invalidateContent() }
+            }
         }
 
         // Only touch the (potentially huge) text when the change came from
@@ -148,7 +178,11 @@ struct TextKit2EditorHost: NSViewRepresentable {
         if didReseed || themeChanged {
             coordinator.applyHighlight()
         }
+        if didReseed {
+            coordinator.minimap?.invalidateContent()
+        }
         coordinator.gutter?.setDiagnostics(document.diagnostics)
+        coordinator.applyPendingReveal()
     }
 
     /// Report the *proposed* size as our fitting size instead of letting
@@ -203,6 +237,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         var theme: EditorTheme
         weak var textView: NSTextView?
         weak var gutter: TextKit2GutterView?
+        weak var minimap: MinimapView?
+        var minimapWidthConstraint: NSLayoutConstraint?
         weak var scrollView: NSScrollView?
         private var highlightWork: DispatchWorkItem?
         private var gitWork: DispatchWorkItem?
@@ -213,6 +249,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private let popup = CompletionPopup()
         private var completionRange: NSRange?
         private var ignoreNextSelectionChange = false
+        private var lastRevealToken = 0
 
         init(document: TextDocument, theme: EditorTheme) {
             self.document = document
@@ -236,6 +273,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         @objc private func viewportChanged() {
             gutter?.refresh()
+            minimap?.refresh()
         }
 
         @objc private func gitMaybeChanged() {
@@ -264,6 +302,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             scheduleLSP(in: textView)
             updateCompletionPopup(in: textView)
             gutter?.refresh()
+            minimap?.invalidateContent()
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -365,6 +404,19 @@ struct TextKit2EditorHost: NSViewRepresentable {
         func applyHighlight() {
             guard let textView else { return }
             TextKit2SyntaxHighlighter.apply(to: textView, language: document.language, theme: theme)
+        }
+
+        /// Scrolls to and selects a navigation target (Find in Files, outline,
+        /// definition) when the document's `revealToken` advances. Cheap no-op on
+        /// the many `updateNSView` passes where nothing new was requested.
+        func applyPendingReveal() {
+            guard let textView, document.revealToken != lastRevealToken else { return }
+            lastRevealToken = document.revealToken
+            guard let reveal = document.pendingReveal else { return }
+            let range = document.range(line: reveal.line, column: reveal.column, length: reveal.length)
+            textView.setSelectedRange(range)
+            textView.scrollRangeToVisible(range)
+            textView.window?.makeFirstResponder(textView)
         }
 
         private func scheduleHighlight() {

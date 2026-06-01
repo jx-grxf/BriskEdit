@@ -33,3 +33,4 @@ Requires macOS 26 or newer with Xcode 26+. The `project.yml` is the source of tr
 ## Release Changes
 
 Release-facing changes should update `RELEASE_NOTES.md` or `docs/release.md` when they affect download, packaging, signing, installer behavior, or public trust.
+

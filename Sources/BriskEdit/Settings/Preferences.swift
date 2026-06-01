@@ -28,6 +28,11 @@ final class Preferences {
     var showGitGutter: Bool {
         didSet { persist() }
     }
+    /// Show the VS Code-style minimap (zoomed-out overview) at the right edge of
+    /// the editor. On by default.
+    var showMinimap: Bool {
+        didSet { persist() }
+    }
     /// Automatically write the buffer to disk ~1 s after the last edit. Off by
     /// default. Read straight from UserDefaults by `TextDocument`, so the key
     /// must stay in sync.
@@ -51,6 +56,7 @@ final class Preferences {
         self.usesSpacesForTabs = defaults.object(forKey: Keys.usesSpacesForTabs) as? Bool ?? true
         self.formatOnSave = defaults.bool(forKey: Keys.formatOnSave)
         self.showGitGutter = defaults.object(forKey: Keys.showGitGutter) as? Bool ?? true
+        self.showMinimap = defaults.object(forKey: Keys.showMinimap) as? Bool ?? true
         self.autosave = defaults.bool(forKey: Keys.autosave)
         self.terminalFontName = defaults.string(forKey: Keys.terminalFontName) ?? "MesloLGS Nerd Font"
         self.terminalFontSize = CGFloat(defaults.double(forKey: Keys.terminalFontSize).nonZero ?? 14)
@@ -95,6 +101,7 @@ final class Preferences {
         defaults.set(usesSpacesForTabs, forKey: Keys.usesSpacesForTabs)
         defaults.set(formatOnSave, forKey: Keys.formatOnSave)
         defaults.set(showGitGutter, forKey: Keys.showGitGutter)
+        defaults.set(showMinimap, forKey: Keys.showMinimap)
         defaults.set(autosave, forKey: Keys.autosave)
         defaults.set(terminalFontName, forKey: Keys.terminalFontName)
         defaults.set(Double(terminalFontSize), forKey: Keys.terminalFontSize)
@@ -107,6 +114,7 @@ final class Preferences {
         static let usesSpacesForTabs = "editor.usesSpacesForTabs"
         static let formatOnSave = "editor.formatOnSave"
         static let showGitGutter = "editor.showGitGutter"
+        static let showMinimap = "editor.showMinimap"
         static let autosave = "editor.autosave"
         static let terminalFontName = "terminal.fontName"
         static let terminalFontSize = "terminal.fontSize"

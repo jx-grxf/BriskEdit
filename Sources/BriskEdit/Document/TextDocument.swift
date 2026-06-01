@@ -18,6 +18,11 @@ final class TextDocument {
     /// Bumped on every text mutation so the editor can detect *external* changes
     /// cheaply, instead of comparing entire (possibly huge) strings each update.
     private(set) var revision: Int = 0
+    /// A request to scroll to and select a range, set by navigation features
+    /// (Find in Files, symbol outline, go-to-definition). The editor consumes it
+    /// when `revealToken` changes, mirroring the `revision` pattern.
+    private(set) var pendingReveal: PendingReveal?
+    private(set) var revealToken: Int = 0
     private var lineStartOffsets: [Int] = [0]
     private var lineIndexWork: DispatchWorkItem?
     private var autosaveWork: DispatchWorkItem?
@@ -125,6 +130,26 @@ final class TextDocument {
         rebuildLineIndex()
     }
 
+    /// Asks the editor to scroll to and select `length` characters starting at a
+    /// 1-based line/column. Length 0 just places the caret there.
+    func requestReveal(line: Int, column: Int = 1, length: Int = 0) {
+        pendingReveal = PendingReveal(line: line, column: column, length: length)
+        revealToken &+= 1
+    }
+
+    /// UTF-16 range for a 1-based line/column with a given length, clamped to the
+    /// buffer. Used to turn a navigation target into an `NSTextView` selection.
+    func range(line: Int, column: Int, length: Int) -> NSRange {
+        let nsString = text as NSString
+        let lineIndex = max(0, line - 1)
+        guard lineIndex < lineStartOffsets.count else {
+            return NSRange(location: nsString.length, length: 0)
+        }
+        let location = min(lineStartOffsets[lineIndex] + max(0, column - 1), nsString.length)
+        let clampedLength = max(0, min(length, nsString.length - location))
+        return NSRange(location: location, length: clampedLength)
+    }
+
     func updateCursor(location: Int) {
         let safeLocation = max(0, min(location, text.utf16.count))
         var low = 0
@@ -175,6 +200,14 @@ final class TextDocument {
         }
         lineStartOffsets = starts
     }
+}
+
+/// A navigation target handed from a feature (search, outline, definition) to
+/// the editor: scroll to and select `length` chars at a 1-based line/column.
+struct PendingReveal: Equatable, Sendable {
+    var line: Int
+    var column: Int
+    var length: Int
 }
 
 enum SourceLanguage: String, Sendable, CaseIterable {

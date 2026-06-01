@@ -3,6 +3,7 @@ import AppKit
 
 struct AppCommands: Commands {
     let updates: UpdateService
+    @Bindable var preferences: Preferences
     @FocusedValue(\.workspace) private var workspace
     @Environment(\.openWindow) private var openWindow
 
@@ -54,6 +55,11 @@ struct AppCommands: Commands {
                 workspace?.showCommandPalette = true
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
+        }
+
+        CommandMenu("View") {
+            Toggle("Show Minimap", isOn: $preferences.showMinimap)
+                .keyboardShortcut("m", modifiers: [.command, .control])
         }
 
         CommandMenu("Run") {
