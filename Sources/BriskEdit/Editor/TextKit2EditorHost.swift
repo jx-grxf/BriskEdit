@@ -236,9 +236,6 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         @objc private func viewportChanged() {
             gutter?.refresh()
-            // Highlighting is viewport-scoped, so lines scrolled into view need a
-            // recolor. Debounced and cheap (touches only the visible range).
-            scheduleHighlight()
         }
 
         @objc private func gitMaybeChanged() {
@@ -616,63 +613,71 @@ private enum TextKit2SyntaxHighlighter {
         return compiled
     }
 
-    /// Highlights only the on-screen viewport (plus padding), not the whole
-    /// document. Re-setting attributes over *off-screen* text invalidates its
-    /// TextKit 2 layout fragments, which makes the viewport controller churn and
-    /// the visible text flash/blank for a frame while typing or scrolling. By
-    /// scoping the attribute edit to what's actually laid out, off-screen
-    /// fragments are never touched and the flicker is gone. Newly revealed lines
-    /// get colored by the scroll-driven re-highlight in the coordinator.
+    /// Paints display-only color via the layout manager's *rendering attributes*,
+    /// which (unlike text-storage edits) never invalidate layout — the key to
+    /// flicker-free highlighting on TextKit 2.
+    @MainActor
+    struct RenderingPainter {
+        let layoutManager: NSTextLayoutManager
+        let contentManager: NSTextContentManager
+        let documentStart: NSTextLocation
+
+        init?(textView: NSTextView) {
+            guard let layoutManager = textView.textLayoutManager,
+                  let contentManager = layoutManager.textContentManager else { return nil }
+            self.layoutManager = layoutManager
+            self.contentManager = contentManager
+            self.documentStart = contentManager.documentRange.location
+        }
+
+        /// Drops all color overrides so untouched tokens fall back to the storage's
+        /// base foreground color.
+        func reset() {
+            layoutManager.invalidateRenderingAttributes(for: contentManager.documentRange)
+        }
+
+        func paint(_ attributes: [NSAttributedString.Key: Any], range: NSRange) {
+            guard let start = contentManager.location(documentStart, offsetBy: range.location),
+                  let end = contentManager.location(start, offsetBy: range.length),
+                  let textRange = NSTextRange(location: start, end: end) else { return }
+            layoutManager.setRenderingAttributes(attributes, for: textRange)
+        }
+    }
+
+    /// Recolors the whole document using TextKit 2 **rendering attributes**
+    /// (display-only color overrides on the layout manager) instead of mutating
+    /// the text storage. Storage edits invalidate layout fragments — even for
+    /// off-screen text — which made the viewport churn and the visible text
+    /// flash/jitter (a line popping in and out) while typing. Rendering
+    /// attributes never touch layout, so highlighting is invisible to the
+    /// viewport controller: no flash, no jitter, and we can color the entire
+    /// document again (correct for multi-line comments/strings).
     ///
-    /// Skipped entirely for plain text and very large files, which then render
-    /// with the text view's uniform font/color.
+    /// Skipped for plain text and very large files, which then render with the
+    /// text view's uniform color.
     static func apply(to textView: NSTextView, language: SourceLanguage, theme: EditorTheme) {
-        guard let contentStorage = textView.textContentStorage, let storage = contentStorage.textStorage else { return }
+        guard let painter = RenderingPainter(textView: textView),
+              let storage = textView.textContentStorage?.textStorage else { return }
+        // Clear previous colors first so removed tokens fall back to the base
+        // foreground (the text storage's own color).
+        painter.reset()
         let length = storage.length
         guard length > 0, length <= maxHighlightedCharacters, language != .plainText else {
             textView.typingAttributes = baseAttributes(theme: theme)
             return
         }
         let source = storage.string as NSString
-        let range = visibleHighlightRange(in: textView, source: source, fullLength: length)
-        guard range.length > 0 else { return }
-
-        contentStorage.performEditingTransaction {
-            storage.setAttributes(baseAttributes(theme: theme), range: range)
-            // Order matters: later passes win on overlapping ranges, so tokens
-            // that must always survive (strings, comments) run last.
-            highlightFunctions(in: storage, source: source, range: range, language: language, color: theme.function)
-            highlightTypes(in: storage, source: source, range: range, language: language, color: theme.type)
-            highlightKeywords(in: storage, source: source, range: range, language: language, theme: theme)
-            highlightNumbers(in: storage, source: source, range: range, color: theme.number)
-            highlightPreprocessor(in: storage, source: source, range: range, language: language, color: theme.preprocessor)
-            highlightStrings(in: storage, source: source, range: range, color: theme.string)
-            highlightComments(in: storage, source: source, range: range, language: language, color: theme.comment)
-        }
+        let range = NSRange(location: 0, length: length)
+        // Order matters: later passes win on overlapping ranges, so tokens that
+        // must always survive (strings, comments) run last.
+        highlightFunctions(with: painter, source: source, range: range, language: language, color: theme.function)
+        highlightTypes(with: painter, source: source, range: range, language: language, color: theme.type)
+        highlightKeywords(with: painter, source: source, range: range, language: language, theme: theme)
+        highlightNumbers(with: painter, source: source, range: range, color: theme.number)
+        highlightPreprocessor(with: painter, source: source, range: range, language: language, color: theme.preprocessor)
+        highlightStrings(with: painter, source: source, range: range, color: theme.string)
+        highlightComments(with: painter, source: source, range: range, language: language, color: theme.comment)
         textView.typingAttributes = baseAttributes(theme: theme)
-    }
-
-    /// The character range to recolor: the currently laid-out TextKit 2 viewport
-    /// grown by a padding window and snapped to line boundaries (so line-anchored
-    /// patterns and `^`/`$` behave). Falls back to the whole document before the
-    /// first layout pass, when the viewport range isn't available yet.
-    private static func visibleHighlightRange(in textView: NSTextView, source: NSString, fullLength: Int) -> NSRange {
-        let full = NSRange(location: 0, length: fullLength)
-        guard let layoutManager = textView.textLayoutManager,
-              let contentManager = layoutManager.textContentManager,
-              let viewport = layoutManager.textViewportLayoutController.viewportRange else {
-            return full
-        }
-        let docStart = contentManager.documentRange.location
-        let start = contentManager.offset(from: docStart, to: viewport.location)
-        let end = contentManager.offset(from: docStart, to: viewport.endLocation)
-        guard start != NSNotFound, end != NSNotFound, end >= start else { return full }
-
-        let padding = 4000
-        let lo = source.lineRange(for: NSRange(location: max(0, start - padding), length: 0)).location
-        let anchor = min(max(0, end + padding), max(0, fullLength - 1))
-        let hi = min(fullLength, NSMaxRange(source.lineRange(for: NSRange(location: anchor, length: 0))))
-        return NSRange(location: lo, length: max(0, hi - lo))
     }
 
     private static func baseAttributes(theme: EditorTheme) -> [NSAttributedString.Key: Any] {
@@ -683,7 +688,7 @@ private enum TextKit2SyntaxHighlighter {
         ]
     }
 
-    private static func highlightComments(in storage: NSTextStorage, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightComments(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
         let patterns: [String]
         switch language {
         case .markdown:
@@ -693,24 +698,24 @@ private enum TextKit2SyntaxHighlighter {
         default:
             patterns = ["//.*$", "/\\*(?s:.*?)\\*/"]
         }
-        apply(patterns: patterns, to: storage, source: source, range: range, options: [.anchorsMatchLines], attributes: [.foregroundColor: color])
+        apply(patterns: patterns, with: painter, source: source, range: range, options: [.anchorsMatchLines], attributes: [.foregroundColor: color])
     }
 
-    private static func highlightStrings(in storage: NSTextStorage, source: NSString, range: NSRange, color: NSColor) {
-        apply(patterns: ["\"(?:\\\\.|[^\"\\\\])*\"", "'(?:\\\\.|[^'\\\\])*'", "<[A-Za-z0-9_./]+\\.h>"], to: storage, source: source, range: range, attributes: [.foregroundColor: color])
+    private static func highlightStrings(with painter: RenderingPainter, source: NSString, range: NSRange, color: NSColor) {
+        apply(patterns: ["\"(?:\\\\.|[^\"\\\\])*\"", "'(?:\\\\.|[^'\\\\])*'", "<[A-Za-z0-9_./]+\\.h>"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightNumbers(in storage: NSTextStorage, source: NSString, range: NSRange, color: NSColor) {
-        apply(patterns: ["\\b0[xX][0-9a-fA-F]+\\b", "\\b\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?[fFuUlL]*\\b"], to: storage, source: source, range: range, attributes: [.foregroundColor: color])
+    private static func highlightNumbers(with painter: RenderingPainter, source: NSString, range: NSRange, color: NSColor) {
+        apply(patterns: ["\\b0[xX][0-9a-fA-F]+\\b", "\\b\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?[fFuUlL]*\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightPreprocessor(in storage: NSTextStorage, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightPreprocessor(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
         guard language == .c || language == .cpp else { return }
         // Color only the `#directive` token so the included path stays a string.
         applyCaptureGroup(
             pattern: "^(\\s*#\\s*(?:include|define|if|ifdef|ifndef|else|elif|endif|pragma|undef|error|warning))\\b",
             group: 1,
-            to: storage,
+            with: painter,
             source: source,
             range: range,
             options: [.anchorsMatchLines],
@@ -718,17 +723,17 @@ private enum TextKit2SyntaxHighlighter {
         )
     }
 
-    private static func highlightFunctions(in storage: NSTextStorage, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightFunctions(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
         switch language {
         case .markdown, .yaml, .json, .html, .xml, .css, .plainText:
             return
         default:
             break
         }
-        applyCaptureGroup(pattern: "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()", group: 1, to: storage, source: source, range: range, attributes: [.foregroundColor: color])
+        applyCaptureGroup(pattern: "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()", group: 1, with: painter, source: source, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightTypes(in storage: NSTextStorage, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightTypes(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
         switch language {
         case .markdown, .yaml, .json, .html, .xml, .css, .shell, .plainText:
             return
@@ -736,18 +741,18 @@ private enum TextKit2SyntaxHighlighter {
             break
         }
         // CamelCase identifiers (types/classes) and C `_t` suffixed types.
-        apply(patterns: ["\\b[A-Z][A-Za-z0-9_]*\\b", "\\b[a-z_][A-Za-z0-9_]*_t\\b"], to: storage, source: source, range: range, attributes: [.foregroundColor: color])
+        apply(patterns: ["\\b[A-Z][A-Za-z0-9_]*\\b", "\\b[a-z_][A-Za-z0-9_]*_t\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightKeywords(in storage: NSTextStorage, source: NSString, range: NSRange, language: SourceLanguage, theme: EditorTheme) {
+    private static func highlightKeywords(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, theme: EditorTheme) {
         let (keywords, control) = keywordSets(for: language)
         if !keywords.isEmpty {
             let escaped = keywords.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
-            apply(patterns: ["\\b(\(escaped))\\b"], to: storage, source: source, range: range, attributes: [.foregroundColor: theme.keyword])
+            apply(patterns: ["\\b(\(escaped))\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: theme.keyword])
         }
         if !control.isEmpty {
             let escaped = control.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
-            apply(patterns: ["\\b(\(escaped))\\b"], to: storage, source: source, range: range, attributes: [.foregroundColor: theme.controlKeyword])
+            apply(patterns: ["\\b(\(escaped))\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: theme.controlKeyword])
         }
     }
 
@@ -785,24 +790,24 @@ private enum TextKit2SyntaxHighlighter {
         return (keywords, control)
     }
 
-    private static func apply(patterns: [String], to storage: NSTextStorage, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
+    private static func apply(patterns: [String], with painter: RenderingPainter, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
         let text = source as String
         for pattern in patterns {
             guard let regex = regex(pattern, options: options) else { continue }
             regex.enumerateMatches(in: text, options: [], range: range) { match, _, _ in
                 guard let match else { return }
-                storage.addAttributes(attributes, range: match.range)
+                painter.paint(attributes, range: match.range)
             }
         }
     }
 
-    private static func applyCaptureGroup(pattern: String, group: Int, to storage: NSTextStorage, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
+    private static func applyCaptureGroup(pattern: String, group: Int, with painter: RenderingPainter, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
         guard let regex = regex(pattern, options: options) else { return }
         regex.enumerateMatches(in: source as String, options: [], range: range) { match, _, _ in
             guard let match, group < match.numberOfRanges else { return }
             let captured = match.range(at: group)
             guard captured.location != NSNotFound else { return }
-            storage.addAttributes(attributes, range: captured)
+            painter.paint(attributes, range: captured)
         }
     }
 }
