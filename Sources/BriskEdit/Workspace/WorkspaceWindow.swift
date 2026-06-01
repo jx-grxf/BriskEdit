@@ -78,6 +78,7 @@ struct WorkspaceWindow: View {
                 Picker("", selection: Bindable(workspace).sidebarTab) {
                     Image(systemName: "folder").tag(SidebarTab.files)
                     Image(systemName: "magnifyingglass").tag(SidebarTab.search)
+                    Image(systemName: "list.bullet.indent").tag(SidebarTab.outline)
                     Image(systemName: "arrow.triangle.branch").tag(SidebarTab.sourceControl)
                 }
                 .pickerStyle(.segmented)
@@ -90,6 +91,8 @@ struct WorkspaceWindow: View {
                     FileTreeView(root: root, workspace: workspace)
                 case .search:
                     SearchSidebarView(workspace: workspace)
+                case .outline:
+                    OutlineSidebarView(workspace: workspace)
                 case .sourceControl:
                     GitSidebarView(workspace: workspace, root: root)
                 }

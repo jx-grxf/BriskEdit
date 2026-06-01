@@ -4,6 +4,7 @@ import SwiftUI
 enum SidebarTab: Hashable {
     case files
     case search
+    case outline
     case sourceControl
 }
 

@@ -29,6 +29,11 @@ final class WorkspaceModel {
     /// Bumped to ask the search sidebar to focus its input field.
     var focusSearchToken = 0
     private var searchTask: Task<Void, Never>?
+
+    // MARK: - Symbol outline
+    var outlineSymbols: [LSPSymbol] = []
+    var isLoadingOutline = false
+    private var outlineTask: Task<Void, Never>?
     /// Directories the user has expanded in the file tree — kept here (not in
     /// per-row @State) so the tree survives reloads without collapsing.
     var expandedDirectories: Set<URL> = []
@@ -160,6 +165,29 @@ final class WorkspaceModel {
         Task { [weak self] in
             _ = await SearchService.replaceAll(query, replacement: replacement, in: files)
             self?.runProjectSearch()
+        }
+    }
+
+    /// Reloads the outline (symbol tree) for the active document from its LSP.
+    /// No-op for languages without a server; clears for non-file buffers.
+    func refreshOutline() {
+        outlineTask?.cancel()
+        guard let doc = activeTab?.document, let url = doc.fileURL,
+              LSPService.config(for: doc.language) != nil else {
+            outlineSymbols = []
+            isLoadingOutline = false
+            return
+        }
+        isLoadingOutline = true
+        let language = doc.language
+        let uri = url.absoluteString
+        let text = doc.text
+        let root = url.deletingLastPathComponent().path
+        outlineTask = Task { [weak self] in
+            let symbols = await LSPService.shared.documentSymbols(language: language, uri: uri, text: text, root: root)
+            guard let self, !Task.isCancelled else { return }
+            self.outlineSymbols = symbols
+            self.isLoadingOutline = false
         }
     }
 
