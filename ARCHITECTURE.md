@@ -168,7 +168,9 @@ The palette is the source of truth for "things the app can do". Menu items in `A
 
 Wraps `SPUStandardUpdaterController` from Sparkle. Channel selection (`stable` / `beta`) is persisted in `UserDefaults` and surfaced via a delegate's `allowedChannels(for:)`. The release pipeline writes the appcast.
 
-`SUFeedURL` and `SUPublicEDKey` are injected at build time via Info.plist build settings, not hardcoded.
+`SUFeedURL` lives in `Config/Info.plist`. `SUPublicEDKey` is expanded from the
+`BRISKEDIT_SPARKLE_PUBLIC_KEY` build setting; the canonical public key is also
+committed in `project.yml` because it is not secret and must ship in every app.
 
 ---
 
@@ -235,7 +237,9 @@ Release runbook: [`docs/release.md`](docs/release.md).
 - **`TextDocument` is the only writer to its own `text`.** Coordinator calls `applyEdit(text:)`, not direct assignment. Future undo/coalescing logic hangs off that single method.
 - **File IO is always detached.** `save()` and `load(from:)` both run on a detached task. The main actor never blocks on disk.
 - **No background filesystem watcher in MVP-0.** Reload-on-external-change lands in MVP-1 with FSEvents.
-- **Sparkle keys are build-time secrets.** `BRISKEDIT_SPARKLE_PUBLIC_KEY` and `BRISKEDIT_SPARKLE_PRIVATE_KEY` only exist in CI secrets and a developer's local keychain. The committed `project.yml` references the env var, never the value.
+- **Only the Sparkle private key is secret.** The EdDSA public key is embedded in
+  every app binary and committed as the default build setting. The private key
+  stays in CI secrets or a developer's local keychain.
 
 ---
 
