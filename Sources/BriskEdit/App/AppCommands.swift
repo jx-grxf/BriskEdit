@@ -29,6 +29,20 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("o", modifiers: [.command, .shift])
 
+            Menu("Open Recent") {
+                let folders = RecentWorkspacesStore.shared.folders
+                if folders.isEmpty {
+                    Button("No Recent Folders") {}.disabled(true)
+                } else {
+                    ForEach(folders, id: \.self) { url in
+                        Button(url.lastPathComponent) { openRecent(url) }
+                            .help(url.path)
+                    }
+                    Divider()
+                    Button("Clear Menu") { RecentWorkspacesStore.shared.clear() }
+                }
+            }
+
             Button("Close Folder") {
                 workspace?.closeFolder()
             }
@@ -167,6 +181,30 @@ struct AppCommands: Commands {
             Button("Check for Updates…") {
                 updates.checkForUpdates()
             }
+        }
+
+        // Replace the default "BriskEdit Help" item (which only shows an
+        // "Help isn't available" alert) with a link to the project on GitHub.
+        CommandGroup(replacing: .help) {
+            Button("BriskEdit on GitHub") {
+                if let url = URL(string: "https://github.com/jx-grxf/BriskEdit") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func openRecent(_ url: URL) {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            NSSound.beep()
+            return
+        }
+        if let workspace {
+            workspace.setWorkspaceRoot(url)
+        } else {
+            openWindow(value: WindowKind.secondary(UUID()))
         }
     }
 

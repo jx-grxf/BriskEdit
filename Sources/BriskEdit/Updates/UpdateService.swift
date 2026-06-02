@@ -98,7 +98,11 @@ private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
 
     func allowedChannels(for updater: SPUUpdater) -> Set<String> {
         switch channel {
-        case .stable: ["stable"]
+        // Stable releases live on Sparkle's default channel (no tag), which is
+        // always visible — so the stable channel adds no extra channels. Beta
+        // users additionally opt into "beta", and still see default (stable)
+        // items, so they roll forward onto a newer stable build automatically.
+        case .stable: []
         case .beta: ["beta"]
         }
     }

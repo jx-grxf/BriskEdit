@@ -99,6 +99,37 @@ struct ToolHealthPanel: View {
     }
 }
 
+/// An indeterminate green progress bar — a highlight that sweeps back and forth.
+/// We can't show a real percentage (brew/pip/go report none), but this animates
+/// reliably, unlike an indeterminate `.linear` ProgressView which renders as a
+/// static dark bar on macOS.
+private struct InstallProgressBar: View {
+    @State private var animate = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let trackWidth = geo.size.width
+            let barWidth = trackWidth * 0.4
+            Capsule()
+                .fill(Color.green.opacity(0.2))
+                .overlay(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.green)
+                        .frame(width: barWidth)
+                        .offset(x: animate ? trackWidth - barWidth : 0)
+                }
+        }
+        .frame(width: 120, height: 6)
+        .clipShape(Capsule())
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                animate = true
+            }
+        }
+        .accessibilityLabel("Installing")
+    }
+}
+
 private struct ToolHealthRow: View {
     let item: ToolHealthItem
     var isInstalling: Bool = false
@@ -126,10 +157,7 @@ private struct ToolHealthRow: View {
             }
             Spacer()
             if isInstalling {
-                ProgressView()
-                    .progressViewStyle(.linear)
-                    .tint(.green)
-                    .frame(width: 120)
+                InstallProgressBar()
             } else if !item.isAvailable, item.descriptor.installCommand != nil {
                 Button("Install") { onInstall(item.descriptor) }
                     .controlSize(.small)

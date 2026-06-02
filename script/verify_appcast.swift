@@ -65,7 +65,15 @@ var failures: [String] = []
 if delegate.enclosureURL != expectedURL {
     failures.append("enclosure url mismatch: got \(delegate.enclosureURL ?? "nil"), expected \(expectedURL)")
 }
-if delegate.channel != expectedChannel {
+// Stable releases ride the default channel: they carry NO <sparkle:channel> tag
+// so every client (including beta opt-ins) sees them. Only pre-release builds are
+// tagged. So when "stable" (or empty) is expected, assert there is no channel.
+let expectsNoChannel = expectedChannel.isEmpty || expectedChannel == "stable" || expectedChannel == "default"
+if expectsNoChannel {
+    if let channel = delegate.channel, !channel.isEmpty {
+        failures.append("expected no channel tag for a stable release, got \(channel)")
+    }
+} else if delegate.channel != expectedChannel {
     failures.append("channel mismatch: got \(delegate.channel ?? "nil"), expected \(expectedChannel)")
 }
 

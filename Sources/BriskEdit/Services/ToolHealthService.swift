@@ -127,17 +127,20 @@ enum ToolHealthService {
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/bin/zsh")
             process.arguments = ["-lc", command]
-            let out = Pipe()
-            let err = Pipe()
-            process.standardOutput = out
-            process.standardError = err
+            // Funnel stdout *and* stderr into one pipe and drain it in a single
+            // pass. Using two pipes and reading them sequentially deadlocks when a
+            // chatty installer (go install gopls, pip black, brew) fills the
+            // second pipe's buffer while we're still blocked reading the first —
+            // which made those installs hang forever with the progress bar stuck.
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = pipe
             do { try process.run() } catch {
                 return GitResult(ok: false, output: error.localizedDescription)
             }
-            let outData = out.fileHandleForReading.readDataToEndOfFile()
-            let errData = err.fileHandleForReading.readDataToEndOfFile()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             process.waitUntilExit()
-            let output = ((String(data: outData, encoding: .utf8) ?? "") + (String(data: errData, encoding: .utf8) ?? ""))
+            let output = (String(data: data, encoding: .utf8) ?? "")
                 .trimmingCharacters(in: .whitespacesAndNewlines)
             return GitResult(ok: process.terminationStatus == 0, output: output.isEmpty ? "Install command finished." : output)
         }.value

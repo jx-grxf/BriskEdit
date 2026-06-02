@@ -6,6 +6,8 @@ struct WorkspaceWindow: View {
     @State private var workspace = WorkspaceModel()
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var didStartSession = false
+    @State private var titleTapCount = 0
+    @State private var secretBanner: String?
     @Environment(Preferences.self) private var preferences
     @Environment(UpdateService.self) private var updates
     @Environment(\.openWindow) private var openWindow
@@ -34,7 +36,40 @@ struct WorkspaceWindow: View {
             hasUnsavedChanges: workspace.hasUnsavedChanges,
             saveAll: { await workspace.saveAllForQuit() }
         ))
+        .overlay(alignment: .top) {
+            if let banner = secretBanner {
+                HStack(spacing: 10) {
+                    Image(systemName: "sparkles")
+                    Text(banner).font(.callout.weight(.medium))
+                    if SecretMode.isEnabled {
+                        Button("Deactivate") {
+                            SecretMode.isEnabled = false
+                            showSecretBanner("Secret deactivated")
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+                .shadow(radius: 8, y: 2)
+                .padding(.top, 12)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .task(id: banner) {
+                    try? await Task.sleep(for: .seconds(2.6))
+                    withAnimation { secretBanner = nil }
+                }
+            }
+        }
         .toolbar {
+            ToolbarItem(placement: .principal) {
+                Button(action: registerTitleTap) {
+                    Text("BriskEdit").font(.headline)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("BriskEdit")
+            }
             if updates.isUpdateAvailable {
                 ToolbarItem(placement: .navigation) {
                     Button {
@@ -131,6 +166,18 @@ struct WorkspaceWindow: View {
             }
     }
 
+    private func registerTitleTap() {
+        titleTapCount += 1
+        guard titleTapCount >= 5 else { return }
+        titleTapCount = 0
+        SecretMode.isEnabled.toggle()
+        showSecretBanner(SecretMode.isEnabled ? "Secret activated" : "Secret deactivated")
+    }
+
+    private func showSecretBanner(_ message: String) {
+        withAnimation { secretBanner = message }
+    }
+
     @MainActor
     private func openFile() {
         let panel = NSOpenPanel()
@@ -221,11 +268,21 @@ private struct WindowConfigurator: NSViewRepresentable {
                 forwardee = window.delegate
                 window.delegate = self
             }
-            if !didApplyInitialFrame, let screen = window.screen ?? NSScreen.main {
+            if !didApplyInitialFrame {
                 didApplyInitialFrame = true
-                let frame = screen.visibleFrame.insetBy(dx: 18, dy: 18)
-                window.setFrame(frame, display: true, animate: false)
+                // Apply now and again over the next couple of runloop turns:
+                // SwiftUI sizes the window to its content's ideal size *after* this
+                // first pass, which is what kept shrinking the window back down. A
+                // few re-applies let our full-size frame win without an animation.
+                applyFullSizeFrame(to: window)
+                DispatchQueue.main.async { [weak self] in self?.applyFullSizeFrame(to: window) }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.applyFullSizeFrame(to: window) }
             }
+        }
+
+        private func applyFullSizeFrame(to window: NSWindow) {
+            guard let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
+            window.setFrame(screen.visibleFrame.insetBy(dx: 18, dy: 18), display: true, animate: false)
         }
 
         func windowShouldClose(_ sender: NSWindow) -> Bool {

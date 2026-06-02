@@ -203,9 +203,11 @@ private struct FileTreeBranch: View {
     }
 
     /// Expansion state lives in the model so reloads don't collapse the tree.
+    /// The root folder is seeded into `expandedDirectories` when a workspace
+    /// opens, so it starts expanded but — unlike before — can also be collapsed.
     private var isExpanded: Binding<Bool> {
         Binding(
-            get: { depth == 0 || workspace.expandedDirectories.contains(node.url) },
+            get: { workspace.expandedDirectories.contains(node.url) },
             set: { expand in
                 if expand { workspace.expandedDirectories.insert(node.url) }
                 else { workspace.expandedDirectories.remove(node.url) }

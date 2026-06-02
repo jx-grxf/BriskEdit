@@ -22,7 +22,7 @@ final class TextKit2GutterView: NSView {
 
     /// Fixed width — enough for ~5 digits at typical code sizes, plus a small
     /// leading column for the diagnostic dot so it never touches the numbers.
-    static let width: CGFloat = 52
+    static let width: CGFloat = 48
 
     init(theme: EditorTheme) {
         self.theme = theme
@@ -189,7 +189,7 @@ final class TextKit2GutterView: NSView {
     private func drawFoldChevron(_ line: Int, y: CGFloat, lineHeight: CGFloat) {
         guard theme.showCodeFolding, let folding, folding.region(forHeaderLine: line - 1) != nil else { return }
         let folded = folding.isFolded(headerLine: line - 1)
-        let box = NSRect(x: bounds.width - 16, y: y, width: 14, height: lineHeight)
+        let box = NSRect(x: bounds.width - 11, y: y, width: 9, height: lineHeight)
         foldHitRects.append((line: line, rect: box))
 
         let s: CGFloat = 7
@@ -217,8 +217,9 @@ final class TextKit2GutterView: NSView {
         ]
         let string = NSAttributedString(string: "\(line)", attributes: attributes)
         let size = string.size()
-        // Leave a fixed column on the inner edge for the fold chevron.
-        let x = bounds.width - size.width - 16
+        // Leave a slim column on the inner edge for the fold chevron — kept tight
+        // so the numbers sit close to the code rather than floating far left.
+        let x = bounds.width - size.width - 11
         let centeredY = y + max(0, (lineHeight - size.height) / 2)
         string.draw(at: CGPoint(x: x, y: centeredY))
     }

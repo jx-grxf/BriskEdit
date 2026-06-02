@@ -114,6 +114,15 @@ if [[ -n "$DESCRIPTION_HTML" ]]; then
   DESCRIPTION_BLOCK="      <description><![CDATA[${DESCRIPTION_HTML}]]></description>"
 fi
 
+# Sparkle best practice: only PRE-RELEASE builds carry a channel tag. Stable
+# builds go on the *default* channel (no tag), which every client — including
+# users opted into the beta channel — always sees. That's what lets beta testers
+# roll forward onto a newer stable release automatically.
+CHANNEL_BLOCK=""
+if [[ "$CHANNEL" != "stable" ]]; then
+  CHANNEL_BLOCK="      <sparkle:channel>${CHANNEL}</sparkle:channel>"
+fi
+
 cat > dist/sparkle/appcast.xml <<EOF
 <?xml version="1.0" encoding="utf-8"?>
 <rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">
@@ -125,7 +134,7 @@ cat > dist/sparkle/appcast.xml <<EOF
     <item>
       <title>BriskEdit ${BRISKEDIT_VERSION}</title>
 ${DESCRIPTION_BLOCK}
-      <sparkle:channel>${CHANNEL}</sparkle:channel>
+${CHANNEL_BLOCK}
       <sparkle:version>${BUILD}</sparkle:version>
       <sparkle:shortVersionString>${BRISKEDIT_VERSION}</sparkle:shortVersionString>
       <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>

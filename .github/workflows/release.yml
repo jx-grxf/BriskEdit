@@ -155,8 +155,12 @@ jobs:
               $RELEASE_PRERELEASE
           fi
 
+      # Refresh the moving beta feed for EVERY release, stable or beta. Beta
+      # testers poll this feed; a stable build's appcast rides Sparkle's default
+      # channel (no tag), so publishing it here lets beta users roll forward onto
+      # the new stable automatically instead of being stranded on an older beta.
       - name: Publish beta appcast feed
-        if: steps.version.outputs.channel == 'beta'
+        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
