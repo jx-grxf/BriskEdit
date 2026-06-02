@@ -8,9 +8,17 @@ import AppKit
 /// geometry, so it can't blank the editor.
 final class TextKit2GutterView: NSView {
     weak var textView: NSTextView?
+    /// Code-folding state (foldable regions + which are collapsed). The gutter
+    /// draws a chevron on each header line and toggles on click.
+    weak var folding: FoldingController?
+    /// Called after a fold toggles, so the host can re-apply syntax highlighting
+    /// (the relayout drops rendering attributes).
+    var onFoldToggled: (() -> Void)?
     private var theme: EditorTheme
     private var gitDiff: GitDiff?
     private var diagnostics: [Int: Diagnostic.Severity] = [:]
+    /// Clickable chevron rects captured during the last draw, keyed by 1-based line.
+    private var foldHitRects: [(line: Int, rect: NSRect)] = []
 
     /// Fixed width — enough for ~5 digits at typical code sizes.
     static let width: CGFloat = 48
@@ -60,11 +68,25 @@ final class TextKit2GutterView: NSView {
 
     func refresh() { needsDisplay = true }
 
+    // MARK: - Fold interaction
+
+    override func mouseDown(with event: NSEvent) {
+        let point = convert(event.locationInWindow, from: nil)
+        guard let hit = foldHitRects.first(where: { $0.rect.contains(point) }), let folding else {
+            super.mouseDown(with: event)
+            return
+        }
+        folding.toggle(headerLine: hit.line - 1)
+        onFoldToggled?()
+        needsDisplay = true
+    }
+
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
         theme.gutterBackground.setFill()
         dirtyRect.fill()
+        foldHitRects.removeAll(keepingCapacity: true)
 
         guard let textView, let tlm = textView.textLayoutManager else { return }
         let inset = textView.textContainerInset.height
@@ -104,7 +126,12 @@ final class TextKit2GutterView: NSView {
             if frame.minY > visible.maxY { return false }
             let y = frame.minY + inset - visible.minY
             let firstLineHeight = fragment.textLineFragments.first?.typographicBounds.height ?? frame.height
-            drawGutterLine(line, font: numberFont, y: y, lineHeight: firstLineHeight)
+            // Folded-away lines collapse to ~0 height; numbering them would stack
+            // unreadable digits on top of each other. Skip them — the next visible
+            // line carries the correct number.
+            if folding?.isHidden(lineIndex0: line - 1) != true {
+                drawGutterLine(line, font: numberFont, y: y, lineHeight: firstLineHeight)
+            }
             lastFragment = fragment
             line += 1
             return true
@@ -152,6 +179,34 @@ final class TextKit2GutterView: NSView {
         }
 
         drawNumber(line, font: font, y: y, lineHeight: lineHeight)
+        drawFoldChevron(line, y: y, lineHeight: lineHeight)
+    }
+
+    /// Fold chevron on the inner (text-facing) edge for lines that head a
+    /// foldable region: a down-triangle when expanded, a right-triangle when
+    /// collapsed. Its rect is recorded for click hit-testing.
+    private func drawFoldChevron(_ line: Int, y: CGFloat, lineHeight: CGFloat) {
+        guard let folding, folding.region(forHeaderLine: line - 1) != nil else { return }
+        let folded = folding.isFolded(headerLine: line - 1)
+        let box = NSRect(x: bounds.width - 16, y: y, width: 14, height: lineHeight)
+        foldHitRects.append((line: line, rect: box))
+
+        let s: CGFloat = 7
+        let cx = box.midX
+        let cy = box.midY
+        let path = NSBezierPath()
+        if folded { // ▶ points right
+            path.move(to: NSPoint(x: cx - s / 3, y: cy - s / 2))
+            path.line(to: NSPoint(x: cx + s / 2, y: cy))
+            path.line(to: NSPoint(x: cx - s / 3, y: cy + s / 2))
+        } else {    // ▼ points down
+            path.move(to: NSPoint(x: cx - s / 2, y: cy - s / 3))
+            path.line(to: NSPoint(x: cx + s / 2, y: cy - s / 3))
+            path.line(to: NSPoint(x: cx, y: cy + s / 2))
+        }
+        path.close()
+        theme.gutterForeground.setFill()
+        path.fill()
     }
 
     private func drawNumber(_ line: Int, font: NSFont, y: CGFloat, lineHeight: CGFloat) {
@@ -161,7 +216,8 @@ final class TextKit2GutterView: NSView {
         ]
         let string = NSAttributedString(string: "\(line)", attributes: attributes)
         let size = string.size()
-        let x = bounds.width - size.width - 8
+        // Leave a fixed column on the inner edge for the fold chevron.
+        let x = bounds.width - size.width - 16
         let centeredY = y + max(0, (lineHeight - size.height) / 2)
         string.draw(at: CGPoint(x: x, y: centeredY))
     }
