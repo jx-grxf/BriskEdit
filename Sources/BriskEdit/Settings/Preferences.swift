@@ -6,6 +6,23 @@ import SwiftUI
 @MainActor
 @Observable
 final class Preferences {
+    enum StartupBehavior: String, CaseIterable, Identifiable {
+        case restoreLastWorkspace
+        case startEmpty
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .restoreLastWorkspace: "Restore Last Workspace"
+            case .startEmpty: "Start Empty"
+            }
+        }
+    }
+
+    var startupBehavior: StartupBehavior {
+        didSet { persist() }
+    }
     var fontSize: CGFloat {
         didSet { persist() }
     }
@@ -64,6 +81,7 @@ final class Preferences {
 
     init() {
         let defaults = UserDefaults.standard
+        self.startupBehavior = StartupBehavior(rawValue: defaults.string(forKey: Keys.startupBehavior) ?? "") ?? .restoreLastWorkspace
         self.fontSize = CGFloat(defaults.double(forKey: Keys.fontSize).nonZero ?? 13)
         self.fontName = defaults.string(forKey: Keys.fontName) ?? "SF Mono"
         self.tabWidth = defaults.integer(forKey: Keys.tabWidth).nonZero ?? 4
@@ -125,6 +143,7 @@ final class Preferences {
 
     private func persist() {
         let defaults = UserDefaults.standard
+        defaults.set(startupBehavior.rawValue, forKey: Keys.startupBehavior)
         defaults.set(Double(fontSize), forKey: Keys.fontSize)
         defaults.set(fontName, forKey: Keys.fontName)
         defaults.set(tabWidth, forKey: Keys.tabWidth)
@@ -141,6 +160,7 @@ final class Preferences {
     }
 
     private enum Keys {
+        static let startupBehavior = "app.startupBehavior"
         static let fontSize = "editor.fontSize"
         static let fontName = "editor.fontName"
         static let tabWidth = "editor.tabWidth"

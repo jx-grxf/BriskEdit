@@ -5,6 +5,7 @@ struct WorkspaceWindow: View {
     let kind: WindowKind
     @State private var workspace = WorkspaceModel()
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var didStartSession = false
     @Environment(Preferences.self) private var preferences
     @Environment(UpdateService.self) private var updates
     @Environment(\.openWindow) private var openWindow
@@ -18,12 +19,17 @@ struct WorkspaceWindow: View {
         }
         .navigationSplitViewStyle(.balanced)
         .task {
-            if kind.restoresSession { await workspace.restoreWorkspace() }
+            guard !didStartSession else { return }
+            didStartSession = true
+            if kind.restoresSession {
+                await workspace.startPrimarySession(restoreLastWorkspace: preferences.startupBehavior == .restoreLastWorkspace)
+            }
         }
         .onAppear {
             NewWindowCoordinator.shared.open = { openWindow(value: WindowKind.secondary(UUID())) }
         }
         .background(WindowConfigurator(
+            isPrimaryWindow: kind.restoresSession,
             isDocumentEdited: workspace.hasUnsavedChanges,
             hasUnsavedChanges: workspace.hasUnsavedChanges,
             saveAll: { await workspace.saveAllForQuit() }
@@ -151,6 +157,7 @@ struct WorkspaceWindow: View {
 /// intercepts window close to prompt for unsaved changes — without losing
 /// SwiftUI's own window-delegate behavior (calls are forwarded to it).
 private struct WindowConfigurator: NSViewRepresentable {
+    let isPrimaryWindow: Bool
     let isDocumentEdited: Bool
     let hasUnsavedChanges: Bool
     let saveAll: () async -> Bool
@@ -163,9 +170,10 @@ private struct WindowConfigurator: NSViewRepresentable {
         let coordinator = context.coordinator
         let edited = isDocumentEdited
         let hasUnsaved = hasUnsavedChanges
+        let isPrimary = isPrimaryWindow
         let save = saveAll
         DispatchQueue.main.async {
-            coordinator.configure(window: nsView.window, isEdited: edited, hasUnsaved: hasUnsaved, saveAll: save)
+            coordinator.configure(window: nsView.window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, saveAll: save)
         }
     }
 
@@ -177,8 +185,12 @@ private struct WindowConfigurator: NSViewRepresentable {
         private var saveAll: () async -> Bool = { true }
         private var didApplyInitialFrame = false
 
-        func configure(window: NSWindow?, isEdited: Bool, hasUnsaved: Bool, saveAll: @escaping () async -> Bool) {
+        func configure(window: NSWindow?, isPrimaryWindow: Bool, isEdited: Bool, hasUnsaved: Bool, saveAll: @escaping () async -> Bool) {
             guard let window else { return }
+            if isPrimaryWindow, !PrimaryWindowRegistry.shared.claim(window) {
+                DispatchQueue.main.async { window.close() }
+                return
+            }
             self.window = window
             self.hasUnsaved = hasUnsaved
             self.saveAll = saveAll
@@ -225,6 +237,22 @@ private struct WindowConfigurator: NSViewRepresentable {
             if let forwardee, forwardee.responds(to: aSelector) { return forwardee }
             return super.forwardingTarget(for: aSelector)
         }
+    }
+}
+
+@MainActor
+private final class PrimaryWindowRegistry {
+    static let shared = PrimaryWindowRegistry()
+    private weak var primaryWindow: NSWindow?
+
+    private init() {}
+
+    func claim(_ window: NSWindow) -> Bool {
+        if let primaryWindow, primaryWindow !== window, primaryWindow.isVisible {
+            return false
+        }
+        primaryWindow = window
+        return true
     }
 }
 

@@ -4,6 +4,8 @@ import SwiftUI
 struct SettingsScene: View {
     var body: some View {
         TabView {
+            GeneralPreferencesView()
+                .tabItem { Label("General", systemImage: "gearshape") }
             AppearancePreferencesView()
                 .tabItem { Label("Appearance", systemImage: "paintpalette") }
             EditorPreferencesView()
@@ -14,6 +16,31 @@ struct SettingsScene: View {
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
         }
         .frame(width: 520, height: 440)
+    }
+}
+
+// MARK: - General
+
+private struct GeneralPreferencesView: View {
+    @Environment(Preferences.self) private var preferences
+
+    var body: some View {
+        @Bindable var prefs = preferences
+        Form {
+            Section("Startup") {
+                Picker("When BriskEdit opens", selection: $prefs.startupBehavior) {
+                    ForEach(Preferences.StartupBehavior.allCases) { behavior in
+                        Text(behavior.title).tag(behavior)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Restore reopens the last folder and tabs. Start Empty opens a blank workspace, while still remembering the last session for when restore is enabled again.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
     }
 }
 

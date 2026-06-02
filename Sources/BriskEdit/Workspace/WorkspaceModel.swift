@@ -56,10 +56,11 @@ final class WorkspaceModel {
         WorkspaceRegistry.register(self)
     }
 
-    /// Restores the last opened folder and file tabs. Called only for the
-    /// primary window; also flips on session persistence for this model.
-    func restoreWorkspace() async {
+    /// Starts the primary window session. It always records later folder/tab
+    /// changes, but restore is controlled by the user's startup preference.
+    func startPrimarySession(restoreLastWorkspace: Bool) async {
         persistsSession = true
+        guard restoreLastWorkspace else { return }
         if let path = UserDefaults.standard.string(forKey: Keys.lastWorkspaceRoot) {
             let url = URL(fileURLWithPath: path)
             if FileManager.default.fileExists(atPath: url.path) {
