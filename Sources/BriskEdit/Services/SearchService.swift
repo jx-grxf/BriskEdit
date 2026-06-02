@@ -1,0 +1,177 @@
+import Foundation
+
+/// One match inside a file: a 1-based line/column, the matched length, and the
+/// full line text for display (UTF-16 units, ready for `TextDocument.range`).
+struct SearchMatch: Sendable, Hashable, Identifiable {
+    let id = UUID()
+    let line: Int
+    let column: Int
+    let length: Int
+    let lineText: String
+}
+
+/// All matches found in one file, grouped for the results list.
+struct SearchFileResult: Sendable, Identifiable {
+    var id: URL { url }
+    let url: URL
+    let matches: [SearchMatch]
+}
+
+struct SearchQuery: Sendable, Equatable {
+    var text: String
+    var caseSensitive: Bool = false
+    var wholeWord: Bool = false
+    var isRegex: Bool = false
+}
+
+/// Project-wide text search. Prefers ripgrep (fast, .gitignore-aware) when it's
+/// installed; otherwise falls back to a pure-Swift recursive scan that reuses
+/// the file tree's ignore rules. Both run off the main actor.
+enum SearchService {
+    static func search(_ query: SearchQuery, root: URL, includeHidden: Bool, fileLimit: Int = 4000, matchLimit: Int = 5000) async -> [SearchFileResult] {
+        let trimmed = query.text
+        guard !trimmed.isEmpty else { return [] }
+        return await Task.detached(priority: .userInitiated) {
+            if let rg = ripgrepPath() {
+                return ripgrepSearch(rg: rg, query: query, root: root, includeHidden: includeHidden, matchLimit: matchLimit)
+            }
+            return fallbackSearch(query: query, root: root, includeHidden: includeHidden, fileLimit: fileLimit, matchLimit: matchLimit)
+        }.value
+    }
+
+    /// Rewrites every match in the given files on disk. Returns the number of
+    /// files changed. Open tabs pick up the change via their file watchers.
+    static func replaceAll(_ query: SearchQuery, replacement: String, in files: [URL]) async -> Int {
+        guard !query.text.isEmpty else { return 0 }
+        return await Task.detached(priority: .userInitiated) {
+            guard let regex = compile(query) else { return 0 }
+            var changed = 0
+            for url in files {
+                guard let original = try? String(contentsOf: url, encoding: .utf8) else { continue }
+                let ns = original as NSString
+                let template = query.isRegex ? replacement : NSRegularExpression.escapedTemplate(for: replacement)
+                let updated = regex.stringByReplacingMatches(in: original, range: NSRange(location: 0, length: ns.length), withTemplate: template)
+                if updated != original, (try? updated.write(to: url, atomically: true, encoding: .utf8)) != nil {
+                    changed += 1
+                }
+            }
+            return changed
+        }.value
+    }
+
+    // MARK: - ripgrep
+
+    private static func ripgrepPath() -> String? {
+        let candidates = ["/opt/homebrew/bin/rg", "/usr/local/bin/rg", "/usr/bin/rg"]
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+        return nil
+    }
+
+    private static func ripgrepSearch(rg: String, query: SearchQuery, root: URL, includeHidden: Bool, matchLimit: Int) -> [SearchFileResult] {
+        var args = ["--json", "--line-number", "--column"]
+        args.append(query.caseSensitive ? "--case-sensitive" : "--ignore-case")
+        if query.wholeWord { args.append("--word-regexp") }
+        if !query.isRegex { args.append("--fixed-strings") }
+        if includeHidden { args.append("--hidden") }
+        args.append(contentsOf: ["--glob", "!.git/*"])
+        args.append("--")
+        args.append(query.text)
+        args.append(root.path)
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: rg)
+        process.arguments = args
+        let stdout = Pipe()
+        process.standardOutput = stdout
+        process.standardError = Pipe()
+        do { try process.run() } catch { return [] }
+        let data = stdout.fileHandleForReading.readDataToEndOfFile()
+        process.waitUntilExit()
+
+        var byFile: [URL: [SearchMatch]] = [:]
+        var order: [URL] = []
+        var total = 0
+        guard let text = String(data: data, encoding: .utf8) else { return [] }
+        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard total < matchLimit,
+                  let lineData = rawLine.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  obj["type"] as? String == "match",
+                  let payload = obj["data"] as? [String: Any],
+                  let pathText = (payload["path"] as? [String: Any])?["text"] as? String,
+                  let lineNumber = payload["line_number"] as? Int,
+                  let linesText = (payload["lines"] as? [String: Any])?["text"] as? String,
+                  let submatches = payload["submatches"] as? [[String: Any]] else { continue }
+            let url = URL(fileURLWithPath: pathText)
+            let lineBytes = Array(linesText.utf8)
+            for sub in submatches {
+                guard let start = sub["start"] as? Int, let end = sub["end"] as? Int else { continue }
+                let column = utf16Count(of: lineBytes, upTo: start) + 1
+                let length = utf16Count(of: lineBytes, from: start, to: end)
+                let match = SearchMatch(line: lineNumber, column: column, length: length, lineText: trimLine(linesText))
+                if byFile[url] == nil { order.append(url) }
+                byFile[url, default: []].append(match)
+                total += 1
+            }
+        }
+        return order.map { SearchFileResult(url: $0, matches: byFile[$0] ?? []) }
+    }
+
+    private static func utf16Count(of bytes: [UInt8], upTo byteOffset: Int) -> Int {
+        let slice = bytes[0..<min(byteOffset, bytes.count)]
+        return String(decoding: slice, as: UTF8.self).utf16.count
+    }
+
+    private static func utf16Count(of bytes: [UInt8], from: Int, to: Int) -> Int {
+        let lo = min(from, bytes.count), hi = min(to, bytes.count)
+        guard lo < hi else { return 0 }
+        return String(decoding: bytes[lo..<hi], as: UTF8.self).utf16.count
+    }
+
+    // MARK: - Pure-Swift fallback
+
+    private static func fallbackSearch(query: SearchQuery, root: URL, includeHidden: Bool, fileLimit: Int, matchLimit: Int) -> [SearchFileResult] {
+        guard let regex = compile(query) else { return [] }
+        var results: [SearchFileResult] = []
+        var total = 0
+        for url in FileIndex.files(under: root, includeHidden: includeHidden, limit: fileLimit) {
+            guard total < matchLimit else { break }
+            guard let attrs = try? url.resourceValues(forKeys: [.fileSizeKey]), (attrs.fileSize ?? 0) <= 2_000_000 else { continue }
+            guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            var matches: [SearchMatch] = []
+            let ns = content as NSString
+            // Track the 1-based line number as we walk lines in order, instead of
+            // rescanning from the file start for every matching line (which made
+            // the fallback O(n²) on large files).
+            var currentLine = 0
+            ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines]) { line, _, _, stop in
+                currentLine += 1
+                guard total < matchLimit else { stop.pointee = true; return }
+                let lineText = (line ?? "")
+                let lineNS = lineText as NSString
+                regex.enumerateMatches(in: lineText, range: NSRange(location: 0, length: lineNS.length)) { match, _, _ in
+                    guard let match else { return }
+                    matches.append(SearchMatch(line: currentLine, column: match.range.location + 1, length: match.range.length, lineText: trimLine(lineText)))
+                    total += 1
+                }
+            }
+            if !matches.isEmpty { results.append(SearchFileResult(url: url, matches: matches)) }
+        }
+        return results
+    }
+
+    private static func compile(_ query: SearchQuery) -> NSRegularExpression? {
+        var pattern = query.isRegex ? query.text : NSRegularExpression.escapedPattern(for: query.text)
+        if query.wholeWord { pattern = "\\b(?:\(pattern))\\b" }
+        var options: NSRegularExpression.Options = []
+        if !query.caseSensitive { options.insert(.caseInsensitive) }
+        return try? NSRegularExpression(pattern: pattern, options: options)
+    }
+
+    private static func trimLine(_ text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: CharacterSet(charactersIn: "\n\r"))
+        return trimmed.count > 400 ? String(trimmed.prefix(400)) : trimmed
+    }
+}

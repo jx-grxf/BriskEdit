@@ -30,6 +30,9 @@ enum CommandRegistry {
         EditorCommand(id: "file.goto", title: "Go to File…", group: "File", shortcut: "⌘P") { ws in
             ws.showFileFinder = true
         },
+        EditorCommand(id: "search.inFiles", title: "Find in Files…", group: "Search", shortcut: "⇧⌘F") { ws in
+            ws.revealSearch()
+        },
         EditorCommand(id: "run.active", title: "Run File", group: "Run", shortcut: "⌘R") { ws in
             ws.runActiveDocument()
         },

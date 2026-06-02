@@ -6,6 +6,58 @@ import SwiftUI
 final class BriskCodeTextView: NSTextView {
     var onResignFirstResponder: (() -> Void)?
     var onBecomeFirstResponder: (() -> Void)?
+    /// ⌘D — add the next occurrence of the selection as another cursor.
+    var onSelectNextOccurrence: (() -> Void)?
+    /// Go to definition for the symbol at a character index (⌘-click or F12).
+    var onGoToDefinition: ((Int) -> Void)?
+    /// Mouse paused over a point (hover) / left the view.
+    var onHover: ((NSPoint) -> Void)?
+    var onHoverExit: (() -> Void)?
+    private var hoverTrackingArea: NSTrackingArea?
+
+    override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
+        let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
+        addTrackingArea(area)
+        hoverTrackingArea = area
+    }
+
+    override func mouseMoved(with event: NSEvent) {
+        super.mouseMoved(with: event)
+        onHover?(convert(event.locationInWindow, from: nil))
+    }
+
+    override func mouseExited(with event: NSEvent) {
+        super.mouseExited(with: event)
+        onHoverExit?()
+    }
+
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
+           event.charactersIgnoringModifiers == "d" {
+            onSelectNextOccurrence?()
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 111 { // F12
+            onGoToDefinition?(selectedRange().location)
+            return
+        }
+        super.keyDown(with: event)
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        if event.modifierFlags.contains(.command) {
+            let point = convert(event.locationInWindow, from: nil)
+            onGoToDefinition?(characterIndexForInsertion(at: point))
+            return
+        }
+        super.mouseDown(with: event)
+    }
 
     override func resignFirstResponder() -> Bool {
         onResignFirstResponder?()
@@ -22,6 +74,10 @@ final class BriskCodeTextView: NSTextView {
 struct TextKit2EditorHost: NSViewRepresentable {
     @Bindable var document: TextDocument
     let theme: EditorTheme
+    var showMinimap: Bool = true
+    /// Opens a (possibly different) file at a 1-based line/column — used for
+    /// go-to-definition. Provided by the host view, which owns the workspace.
+    var onOpenLocation: ((URL, Int, Int) -> Void)?
 
     func makeNSView(context: Context) -> NSView {
         let textView = BriskCodeTextView(usingTextLayoutManager: true)
@@ -39,6 +95,19 @@ struct TextKit2EditorHost: NSViewRepresentable {
         textView.onBecomeFirstResponder = { [weak coordinator = context.coordinator] in
             coordinator?.scheduleGitDiff()
         }
+        textView.onSelectNextOccurrence = { [weak coordinator = context.coordinator] in
+            coordinator?.selectNextOccurrence()
+        }
+        textView.onGoToDefinition = { [weak coordinator = context.coordinator] index in
+            coordinator?.goToDefinition(at: index)
+        }
+        textView.onHover = { [weak coordinator = context.coordinator] point in
+            coordinator?.scheduleHover(at: point)
+        }
+        textView.onHoverExit = { [weak coordinator = context.coordinator] in
+            coordinator?.hideHover()
+        }
+        context.coordinator.openLocation = onOpenLocation
         context.coordinator.configurePopup()
 
         let scrollView = NSScrollView()
@@ -74,6 +143,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.gutter = gutter
         context.coordinator.scrollView = scrollView
 
+        // Zoomed-out overview on the right, a read-only sibling like the gutter.
+        let minimap = MinimapView(theme: theme)
+        minimap.textView = textView
+        minimap.scrollView = scrollView
+        context.coordinator.minimap = minimap
+
         let container = NSView()
         // Let SwiftUI own the container's frame (TAMIC = true, the AppKit
         // default — same as the PDF/QuickLook preview hosts). Keeping this
@@ -84,17 +159,26 @@ struct TextKit2EditorHost: NSViewRepresentable {
         // Auto Layout; they lay out inside whatever frame SwiftUI assigns.
         gutter.translatesAutoresizingMaskIntoConstraints = false
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+        minimap.translatesAutoresizingMaskIntoConstraints = false
         container.addSubview(gutter)
         container.addSubview(scrollView)
+        container.addSubview(minimap)
+        let minimapWidth = minimap.widthAnchor.constraint(equalToConstant: showMinimap ? MinimapView.width : 0)
+        context.coordinator.minimapWidthConstraint = minimapWidth
+        minimap.isHidden = !showMinimap
         NSLayoutConstraint.activate([
             gutter.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             gutter.topAnchor.constraint(equalTo: container.topAnchor),
             gutter.bottomAnchor.constraint(equalTo: container.bottomAnchor),
             gutter.widthAnchor.constraint(equalToConstant: TextKit2GutterView.width),
             scrollView.leadingAnchor.constraint(equalTo: gutter.trailingAnchor),
-            scrollView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            scrollView.trailingAnchor.constraint(equalTo: minimap.leadingAnchor),
             scrollView.topAnchor.constraint(equalTo: container.topAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor)
+            scrollView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            minimap.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+            minimap.topAnchor.constraint(equalTo: container.topAnchor),
+            minimap.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            minimapWidth
         ])
 
         // Repaint the gutter as the text scrolls or the viewport resizes.
@@ -102,11 +186,15 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.observeScroll(of: scrollView)
 
         context.coordinator.lastSyncedRevision = document.revision
+        context.coordinator.lastLanguage = document.language
         context.coordinator.applyHighlight()
         context.coordinator.warmUpLSP()
         context.coordinator.scheduleGitDiff()
-        DispatchQueue.main.async { [weak scrollView, weak textView] in
+        DispatchQueue.main.async { [weak scrollView, weak textView, weak coordinator = context.coordinator] in
             scrollView?.window?.makeFirstResponder(textView)
+            // Honor a navigation target set before the view existed (e.g. opened
+            // from Find in Files / the symbol outline).
+            coordinator?.applyPendingReveal()
         }
         return container
     }
@@ -115,6 +203,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         guard let textView = context.coordinator.textView else { return }
         let coordinator = context.coordinator
         coordinator.document = document
+        coordinator.openLocation = onOpenLocation
         let themeChanged = coordinator.theme != theme
         coordinator.theme = theme
 
@@ -128,6 +217,17 @@ struct TextKit2EditorHost: NSViewRepresentable {
             configure(textView, theme: theme)
             coordinator.scrollView?.backgroundColor = theme.background
             coordinator.gutter?.setTheme(theme)
+            coordinator.minimap?.setTheme(theme)
+        }
+
+        // Toggle the minimap without rebuilding the editor.
+        if let minimap = coordinator.minimap, let width = coordinator.minimapWidthConstraint {
+            let target: CGFloat = showMinimap ? MinimapView.width : 0
+            if width.constant != target {
+                width.constant = target
+                minimap.isHidden = !showMinimap
+                if showMinimap { minimap.invalidateContent() }
+            }
         }
 
         // Only touch the (potentially huge) text when the change came from
@@ -144,11 +244,18 @@ struct TextKit2EditorHost: NSViewRepresentable {
             didReseed = true
         }
         // In-editor edits drive their own debounced re-highlight; only re-run it
-        // here for an external re-seed or a theme switch.
-        if didReseed || themeChanged {
+        // here for an external re-seed, a theme switch, or a language change
+        // (the user picked a different syntax in the status bar).
+        let languageChanged = coordinator.lastLanguage != document.language
+        coordinator.lastLanguage = document.language
+        if didReseed || themeChanged || languageChanged {
             coordinator.applyHighlight()
         }
+        if didReseed {
+            coordinator.minimap?.invalidateContent()
+        }
         coordinator.gutter?.setDiagnostics(document.diagnostics)
+        coordinator.applyPendingReveal()
     }
 
     /// Report the *proposed* size as our fitting size instead of letting
@@ -203,16 +310,25 @@ struct TextKit2EditorHost: NSViewRepresentable {
         var theme: EditorTheme
         weak var textView: NSTextView?
         weak var gutter: TextKit2GutterView?
+        weak var minimap: MinimapView?
+        var minimapWidthConstraint: NSLayoutConstraint?
         weak var scrollView: NSScrollView?
         private var highlightWork: DispatchWorkItem?
         private var gitWork: DispatchWorkItem?
         private var lspWork: DispatchWorkItem?
+        private var minimapWork: DispatchWorkItem?
         private var lspItems: [LSPCompletion] = []
         private var lspDiagnosticsURI: String?
         var lastSyncedRevision = 0
         private let popup = CompletionPopup()
+        private let hoverPanel = HoverPanel()
+        private var hoverWork: DispatchWorkItem?
+        private var hoverIndex = -1
         private var completionRange: NSRange?
         private var ignoreNextSelectionChange = false
+        private var lastRevealToken = 0
+        var lastLanguage: SourceLanguage?
+        var openLocation: ((URL, Int, Int) -> Void)?
 
         init(document: TextDocument, theme: EditorTheme) {
             self.document = document
@@ -236,6 +352,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         @objc private func viewportChanged() {
             gutter?.refresh()
+            minimap?.refresh()
+            hideHover()
         }
 
         @objc private func gitMaybeChanged() {
@@ -255,13 +373,17 @@ struct TextKit2EditorHost: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             document.applyEdit(text: textView.string)
             lastSyncedRevision = document.revision
-            // Markers from the last check are now stale — clear until the next one.
-            if !document.diagnostics.isEmpty { document.diagnostics = [] }
+            // Keep the last check's markers visible until the debounced re-check
+            // (LSP push or DiagnosticsService) replaces them wholesale. Clearing
+            // eagerly on every keystroke made the gutter dot and the status-bar
+            // count flash on each character.
             scheduleHighlight()
             scheduleGitDiff()
             scheduleLSP(in: textView)
             updateCompletionPopup(in: textView)
             gutter?.refresh()
+            scheduleMinimapRebuild()
+            hideHover()
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -279,6 +401,103 @@ struct TextKit2EditorHost: NSViewRepresentable {
         func dismissCompletions() {
             popup.hide()
             textView?.needsDisplay = true
+        }
+
+        /// VS Code-style ⌘D: with an empty caret, select the word under it; with a
+        /// selection, add the next occurrence of that text as an additional cursor
+        /// (NSTextView edits all selected ranges at once when you then type).
+        func selectNextOccurrence() {
+            guard let textView else { return }
+            let ns = textView.string as NSString
+            var ranges = textView.selectedRanges.map { $0.rangeValue }
+
+            if ranges.count == 1, ranges[0].length == 0 {
+                let word = Self.wordRange(at: ranges[0].location, in: ns)
+                if word.length > 0 {
+                    textView.selectedRanges = [NSValue(range: word)]
+                    textView.scrollRangeToVisible(word)
+                }
+                return
+            }
+
+            guard let last = ranges.max(by: { $0.location < $1.location }), last.length > 0 else { return }
+            let needle = ns.substring(with: last)
+            let from = NSMaxRange(last)
+            var found = ns.range(of: needle, options: [], range: NSRange(location: from, length: ns.length - from))
+            if found.location == NSNotFound {
+                found = ns.range(of: needle, options: [], range: NSRange(location: 0, length: ns.length)) // wrap
+            }
+            guard found.location != NSNotFound, !ranges.contains(where: { NSEqualRanges($0, found) }) else { return }
+            ranges.append(found)
+            textView.selectedRanges = ranges.map { NSValue(range: $0) }
+            textView.scrollRangeToVisible(found)
+        }
+
+        /// Debounced LSP hover: when the mouse rests over a symbol, show its
+        /// type/docs in a floating panel. Cancelled by movement, edits and scroll.
+        func scheduleHover(at point: NSPoint) {
+            hoverWork?.cancel()
+            guard let textView, document.fileURL != nil, LSPService.config(for: document.language) != nil else { return }
+            let work = DispatchWorkItem { [weak self] in self?.performHover(at: point, in: textView) }
+            hoverWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
+        }
+
+        func hideHover() {
+            hoverWork?.cancel()
+            hoverPanel.hide()
+            hoverIndex = -1
+        }
+
+        private func performHover(at point: NSPoint, in textView: NSTextView) {
+            guard let url = document.fileURL else { return }
+            let ns = textView.string as NSString
+            let index = textView.characterIndexForInsertion(at: point)
+            guard index >= 0, index < ns.length, index != hoverIndex else { return }
+            let (line, character) = Self.lspPosition(in: ns, location: index)
+            let language = document.language
+            let uri = url.absoluteString
+            let text = textView.string
+            let root = url.deletingLastPathComponent().path
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let info = await LSPService.shared.hover(language: language, uri: uri, text: text, line: line, character: character, root: root)
+                guard let info, !info.isEmpty else { self.hoverPanel.hide(); return }
+                let rect = textView.firstRect(forCharacterRange: NSRange(location: index, length: 1), actualRange: nil)
+                self.hoverIndex = index
+                self.hoverPanel.show(text: info, at: rect, theme: self.theme)
+            }
+        }
+
+        /// Resolves the definition of the symbol at a character index via the LSP
+        /// and asks the host to open it (⌘-click / F12). Silent when unavailable.
+        func goToDefinition(at index: Int) {
+            guard let textView, let url = document.fileURL,
+                  LSPService.config(for: document.language) != nil else { return }
+            let ns = textView.string as NSString
+            let safe = max(0, min(index, ns.length))
+            textView.setSelectedRange(NSRange(location: safe, length: 0))
+            let (line, character) = Self.lspPosition(in: ns, location: safe)
+            let language = document.language
+            let uri = url.absoluteString
+            let text = textView.string
+            let root = url.deletingLastPathComponent().path
+            Task { @MainActor [weak self] in
+                guard let location = await LSPService.shared.definition(language: language, uri: uri, text: text, line: line, character: character, root: root),
+                      let targetURL = URL(string: location.uri) else { return }
+                self?.openLocation?(targetURL, location.line, location.column)
+            }
+        }
+
+        private static func wordRange(at location: Int, in ns: NSString) -> NSRange {
+            func isWord(_ u: unichar) -> Bool {
+                guard let scalar = UnicodeScalar(u) else { return false }
+                return CharacterSet.alphanumerics.contains(scalar) || scalar == "_"
+            }
+            var start = location, end = location
+            while start > 0, isWord(ns.character(at: start - 1)) { start -= 1 }
+            while end < ns.length, isWord(ns.character(at: end)) { end += 1 }
+            return NSRange(location: start, length: end - start)
         }
 
         /// Builds the ordered code-completion list: structure snippets first,
@@ -316,6 +535,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
+            // With multiple cursors, let AppKit apply the edit to every range
+            // verbatim — auto-pairing one range would desync the others.
+            if textView.selectedRanges.count > 1 { return true }
             guard let string = replacementString, range.length == 0, string.count == 1 else { return true }
             let pairs: [Character: Character] = ["{": "}", "(": ")", "[": "]", "\"": "\"", "'": "'"]
             guard let opener = string.first, let closer = pairs[opener] else { return true }
@@ -355,6 +577,14 @@ struct TextKit2EditorHost: NSViewRepresentable {
             case #selector(NSResponder.complete(_:)):
                 updateCompletionPopup(in: textView, minimumPrefix: 0)
                 return true
+            case #selector(NSResponder.cancelOperation(_:)):
+                // Collapse multiple cursors back to a single caret.
+                if textView.selectedRanges.count > 1 {
+                    let primary = textView.selectedRanges.last?.rangeValue ?? textView.selectedRange()
+                    textView.setSelectedRange(NSRange(location: NSMaxRange(primary), length: 0))
+                    return true
+                }
+                return false
             default:
                 return false
             }
@@ -365,6 +595,19 @@ struct TextKit2EditorHost: NSViewRepresentable {
             TextKit2SyntaxHighlighter.apply(to: textView, language: document.language, theme: theme)
         }
 
+        /// Scrolls to and selects a navigation target (Find in Files, outline,
+        /// definition) when the document's `revealToken` advances. Cheap no-op on
+        /// the many `updateNSView` passes where nothing new was requested.
+        func applyPendingReveal() {
+            guard let textView, document.revealToken != lastRevealToken else { return }
+            lastRevealToken = document.revealToken
+            guard let reveal = document.pendingReveal else { return }
+            let range = document.range(line: reveal.line, column: reveal.column, length: reveal.length)
+            textView.setSelectedRange(range)
+            textView.scrollRangeToVisible(range)
+            textView.window?.makeFirstResponder(textView)
+        }
+
         private func scheduleHighlight() {
             highlightWork?.cancel()
             let work = DispatchWorkItem { [weak self] in
@@ -372,6 +615,18 @@ struct TextKit2EditorHost: NSViewRepresentable {
             }
             highlightWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+        }
+
+        /// Debounced minimap content rebuild. The minimap re-scans the whole
+        /// document to build its per-line word bars; doing that on every keystroke
+        /// (each draw) is wasteful, so coalesce rapid typing into a single rebuild
+        /// once edits settle — the overview can lag a beat without anyone noticing.
+        private func scheduleMinimapRebuild() {
+            guard minimap != nil else { return }
+            minimapWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.minimap?.invalidateContent() }
+            minimapWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
         }
 
         /// Debounced recompute of the git gutter diff (buffer vs HEAD). Cleared
@@ -611,32 +866,71 @@ private enum TextKit2SyntaxHighlighter {
         return compiled
     }
 
-    /// Full-document highlight. Skipped entirely for plain text and very large
-    /// files, which then render with the text view's uniform font/color.
+    /// Paints display-only color via the layout manager's *rendering attributes*,
+    /// which (unlike text-storage edits) never invalidate layout — the key to
+    /// flicker-free highlighting on TextKit 2.
+    @MainActor
+    struct RenderingPainter {
+        let layoutManager: NSTextLayoutManager
+        let contentManager: NSTextContentManager
+        let documentStart: NSTextLocation
+
+        init?(textView: NSTextView) {
+            guard let layoutManager = textView.textLayoutManager,
+                  let contentManager = layoutManager.textContentManager else { return nil }
+            self.layoutManager = layoutManager
+            self.contentManager = contentManager
+            self.documentStart = contentManager.documentRange.location
+        }
+
+        /// Drops all color overrides so untouched tokens fall back to the storage's
+        /// base foreground color.
+        func reset() {
+            layoutManager.invalidateRenderingAttributes(for: contentManager.documentRange)
+        }
+
+        func paint(_ attributes: [NSAttributedString.Key: Any], range: NSRange) {
+            guard let start = contentManager.location(documentStart, offsetBy: range.location),
+                  let end = contentManager.location(start, offsetBy: range.length),
+                  let textRange = NSTextRange(location: start, end: end) else { return }
+            layoutManager.setRenderingAttributes(attributes, for: textRange)
+        }
+    }
+
+    /// Recolors the whole document using TextKit 2 **rendering attributes**
+    /// (display-only color overrides on the layout manager) instead of mutating
+    /// the text storage. Storage edits invalidate layout fragments — even for
+    /// off-screen text — which made the viewport churn and the visible text
+    /// flash/jitter (a line popping in and out) while typing. Rendering
+    /// attributes never touch layout, so highlighting is invisible to the
+    /// viewport controller: no flash, no jitter, and we can color the entire
+    /// document again (correct for multi-line comments/strings).
+    ///
+    /// Skipped for plain text and very large files, which then render with the
+    /// text view's uniform color.
     static func apply(to textView: NSTextView, language: SourceLanguage, theme: EditorTheme) {
-        guard let contentStorage = textView.textContentStorage, let storage = contentStorage.textStorage else { return }
+        guard let painter = RenderingPainter(textView: textView),
+              let storage = textView.textContentStorage?.textStorage else { return }
+        // Clear previous colors first so removed tokens fall back to the base
+        // foreground (the text storage's own color).
+        painter.reset()
         let length = storage.length
         guard length > 0, length <= maxHighlightedCharacters, language != .plainText else {
             textView.typingAttributes = baseAttributes(theme: theme)
             return
         }
+        let source = storage.string as NSString
         let range = NSRange(location: 0, length: length)
-
-        contentStorage.performEditingTransaction {
-            storage.setAttributes(baseAttributes(theme: theme), range: range)
-            let source = storage.string as NSString
-            // Order matters: later passes win on overlapping ranges, so tokens
-            // that must always survive (strings, comments) run last.
-            highlightFunctions(in: storage, source: source, range: range, language: language, color: theme.function)
-            highlightTypes(in: storage, source: source, range: range, language: language, color: theme.type)
-            highlightKeywords(in: storage, source: source, range: range, language: language, theme: theme)
-            highlightNumbers(in: storage, source: source, range: range, color: theme.number)
-            highlightPreprocessor(in: storage, source: source, range: range, language: language, color: theme.preprocessor)
-            highlightStrings(in: storage, source: source, range: range, color: theme.string)
-            highlightComments(in: storage, source: source, range: range, language: language, color: theme.comment)
-        }
+        // Order matters: later passes win on overlapping ranges, so tokens that
+        // must always survive (strings, comments) run last.
+        highlightFunctions(with: painter, source: source, range: range, language: language, color: theme.function)
+        highlightTypes(with: painter, source: source, range: range, language: language, color: theme.type)
+        highlightKeywords(with: painter, source: source, range: range, language: language, theme: theme)
+        highlightNumbers(with: painter, source: source, range: range, color: theme.number)
+        highlightPreprocessor(with: painter, source: source, range: range, language: language, color: theme.preprocessor)
+        highlightStrings(with: painter, source: source, range: range, color: theme.string)
+        highlightComments(with: painter, source: source, range: range, language: language, color: theme.comment)
         textView.typingAttributes = baseAttributes(theme: theme)
-        textView.needsDisplay = true
     }
 
     private static func baseAttributes(theme: EditorTheme) -> [NSAttributedString.Key: Any] {
@@ -647,34 +941,40 @@ private enum TextKit2SyntaxHighlighter {
         ]
     }
 
-    private static func highlightComments(in storage: NSTextStorage, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightComments(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
         let patterns: [String]
         switch language {
-        case .markdown:
+        case .markdown, .html, .xml:
             patterns = ["<!--(?s:.*?)-->"]
-        case .python, .shell, .yaml:
+        case .python, .shell, .yaml, .ruby, .perl, .toml:
             patterns = ["#.*$"]
+        case .ini:
+            patterns = ["[#;].*$"]
+        case .lua:
+            patterns = ["--\\[\\[(?s:.*?)\\]\\]", "--.*$"]
+        case .sql:
+            patterns = ["--.*$", "/\\*(?s:.*?)\\*/"]
         default:
             patterns = ["//.*$", "/\\*(?s:.*?)\\*/"]
         }
-        apply(patterns: patterns, to: storage, source: source, range: range, options: [.anchorsMatchLines], attributes: [.foregroundColor: color])
+        apply(patterns: patterns, with: painter, source: source, range: range, options: [.anchorsMatchLines], attributes: [.foregroundColor: color])
     }
 
-    private static func highlightStrings(in storage: NSTextStorage, source: NSString, range: NSRange, color: NSColor) {
-        apply(patterns: ["\"(?:\\\\.|[^\"\\\\])*\"", "'(?:\\\\.|[^'\\\\])*'", "<[A-Za-z0-9_./]+\\.h>"], to: storage, source: source, range: range, attributes: [.foregroundColor: color])
+    private static func highlightStrings(with painter: RenderingPainter, source: NSString, range: NSRange, color: NSColor) {
+        apply(patterns: ["\"(?:\\\\.|[^\"\\\\])*\"", "'(?:\\\\.|[^'\\\\])*'", "<[A-Za-z0-9_./]+\\.h>"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightNumbers(in storage: NSTextStorage, source: NSString, range: NSRange, color: NSColor) {
-        apply(patterns: ["\\b0[xX][0-9a-fA-F]+\\b", "\\b\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?[fFuUlL]*\\b"], to: storage, source: source, range: range, attributes: [.foregroundColor: color])
+    private static func highlightNumbers(with painter: RenderingPainter, source: NSString, range: NSRange, color: NSColor) {
+        apply(patterns: ["\\b0[xX][0-9a-fA-F]+\\b", "\\b\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?[fFuUlL]*\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightPreprocessor(in storage: NSTextStorage, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightPreprocessor(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
         guard language == .c || language == .cpp else { return }
         // Color only the `#directive` token so the included path stays a string.
         applyCaptureGroup(
             pattern: "^(\\s*#\\s*(?:include|define|if|ifdef|ifndef|else|elif|endif|pragma|undef|error|warning))\\b",
             group: 1,
-            to: storage,
+            with: painter,
             source: source,
             range: range,
             options: [.anchorsMatchLines],
@@ -682,17 +982,17 @@ private enum TextKit2SyntaxHighlighter {
         )
     }
 
-    private static func highlightFunctions(in storage: NSTextStorage, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightFunctions(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
         switch language {
         case .markdown, .yaml, .json, .html, .xml, .css, .plainText:
             return
         default:
             break
         }
-        applyCaptureGroup(pattern: "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()", group: 1, to: storage, source: source, range: range, attributes: [.foregroundColor: color])
+        applyCaptureGroup(pattern: "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()", group: 1, with: painter, source: source, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightTypes(in storage: NSTextStorage, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightTypes(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
         switch language {
         case .markdown, .yaml, .json, .html, .xml, .css, .shell, .plainText:
             return
@@ -700,18 +1000,18 @@ private enum TextKit2SyntaxHighlighter {
             break
         }
         // CamelCase identifiers (types/classes) and C `_t` suffixed types.
-        apply(patterns: ["\\b[A-Z][A-Za-z0-9_]*\\b", "\\b[a-z_][A-Za-z0-9_]*_t\\b"], to: storage, source: source, range: range, attributes: [.foregroundColor: color])
+        apply(patterns: ["\\b[A-Z][A-Za-z0-9_]*\\b", "\\b[a-z_][A-Za-z0-9_]*_t\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightKeywords(in storage: NSTextStorage, source: NSString, range: NSRange, language: SourceLanguage, theme: EditorTheme) {
+    private static func highlightKeywords(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, theme: EditorTheme) {
         let (keywords, control) = keywordSets(for: language)
         if !keywords.isEmpty {
             let escaped = keywords.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
-            apply(patterns: ["\\b(\(escaped))\\b"], to: storage, source: source, range: range, attributes: [.foregroundColor: theme.keyword])
+            apply(patterns: ["\\b(\(escaped))\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: theme.keyword])
         }
         if !control.isEmpty {
             let escaped = control.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
-            apply(patterns: ["\\b(\(escaped))\\b"], to: storage, source: source, range: range, attributes: [.foregroundColor: theme.controlKeyword])
+            apply(patterns: ["\\b(\(escaped))\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: theme.controlKeyword])
         }
     }
 
@@ -742,6 +1042,27 @@ private enum TextKit2SyntaxHighlighter {
         case .go:
             control = ["break", "case", "continue", "default", "else", "fallthrough", "for", "goto", "if", "range", "return", "select", "switch"]
             keywords = ["chan", "const", "defer", "func", "go", "import", "interface", "map", "package", "struct", "type", "var", "nil", "true", "false"]
+        case .java:
+            control = ["break", "case", "catch", "continue", "default", "do", "else", "finally", "for", "if", "return", "switch", "throw", "try", "while"]
+            keywords = ["abstract", "class", "enum", "extends", "final", "implements", "import", "instanceof", "interface", "native", "new", "package", "private", "protected", "public", "static", "super", "synchronized", "this", "throws", "transient", "void", "volatile", "boolean", "byte", "char", "double", "float", "int", "long", "short", "true", "false", "null", "var", "record", "sealed"]
+        case .kotlin:
+            control = ["break", "catch", "continue", "do", "else", "finally", "for", "if", "return", "throw", "try", "when", "while"]
+            keywords = ["abstract", "as", "class", "companion", "const", "data", "enum", "fun", "import", "in", "interface", "internal", "is", "lateinit", "object", "open", "override", "package", "private", "protected", "public", "sealed", "suspend", "val", "var", "vararg", "by", "true", "false", "null", "this", "super"]
+        case .ruby:
+            control = ["begin", "break", "case", "else", "elsif", "ensure", "for", "if", "next", "redo", "rescue", "retry", "return", "unless", "until", "when", "while", "yield"]
+            keywords = ["alias", "and", "attr_accessor", "attr_reader", "attr_writer", "class", "def", "do", "end", "module", "nil", "not", "or", "require", "require_relative", "self", "super", "then", "true", "false", "lambda", "proc"]
+        case .lua:
+            control = ["break", "do", "else", "elseif", "end", "for", "goto", "if", "repeat", "return", "then", "until", "while"]
+            keywords = ["and", "false", "function", "in", "local", "nil", "not", "or", "true", "self", "require"]
+        case .sql:
+            control = ["CASE", "WHEN", "THEN", "ELSE", "END", "IF", "WHILE", "LOOP"]
+            keywords = ["SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "VIEW", "INDEX", "ALTER", "DROP", "JOIN", "INNER", "LEFT", "RIGHT", "OUTER", "ON", "GROUP", "BY", "ORDER", "HAVING", "LIMIT", "OFFSET", "DISTINCT", "AS", "AND", "OR", "NOT", "NULL", "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "DEFAULT", "UNIQUE", "INT", "INTEGER", "VARCHAR", "TEXT", "BOOLEAN", "TIMESTAMP", "DATE"]
+        case .perl:
+            control = ["if", "elsif", "else", "unless", "for", "foreach", "while", "until", "do", "return", "last", "next", "redo"]
+            keywords = ["use", "no", "my", "our", "local", "sub", "package", "require", "print", "printf", "say", "undef", "qw"]
+        case .dart:
+            control = ["break", "case", "catch", "continue", "default", "do", "else", "finally", "for", "if", "return", "switch", "throw", "try", "while", "await", "yield"]
+            keywords = ["abstract", "as", "async", "class", "const", "enum", "extends", "factory", "final", "get", "implements", "import", "is", "late", "library", "mixin", "new", "set", "static", "super", "this", "typedef", "var", "void", "with", "true", "false", "null", "required"]
         default:
             control = []
             keywords = []
@@ -749,24 +1070,24 @@ private enum TextKit2SyntaxHighlighter {
         return (keywords, control)
     }
 
-    private static func apply(patterns: [String], to storage: NSTextStorage, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
+    private static func apply(patterns: [String], with painter: RenderingPainter, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
         let text = source as String
         for pattern in patterns {
             guard let regex = regex(pattern, options: options) else { continue }
             regex.enumerateMatches(in: text, options: [], range: range) { match, _, _ in
                 guard let match else { return }
-                storage.addAttributes(attributes, range: match.range)
+                painter.paint(attributes, range: match.range)
             }
         }
     }
 
-    private static func applyCaptureGroup(pattern: String, group: Int, to storage: NSTextStorage, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
+    private static func applyCaptureGroup(pattern: String, group: Int, with painter: RenderingPainter, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
         guard let regex = regex(pattern, options: options) else { return }
         regex.enumerateMatches(in: source as String, options: [], range: range) { match, _, _ in
             guard let match, group < match.numberOfRanges else { return }
             let captured = match.range(at: group)
             guard captured.location != NSNotFound else { return }
-            storage.addAttributes(attributes, range: captured)
+            painter.paint(attributes, range: captured)
         }
     }
 }

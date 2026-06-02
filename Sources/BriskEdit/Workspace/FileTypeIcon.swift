@@ -41,12 +41,16 @@ struct FileTypeIcon: View {
         case .javascript, .typescript: .yellow
         case .php: .indigo
         case .python: .green
-        case .rust: .brown
+        case .rust, .lua: .brown
         case .markdown: .purple
-        case .json, .yaml, .xml: .cyan
-        case .html, .css: .pink
-        case .shell: .mint
+        case .json, .yaml, .xml, .toml, .ini: .cyan
+        case .html, .css, .scss, .less: .pink
+        case .shell, .perl: .mint
         case .go: .teal
+        case .ruby: .red
+        case .java, .kotlin: .orange
+        case .sql: .blue
+        case .dart: .teal
         case .plainText: .secondary
         }
     }

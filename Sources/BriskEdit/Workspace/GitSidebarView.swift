@@ -3,6 +3,8 @@ import SwiftUI
 /// Which pane the workspace sidebar shows.
 enum SidebarTab: Hashable {
     case files
+    case search
+    case outline
     case sourceControl
 }
 

@@ -18,7 +18,7 @@ struct BriskEditApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
-            AppCommands(updates: updates)
+            AppCommands(updates: updates, preferences: preferences)
         }
 
         Settings {

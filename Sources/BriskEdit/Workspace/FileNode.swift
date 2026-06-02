@@ -8,12 +8,7 @@ struct FileNode: Identifiable, Hashable, Sendable {
     var name: String { url.lastPathComponent }
     var language: SourceLanguage { SourceLanguage(url: url, displayName: name) }
     var isCodeFile: Bool {
-        switch language {
-        case .c, .cpp, .css, .go, .html, .javascript, .json, .markdown, .php, .python, .rust, .shell, .swift, .typescript, .xml, .yaml:
-            true
-        case .plainText:
-            false
-        }
+        language != .plainText
     }
 
     static func children(of url: URL, includeHidden: Bool = false) -> [FileNode] {

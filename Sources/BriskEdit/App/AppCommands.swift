@@ -3,6 +3,7 @@ import AppKit
 
 struct AppCommands: Commands {
     let updates: UpdateService
+    @Bindable var preferences: Preferences
     @FocusedValue(\.workspace) private var workspace
     @Environment(\.openWindow) private var openWindow
 
@@ -54,6 +55,26 @@ struct AppCommands: Commands {
                 workspace?.showCommandPalette = true
             }
             .keyboardShortcut("p", modifiers: [.command, .shift])
+
+            Button("Find in Files…") {
+                workspace?.revealSearch()
+            }
+            .keyboardShortcut("f", modifiers: [.command, .shift])
+            .disabled(workspace?.rootURL == nil)
+        }
+
+        CommandMenu("View") {
+            Toggle("Show Minimap", isOn: $preferences.showMinimap)
+                .keyboardShortcut("m", modifiers: [.command, .control])
+
+            Divider()
+
+            Menu("Language") {
+                if let doc = workspace?.activeTab?.document {
+                    LanguageMenuItems(document: doc)
+                }
+            }
+            .disabled(workspace?.activeTab?.document == nil)
         }
 
         CommandMenu("Run") {

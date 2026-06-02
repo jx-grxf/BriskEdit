@@ -157,7 +157,9 @@ struct EditorTabsView: View {
                 .id(tab.id)
         } else if workspace.showMarkdownPreview && tab.document.language == .markdown {
             HStack(spacing: 0) {
-                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme)
+                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, onOpenLocation: { url, line, column in
+                    Task { await workspace.openFile(at: url, line: line, column: column) }
+                })
                     .id(tab.id)
                     .frame(minWidth: 360)
                     .layoutPriority(1)
@@ -166,7 +168,9 @@ struct EditorTabsView: View {
                     .frame(width: 340)
             }
         } else {
-            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme)
+            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, onOpenLocation: { url, line, column in
+                    Task { await workspace.openFile(at: url, line: line, column: column) }
+                })
                 .id(tab.id)
                 .frame(minWidth: 360)
         }
@@ -368,6 +372,26 @@ private struct DiagnosticSummary: View {
     }
 }
 
+/// Nova-style clickable language label in the status bar: opens a menu of every
+/// supported syntax, with an "Auto-detect" option that clears the manual choice.
+private struct LanguagePicker: View {
+    let document: TextDocument
+
+    var body: some View {
+        Menu {
+            LanguageMenuItems(document: document)
+        } label: {
+            Text(document.language.rawValue)
+                .font(.caption.monospaced())
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Select syntax language")
+    }
+}
+
 private struct StatusBar: View {
     let workspace: WorkspaceModel
 
@@ -380,8 +404,7 @@ private struct StatusBar: View {
                     .frame(maxWidth: 220, alignment: .leading)
                 Text(encodingLabel(doc.encoding)).font(.caption.monospaced())
                     .lineLimit(1)
-                Text(doc.language.rawValue).font(.caption.monospaced()).foregroundStyle(.secondary)
-                    .lineLimit(1)
+                LanguagePicker(document: doc)
                 Text("Ln \(doc.cursorLine), Col \(doc.cursorColumn)").font(.caption.monospaced()).foregroundStyle(.secondary)
                     .lineLimit(1)
                 Text(doc.fileSizeLabel).font(.caption.monospaced()).foregroundStyle(.secondary)

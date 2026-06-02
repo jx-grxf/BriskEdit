@@ -60,6 +60,25 @@ struct LSPCompletion: Sendable, Equatable {
     let kind: Int
 }
 
+/// A symbol from `textDocument/documentSymbol` for the outline. 1-based
+/// line/column; children mirror the LSP hierarchy.
+struct LSPSymbol: Sendable, Hashable, Identifiable {
+    let id = UUID()
+    let name: String
+    let detail: String?
+    let kind: Int
+    let line: Int
+    let column: Int
+    var children: [LSPSymbol]
+}
+
+/// A resolved source location from go-to-definition. 1-based line/column.
+struct LSPLocation: Sendable, Equatable {
+    let uri: String
+    let line: Int
+    let column: Int
+}
+
 struct LSPToolStatus: Sendable, Equatable {
     enum State: Sendable, Equatable {
         case available
@@ -168,6 +187,35 @@ actor LSPService {
         return Self.parseCompletions(json["result"])
     }
 
+    /// Symbol tree for the outline (`textDocument/documentSymbol`).
+    func documentSymbols(language: SourceLanguage, uri: String, text: String, root: String?) async -> [LSPSymbol] {
+        guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return [] }
+        await server.sync(uri: uri, languageId: config.languageId, text: text)
+        guard let data = await server.request(method: "textDocument/documentSymbol", params: ["textDocument": ["uri": uri]]),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
+        return Self.parseSymbols(json["result"])
+    }
+
+    /// Resolves the definition of the symbol at a position (`textDocument/definition`).
+    func definition(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> LSPLocation? {
+        guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return nil }
+        await server.sync(uri: uri, languageId: config.languageId, text: text)
+        let params: [String: Any] = ["textDocument": ["uri": uri], "position": ["line": line, "character": character]]
+        guard let data = await server.request(method: "textDocument/definition", params: params),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return Self.parseLocation(json["result"])
+    }
+
+    /// Hover documentation/type for the symbol at a position (`textDocument/hover`).
+    func hover(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> String? {
+        guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return nil }
+        await server.sync(uri: uri, languageId: config.languageId, text: text)
+        let params: [String: Any] = ["textDocument": ["uri": uri], "position": ["line": line, "character": character]]
+        guard let data = await server.request(method: "textDocument/hover", params: params),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return Self.parseHover(json["result"])
+    }
+
     /// Opens (or refreshes) a document so the server starts emitting diagnostics
     /// without waiting for a completion request.
     func openDocument(language: SourceLanguage, uri: String, text: String, root: String?) async {
@@ -236,6 +284,60 @@ actor LSPService {
             completions.append(LSPCompletion(label: token, detail: detail?.trimmingCharacters(in: .whitespaces), kind: kind))
         }
         return completions
+    }
+
+    private static func parseSymbols(_ result: Any?) -> [LSPSymbol] {
+        guard let list = result as? [[String: Any]] else { return [] }
+        return list.compactMap(parseSymbol)
+    }
+
+    private static func parseSymbol(_ dict: [String: Any]) -> LSPSymbol? {
+        guard let name = dict["name"] as? String, !name.isEmpty else { return nil }
+        let kind = dict["kind"] as? Int ?? 0
+        let detail = (dict["detail"] as? String)?.trimmingCharacters(in: .whitespaces)
+        // DocumentSymbol uses selectionRange/range; SymbolInformation nests it
+        // under location.range.
+        let range = (dict["selectionRange"] as? [String: Any])
+            ?? (dict["range"] as? [String: Any])
+            ?? ((dict["location"] as? [String: Any])?["range"] as? [String: Any])
+        let start = range?["start"] as? [String: Any]
+        let line = (start?["line"] as? Int ?? 0) + 1
+        let column = (start?["character"] as? Int ?? 0) + 1
+        let children = (dict["children"] as? [[String: Any]])?.compactMap(parseSymbol) ?? []
+        return LSPSymbol(name: name, detail: detail?.isEmpty == true ? nil : detail, kind: kind, line: line, column: column, children: children)
+    }
+
+    private static func parseLocation(_ result: Any?) -> LSPLocation? {
+        func from(_ dict: [String: Any]) -> LSPLocation? {
+            let uri = (dict["uri"] as? String) ?? (dict["targetUri"] as? String)
+            let range = (dict["range"] as? [String: Any])
+                ?? (dict["targetSelectionRange"] as? [String: Any])
+                ?? (dict["targetRange"] as? [String: Any])
+            guard let uri, let start = range?["start"] as? [String: Any] else { return nil }
+            return LSPLocation(uri: uri, line: (start["line"] as? Int ?? 0) + 1, column: (start["character"] as? Int ?? 0) + 1)
+        }
+        if let dict = result as? [String: Any] { return from(dict) }
+        if let arr = result as? [[String: Any]], let first = arr.first { return from(first) }
+        return nil
+    }
+
+    private static func parseHover(_ result: Any?) -> String? {
+        guard let dict = result as? [String: Any], let contents = dict["contents"] else { return nil }
+        func text(_ any: Any) -> String? {
+            if let s = any as? String { return s }
+            if let m = any as? [String: Any] { return m["value"] as? String }
+            return nil
+        }
+        let raw: String?
+        if let s = text(contents) {
+            raw = s
+        } else if let arr = contents as? [Any] {
+            raw = arr.compactMap(text).joined(separator: "\n")
+        } else {
+            raw = nil
+        }
+        let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
     }
 
     private static func resolveExecutablePath(for config: ServerConfig) -> String? {

@@ -4,7 +4,6 @@ import SwiftUI
 struct WorkspaceWindow: View {
     let kind: WindowKind
     @State private var workspace = WorkspaceModel()
-    @State private var sidebarTab: SidebarTab = .files
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @Environment(Preferences.self) private var preferences
     @Environment(UpdateService.self) private var updates
@@ -42,11 +41,10 @@ struct WorkspaceWindow: View {
                 }
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                Button {
+                Button("Toggle Terminal", systemImage: "terminal") {
                     workspace.toggleTerminal()
-                } label: {
-                    Image(systemName: "terminal")
                 }
+                .labelStyle(.iconOnly)
                 .help("Toggle terminal")
 
                 RunButton(workspace: workspace)
@@ -76,22 +74,32 @@ struct WorkspaceWindow: View {
     private var sidebar: some View {
         if let root = workspace.rootURL {
             VStack(spacing: 0) {
-                Picker("", selection: $sidebarTab) {
-                    Image(systemName: "folder").tag(SidebarTab.files)
-                    Image(systemName: "arrow.triangle.branch").tag(SidebarTab.sourceControl)
+                Picker("Sidebar section", selection: Bindable(workspace).sidebarTab) {
+                    Image(systemName: "folder").accessibilityLabel("Files").tag(SidebarTab.files)
+                    Image(systemName: "magnifyingglass").accessibilityLabel("Search").tag(SidebarTab.search)
+                    Image(systemName: "list.bullet.indent").accessibilityLabel("Outline").tag(SidebarTab.outline)
+                    Image(systemName: "arrow.triangle.branch").accessibilityLabel("Source Control").tag(SidebarTab.sourceControl)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 Divider()
-                switch sidebarTab {
+                switch workspace.sidebarTab {
                 case .files:
                     FileTreeView(root: root, workspace: workspace)
+                case .search:
+                    SearchSidebarView(workspace: workspace)
+                case .outline:
+                    OutlineSidebarView(workspace: workspace)
                 case .sourceControl:
                     GitSidebarView(workspace: workspace, root: root)
                 }
             }
+            // Pin to the top and fill the column — otherwise a short pane (empty
+            // search, "No symbols" outline) lets the whole stack center itself and
+            // leaves a gap above the tab picker.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
             .navigationTitle(root.lastPathComponent)
         } else {
             ContentUnavailableView {
