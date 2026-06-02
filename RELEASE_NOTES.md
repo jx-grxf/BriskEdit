@@ -1,38 +1,39 @@
 # Release Notes
 
-## 0.2.0 — multi-session terminal & editor stability
+## 0.3.0-beta.1 — search, code intelligence & folding
 
-Still an unsigned developer preview — on first launch, right-click `BriskEdit.app`
-→ **Open** → confirm. Developer ID notarization is queued for a later release.
+A beta build. Still an unsigned developer preview — on first launch, right-click
+`BriskEdit.app` → **Open** → confirm. To receive further beta updates, set the
+update channel to **Beta** in Settings.
 
 ### New
 
-- **Multi-session terminal.** A VS Code-style session list — add, switch between,
-  and close multiple shells. Each `New Shell` starts a genuinely fresh shell
-  (screen, scrollback and terminal modes reset, cursor re-shown).
-- **Configurable terminal font.** New Terminal settings tab; defaults to
-  MesloLGS Nerd Font 14 with family-name resolution.
-- **Workspace-aware shells.** The active shell restarts in the new folder when the
-  workspace root changes.
+- **Find in Files.** Project-wide search and replace with case / whole-word /
+  regex toggles, results grouped by file. Uses ripgrep when installed (gitignore
+  aware), with a pure-Swift fallback; searches dotfiles too (`.env`, `.gitignore`).
+- **Code folding.** Expand/collapse blocks via chevrons in the gutter, with
+  indentation-based fold regions.
+- **Symbol outline.** A sidebar of the file's symbols from the language server;
+  click to jump to a definition.
+- **Go to Definition.** ⌘-click or F12 on a symbol.
+- **Hover tooltips.** Rest the pointer on a symbol to see its type/docs from the
+  language server.
+- **Minimap.** A zoomed-out overview at the right edge; click or drag to scroll.
+  Toggle from View ▸ Show Minimap or Settings.
+- **Multi-cursor.** ⌘D selects the next occurrence as an additional cursor.
+- **More languages & a language picker.** Dart, Java, Kotlin, Ruby, Lua, SQL,
+  Perl, SCSS/Less, TOML, INI and more, plus a clickable language selector in the
+  status bar (with auto-detect).
 
-### Fixed
+### Improved
 
-- **Editor no longer jumps or overscrolls.** The text view is only reconfigured
-  and re-highlighted on theme or external buffer changes instead of on every
-  keystroke — the per-edit relayout had briefly mis-measured the viewport and
-  slid the line numbers off-screen.
-- **Gutter stays painted.** Line numbers repaint on every layout pass and skip
-  (then reschedule) a paint while the viewport reports zero height, so they no
-  longer get stuck blank after a tab switch, restored session, or window
-  activation.
-- **Dotfiles in the file tree.** Meaningful dotfiles (`.github`, `.gitignore`, …)
-  show by default; the **Hidden** toggle now also reveals build/dependency output.
-- **Source Control empty state** is pinned to full height, so the pane header
-  stays at the top instead of being vertically centered.
-- **Terminal polish.** Resize lag/flicker gone (transient drag state, layer-backed
-  opaque view); the blinking caret is restored after `Ctrl-C` out of a TUI.
-- **In-app updates.** The Sparkle public key is embedded by default, so the
-  updater starts reliably across builds.
+- **Flicker-free highlighting.** Syntax colors are applied as TextKit 2 rendering
+  attributes instead of text-storage edits, so the visible text no longer
+  flashes or jumps while typing, and the whole document is colored correctly.
+- **Snappier editor.** The minimap rebuilds on a debounce instead of rescanning
+  the document on every keystroke; project-search numbers lines in a single pass.
+- Accessibility labels for the sidebar section picker, terminal toggle, and the
+  search controls.
 
 ### Compatibility
 
