@@ -6,7 +6,6 @@ struct WorkspaceWindow: View {
     @State private var workspace = WorkspaceModel()
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var didStartSession = false
-    @State private var titleTapCount = 0
     @State private var secretBanner: String?
     @Environment(Preferences.self) private var preferences
     @Environment(UpdateService.self) private var updates
@@ -62,14 +61,10 @@ struct WorkspaceWindow: View {
                 }
             }
         }
+        .onReceive(NotificationCenter.default.publisher(for: .briskEditTitleSecret)) { note in
+            if let message = note.userInfo?["message"] as? String { showSecretBanner(message) }
+        }
         .toolbar {
-            ToolbarItem(placement: .principal) {
-                Button(action: registerTitleTap) {
-                    Text("BriskEdit").font(.headline)
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("BriskEdit")
-            }
             if updates.isUpdateAvailable {
                 ToolbarItem(placement: .navigation) {
                     Button {
@@ -164,14 +159,6 @@ struct WorkspaceWindow: View {
                 workspace.openDropped(urls)
                 return true
             }
-    }
-
-    private func registerTitleTap() {
-        titleTapCount += 1
-        guard titleTapCount >= 5 else { return }
-        titleTapCount = 0
-        SecretMode.isEnabled.toggle()
-        showSecretBanner(SecretMode.isEnabled ? "Secret activated" : "Secret deactivated")
     }
 
     private func showSecretBanner(_ message: String) {
@@ -278,11 +265,63 @@ private struct WindowConfigurator: NSViewRepresentable {
                 DispatchQueue.main.async { [weak self] in self?.applyFullSizeFrame(to: window) }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.applyFullSizeFrame(to: window) }
             }
+            installTitleClickHook(on: window)
         }
 
         private func applyFullSizeFrame(to window: NSWindow) {
             guard let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
             window.setFrame(screen.visibleFrame.insetBy(dx: 18, dy: 18), display: true, animate: false)
+        }
+
+        // MARK: - Title click hook
+
+        private var titleClickCount = 0
+        private var didInstallTitleHook = false
+
+        /// Attaches a click recognizer to the existing window title so the title
+        /// stays the single one in the bar (no extra toolbar item). The title
+        /// label only exists after the toolbar lays out, so retry briefly.
+        private func installTitleClickHook(on window: NSWindow, attempt: Int = 0) {
+            guard !didInstallTitleHook else { return }
+            guard let label = Self.titleLabel(in: window) else {
+                guard attempt < 6 else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak window] in
+                    guard let self, let window else { return }
+                    self.installTitleClickHook(on: window, attempt: attempt + 1)
+                }
+                return
+            }
+            didInstallTitleHook = true
+            let recognizer = NSClickGestureRecognizer(target: self, action: #selector(handleTitleClick))
+            recognizer.numberOfClicksRequired = 1
+            label.addGestureRecognizer(recognizer)
+        }
+
+        @objc private func handleTitleClick() {
+            titleClickCount += 1
+            guard titleClickCount >= 5 else { return }
+            titleClickCount = 0
+            SecretMode.isEnabled.toggle()
+            let message = SecretMode.isEnabled ? "Secret activated" : "Secret deactivated"
+            NotificationCenter.default.post(name: .briskEditTitleSecret, object: nil, userInfo: ["message": message])
+        }
+
+        /// Finds the titlebar's title label — the first non-editable text field
+        /// inside the titlebar container (reached via the traffic-light button's
+        /// superview), so the search can't stray into the window content.
+        private static func titleLabel(in window: NSWindow) -> NSView? {
+            guard let titlebar = window.standardWindowButton(.closeButton)?.superview else { return nil }
+            return firstStaticTextField(in: titlebar)
+        }
+
+        private static func firstStaticTextField(in view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, !field.isEditable, !(field is NSSearchField) {
+                return field
+            }
+            for subview in view.subviews {
+                if let found = firstStaticTextField(in: subview) { return found }
+            }
+            return nil
         }
 
         func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -317,6 +356,11 @@ private struct WindowConfigurator: NSViewRepresentable {
             return super.forwardingTarget(for: aSelector)
         }
     }
+}
+
+extension Notification.Name {
+    /// Posted when the window title's hidden toggle fires; carries a "message".
+    static let briskEditTitleSecret = Notification.Name("briskEditTitleSecret")
 }
 
 /// A zero-size helper view that reports when it is attached to (or detached
