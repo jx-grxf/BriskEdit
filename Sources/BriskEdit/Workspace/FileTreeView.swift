@@ -20,7 +20,6 @@ struct FileTreeView: View {
                         .environment(workspace)
                 }
                 .listStyle(.sidebar)
-                .id(workspace.reloadToken)
                 .dropDestination(for: URL.self) { urls, _ in
                     workspace.handleTreeDrop(urls, into: root)
                 }

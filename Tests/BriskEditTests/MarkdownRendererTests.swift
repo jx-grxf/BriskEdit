@@ -19,6 +19,7 @@ final class MarkdownRendererTests: XCTestCase {
 
         [site](https://example.com)
         ![alt](image.png)
+        [[Code-Completion]]
         """)
 
         XCTAssertTrue(html.contains("<h1>Title</h1>"))
@@ -27,5 +28,6 @@ final class MarkdownRendererTests: XCTestCase {
         XCTAssertTrue(html.contains("<pre><code class=\"language-swift\">print(&quot;hi&quot;)</code></pre>"))
         XCTAssertTrue(html.contains("<a href=\"https://example.com\">site</a>"))
         XCTAssertTrue(html.contains("<img src=\"image.png\" alt=\"alt\">"))
+        XCTAssertTrue(html.contains("<a href=\"briskedit-wikilink://Code-Completion\">Code-Completion</a>"))
     }
 }

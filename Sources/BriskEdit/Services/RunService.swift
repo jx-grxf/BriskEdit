@@ -26,10 +26,10 @@ enum RunService {
         switch document.language {
         case .c:
             let output = shellQuote(tempBinaryPath())
-            line = "(xcrun clang \(file) -Wall -Wextra -DprintDih=printf -o \(output) && \(output)); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
+            line = "(__cc=$(xcrun --find clang 2>/dev/null || command -v gcc); if [ -z \"$__cc\" ]; then echo 'BriskEdit: install clang or gcc to run C files.'; false; else \"$__cc\" \(file) -Wall -Wextra -DprintDih=printf -o \(output) && \(output); fi); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
         case .cpp:
             let output = shellQuote(tempBinaryPath())
-            line = "(xcrun clang++ \(file) -Wall -Wextra -std=c++20 -o \(output) && \(output)); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
+            line = "(__cxx=$(xcrun --find clang++ 2>/dev/null || command -v g++); if [ -z \"$__cxx\" ]; then echo 'BriskEdit: install clang++ or g++ to run C++ files.'; false; else \"$__cxx\" \(file) -Wall -Wextra -std=c++20 -o \(output) && \(output); fi); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
         case .swift:
             if let packageRoot = ancestor(containing: "Package.swift", from: sourceURL.deletingLastPathComponent(), stopAt: workspaceRoot) {
                 return RunCommand(title: "swift run", shellLine: "swift run", cwd: packageRoot)

@@ -167,6 +167,16 @@ private struct EditorPreferencesView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Code Assistance") {
+                Toggle("Show hover documentation", isOn: $prefs.showHoverTooltips)
+                Text("Shows LSP type and documentation popovers when the pointer rests over a symbol.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Toggle("Show code folding controls", isOn: $prefs.showCodeFolding)
+                Text("Draws clickable gutter chevrons for indentation-based folding.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .padding()

@@ -33,9 +33,18 @@ final class Preferences {
     var showGitGutter: Bool {
         didSet { persist() }
     }
+    /// Show clickable code-folding chevrons in the editor gutter. On by default.
+    var showCodeFolding: Bool {
+        didSet { persist() }
+    }
     /// Show the VS Code-style minimap (zoomed-out overview) at the right edge of
     /// the editor. On by default.
     var showMinimap: Bool {
+        didSet { persist() }
+    }
+    /// Show LSP hover documentation popovers while the pointer rests on a symbol.
+    /// On by default; can be noisy in dense code, so users can disable it.
+    var showHoverTooltips: Bool {
         didSet { persist() }
     }
     /// Automatically write the buffer to disk ~1 s after the last edit. Off by
@@ -62,7 +71,9 @@ final class Preferences {
         self.themeID = defaults.string(forKey: Keys.themeID) ?? "system"
         self.formatOnSave = defaults.bool(forKey: Keys.formatOnSave)
         self.showGitGutter = defaults.object(forKey: Keys.showGitGutter) as? Bool ?? true
+        self.showCodeFolding = defaults.object(forKey: Keys.showCodeFolding) as? Bool ?? true
         self.showMinimap = defaults.object(forKey: Keys.showMinimap) as? Bool ?? true
+        self.showHoverTooltips = defaults.object(forKey: Keys.showHoverTooltips) as? Bool ?? true
         self.autosave = defaults.bool(forKey: Keys.autosave)
         self.terminalFontName = defaults.string(forKey: Keys.terminalFontName) ?? "MesloLGS Nerd Font"
         self.terminalFontSize = CGFloat(defaults.double(forKey: Keys.terminalFontSize).nonZero ?? 14)
@@ -107,7 +118,8 @@ final class Preferences {
             fontName: fontName,
             tabWidth: tabWidth,
             usesSpacesForTabs: usesSpacesForTabs,
-            showGitGutter: showGitGutter
+            showGitGutter: showGitGutter,
+            showCodeFolding: showCodeFolding
         )
     }
 
@@ -120,7 +132,9 @@ final class Preferences {
         defaults.set(themeID, forKey: Keys.themeID)
         defaults.set(formatOnSave, forKey: Keys.formatOnSave)
         defaults.set(showGitGutter, forKey: Keys.showGitGutter)
+        defaults.set(showCodeFolding, forKey: Keys.showCodeFolding)
         defaults.set(showMinimap, forKey: Keys.showMinimap)
+        defaults.set(showHoverTooltips, forKey: Keys.showHoverTooltips)
         defaults.set(autosave, forKey: Keys.autosave)
         defaults.set(terminalFontName, forKey: Keys.terminalFontName)
         defaults.set(Double(terminalFontSize), forKey: Keys.terminalFontSize)
@@ -134,7 +148,9 @@ final class Preferences {
         static let themeID = "editor.themeID"
         static let formatOnSave = "editor.formatOnSave"
         static let showGitGutter = "editor.showGitGutter"
+        static let showCodeFolding = "editor.showCodeFolding"
         static let showMinimap = "editor.showMinimap"
+        static let showHoverTooltips = "editor.showHoverTooltips"
         static let autosave = "editor.autosave"
         static let terminalFontName = "terminal.fontName"
         static let terminalFontSize = "terminal.fontSize"

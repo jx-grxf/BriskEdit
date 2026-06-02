@@ -84,6 +84,18 @@ struct AppCommands: Commands {
             Toggle("Show Minimap", isOn: $preferences.showMinimap)
                 .keyboardShortcut("m", modifiers: [.command, .control])
 
+            Toggle("Show Hover Documentation", isOn: $preferences.showHoverTooltips)
+
+            Toggle("Show Code Folding Controls", isOn: $preferences.showCodeFolding)
+
+            Toggle("Show Git Change Bars", isOn: $preferences.showGitGutter)
+
+            Button("Toggle Markdown Preview") {
+                workspace?.showMarkdownPreview.toggle()
+            }
+            .keyboardShortcut("m", modifiers: [.command, .shift])
+            .disabled(workspace?.activeTab?.document.language != .markdown)
+
             Menu("Theme") {
                 Picker("Theme", selection: $preferences.themeID) {
                     ForEach(ThemeStore.shared.themes) { theme in
@@ -92,8 +104,6 @@ struct AppCommands: Commands {
                 }
                 .pickerStyle(.inline)
             }
-
-            Divider()
 
             Menu("Language") {
                 if let doc = workspace?.activeTab?.document {
@@ -120,12 +130,6 @@ struct AppCommands: Commands {
                 workspace?.showToolHealth = true
             }
 
-            Divider()
-
-            Button("Toggle Markdown Preview") {
-                workspace?.showMarkdownPreview.toggle()
-            }
-            .keyboardShortcut("m", modifiers: [.command, .shift])
         }
 
         CommandMenu("Terminal") {

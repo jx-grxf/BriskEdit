@@ -75,6 +75,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
     @Bindable var document: TextDocument
     let theme: EditorTheme
     var showMinimap: Bool = true
+    var showHoverTooltips: Bool = true
     var workspaceRootURL: URL?
     /// Opens a (possibly different) file at a 1-based line/column — used for
     /// go-to-definition. Provided by the host view, which owns the workspace.
@@ -88,6 +89,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.document = document
         context.coordinator.theme = theme
+        context.coordinator.showHoverTooltips = showHoverTooltips
         context.coordinator.workspaceRootURL = workspaceRootURL
         textView.onResignFirstResponder = { [weak coordinator = context.coordinator] in
             coordinator?.dismissCompletions()
@@ -221,6 +223,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         coordinator.document = document
         coordinator.openLocation = onOpenLocation
         coordinator.workspaceRootURL = workspaceRootURL
+        coordinator.showHoverTooltips = showHoverTooltips
         let themeChanged = coordinator.theme != theme
         coordinator.theme = theme
 
@@ -346,6 +349,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private let hoverPanel = HoverPanel()
         private var hoverWork: DispatchWorkItem?
         private var hoverIndex = -1
+        var showHoverTooltips = true
         private var completionRange: NSRange?
         private var ignoreNextSelectionChange = false
         private var lastRevealToken = 0
@@ -459,6 +463,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// type/docs in a floating panel. Cancelled by movement, edits and scroll.
         func scheduleHover(at point: NSPoint) {
             hoverWork?.cancel()
+            guard showHoverTooltips else { hoverPanel.hide(); return }
             guard let textView, document.fileURL != nil, LSPService.config(for: document.language) != nil else { return }
             let work = DispatchWorkItem { [weak self] in self?.performHover(at: point, in: textView) }
             hoverWork = work
@@ -646,6 +651,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// untouched by the folding machinery.
         func recomputeFoldRegions() {
             guard let textView else { return }
+            guard theme.showCodeFolding else {
+                folding.unfoldAll()
+                folding.updateRegions([])
+                gutter?.refresh()
+                return
+            }
             let regions = FoldingAnalyzer.regions(in: textView.string as NSString, tabWidth: theme.tabWidth)
             folding.updateRegions(regions)
             gutter?.refresh()

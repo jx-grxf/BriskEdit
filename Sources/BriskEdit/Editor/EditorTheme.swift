@@ -26,6 +26,8 @@ struct EditorTheme: Sendable, Equatable {
     var usesSpacesForTabs: Bool
     /// Draw the green/orange/red git-change bars in the gutter. User-toggleable.
     var showGitGutter: Bool = true
+    /// Draw and enable code-folding chevrons in the gutter. User-toggleable.
+    var showCodeFolding: Bool = true
 
     var nsFont: NSFont {
         NSFont(name: fontName, size: fontSize) ?? .monospacedSystemFont(ofSize: fontSize, weight: .regular)
@@ -47,7 +49,8 @@ struct EditorTheme: Sendable, Equatable {
         fontName: String,
         tabWidth: Int,
         usesSpacesForTabs: Bool,
-        showGitGutter: Bool
+        showGitGutter: Bool,
+        showCodeFolding: Bool
     ) -> EditorTheme {
         EditorTheme(
             fontSize: fontSize,
@@ -72,7 +75,8 @@ struct EditorTheme: Sendable, Equatable {
             gitDeleted: palette.gitDeleted,
             tabWidth: tabWidth,
             usesSpacesForTabs: usesSpacesForTabs,
-            showGitGutter: showGitGutter
+            showGitGutter: showGitGutter,
+            showCodeFolding: showCodeFolding
         )
     }
 
@@ -82,6 +86,7 @@ struct EditorTheme: Sendable, Equatable {
         fontName: "SF Mono",
         tabWidth: 4,
         usesSpacesForTabs: true,
-        showGitGutter: true
+        showGitGutter: true,
+        showCodeFolding: true
     )
 }

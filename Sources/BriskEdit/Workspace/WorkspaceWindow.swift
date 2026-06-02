@@ -85,16 +85,7 @@ struct WorkspaceWindow: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 Divider()
-                switch workspace.sidebarTab {
-                case .files:
-                    FileTreeView(root: root, workspace: workspace)
-                case .search:
-                    SearchSidebarView(workspace: workspace)
-                case .outline:
-                    OutlineSidebarView(workspace: workspace)
-                case .sourceControl:
-                    GitSidebarView(workspace: workspace, root: root)
-                }
+                sidebarPanes(root: root)
             }
             // Pin to the top and fill the column — otherwise a short pane (empty
             // search, "No symbols" outline) lets the whole stack center itself and
@@ -109,6 +100,19 @@ struct WorkspaceWindow: View {
             } actions: {
                 Button("Open Folder…") { openFolder() }
             }
+        }
+    }
+
+    private func sidebarPanes(root: URL) -> some View {
+        ZStack {
+            FileTreeView(root: root, workspace: workspace)
+                .visibleSidebarPane(workspace.sidebarTab == .files)
+            SearchSidebarView(workspace: workspace)
+                .visibleSidebarPane(workspace.sidebarTab == .search)
+            OutlineSidebarView(workspace: workspace)
+                .visibleSidebarPane(workspace.sidebarTab == .outline)
+            GitSidebarView(workspace: workspace, root: root)
+                .visibleSidebarPane(workspace.sidebarTab == .sourceControl)
         }
     }
 
@@ -171,6 +175,7 @@ private struct WindowConfigurator: NSViewRepresentable {
         private weak var forwardee: NSWindowDelegate?
         private var hasUnsaved = false
         private var saveAll: () async -> Bool = { true }
+        private var didApplyInitialFrame = false
 
         func configure(window: NSWindow?, isEdited: Bool, hasUnsaved: Bool, saveAll: @escaping () async -> Bool) {
             guard let window else { return }
@@ -181,6 +186,11 @@ private struct WindowConfigurator: NSViewRepresentable {
             if window.delegate !== self {
                 forwardee = window.delegate
                 window.delegate = self
+            }
+            if !didApplyInitialFrame, let screen = window.screen ?? NSScreen.main {
+                didApplyInitialFrame = true
+                let frame = screen.visibleFrame.insetBy(dx: 18, dy: 18)
+                window.setFrame(frame, display: true, animate: false)
             }
         }
 
@@ -215,6 +225,14 @@ private struct WindowConfigurator: NSViewRepresentable {
             if let forwardee, forwardee.responds(to: aSelector) { return forwardee }
             return super.forwardingTarget(for: aSelector)
         }
+    }
+}
+
+private extension View {
+    func visibleSidebarPane(_ isVisible: Bool) -> some View {
+        opacity(isVisible ? 1 : 0)
+            .allowsHitTesting(isVisible)
+            .accessibilityHidden(!isVisible)
     }
 }
 

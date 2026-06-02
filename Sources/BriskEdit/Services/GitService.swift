@@ -195,9 +195,14 @@ enum GitService {
             let relative = path.hasPrefix(root + "/") ? String(path.dropFirst(root.count + 1)) : fileURL.lastPathComponent
 
             // HEAD version of the file. Missing → file is new/untracked; mark
-            // every line as added.
+            // every line as added only when Git already tracks it (staged add).
+            // Ignored/untracked files intentionally get no gutter bar: there is
+            // no committed baseline to compare against, so "all green" is noise.
             let head = run(["-C", root, "show", "HEAD:\(relative)"])
             guard let head else {
+                guard run(["-C", root, "ls-files", "--error-unmatch", "--", relative]) != nil else {
+                    return nil
+                }
                 let count = currentText.isEmpty ? 0 : currentText.components(separatedBy: "\n").count
                 var diff = GitDiff()
                 for line in 1...max(1, count) where count > 0 { diff.lineKinds[line] = .added }

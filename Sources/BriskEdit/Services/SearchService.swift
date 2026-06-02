@@ -41,6 +41,9 @@ enum SearchService {
     static func searchWithFeedback(_ query: SearchQuery, root: URL, includeHidden: Bool, fileLimit: Int = 4000, matchLimit: Int = 5000) async -> SearchResponse {
         let trimmed = query.text
         guard !trimmed.isEmpty else { return SearchResponse(results: [], errorMessage: nil, reachedMatchLimit: false) }
+        if query.isRegex, compile(query) == nil {
+            return SearchResponse(results: [], errorMessage: "Invalid regular expression.", reachedMatchLimit: false)
+        }
         return await Task.detached(priority: .userInitiated) {
             if let rg = ripgrepPath() {
                 return ripgrepSearch(rg: rg, query: query, root: root, includeHidden: includeHidden, matchLimit: matchLimit)

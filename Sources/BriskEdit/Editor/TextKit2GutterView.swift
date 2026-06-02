@@ -186,7 +186,7 @@ final class TextKit2GutterView: NSView {
     /// foldable region: a down-triangle when expanded, a right-triangle when
     /// collapsed. Its rect is recorded for click hit-testing.
     private func drawFoldChevron(_ line: Int, y: CGFloat, lineHeight: CGFloat) {
-        guard let folding, folding.region(forHeaderLine: line - 1) != nil else { return }
+        guard theme.showCodeFolding, let folding, folding.region(forHeaderLine: line - 1) != nil else { return }
         let folded = folding.isFolded(headerLine: line - 1)
         let box = NSRect(x: bounds.width - 16, y: y, width: 14, height: lineHeight)
         foldHitRects.append((line: line, rect: box))

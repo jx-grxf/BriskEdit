@@ -1,8 +1,11 @@
+import AppKit
 import SwiftUI
 import WebKit
 
 struct MarkdownPreview: View {
     let document: TextDocument
+    var onClose: () -> Void = {}
+    var onOpenFile: (URL) -> Void = { _ in }
     @State private var html = ""
     @State private var renderTask: Task<Void, Never>?
 
@@ -15,12 +18,17 @@ struct MarkdownPreview: View {
                 Text(document.displayName)
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Button("Close Preview", systemImage: "xmark") { onClose() }
+                    .buttonStyle(.borderless)
+                    .labelStyle(.iconOnly)
+                    .help("Close Markdown preview")
+                    .accessibilityLabel("Close Markdown preview")
             }
             .padding(.horizontal, 10)
             .frame(height: 34)
             .background(.bar)
             Divider()
-            MarkdownWebView(html: html, baseURL: document.fileURL?.deletingLastPathComponent())
+            MarkdownWebView(html: html, baseURL: document.fileURL?.deletingLastPathComponent(), onOpenFile: onOpenFile)
         }
         .onAppear { scheduleRender(debounce: false) }
         .onChange(of: document.revision) { _, _ in scheduleRender(debounce: true) }
@@ -47,9 +55,10 @@ struct MarkdownPreview: View {
 private struct MarkdownWebView: NSViewRepresentable {
     let html: String
     let baseURL: URL?
+    let onOpenFile: (URL) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator()
+        Coordinator(baseURL: baseURL, onOpenFile: onOpenFile)
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -60,6 +69,8 @@ private struct MarkdownWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
+        context.coordinator.baseURL = baseURL
+        context.coordinator.onOpenFile = onOpenFile
         guard context.coordinator.lastHTML != html else { return }
         context.coordinator.lastHTML = html
         webView.evaluateJavaScript("[window.scrollX, window.scrollY]") { value, _ in
@@ -73,11 +84,49 @@ private struct MarkdownWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastHTML: String?
         var pendingScroll: CGPoint?
+        var baseURL: URL?
+        var onOpenFile: (URL) -> Void
+
+        init(baseURL: URL?, onOpenFile: @escaping (URL) -> Void) {
+            self.baseURL = baseURL
+            self.onOpenFile = onOpenFile
+        }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             guard let pendingScroll else { return }
             self.pendingScroll = nil
             webView.evaluateJavaScript("window.scrollTo(\(pendingScroll.x), \(pendingScroll.y));")
+        }
+
+        func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
+            guard navigationAction.navigationType == .linkActivated,
+                  let url = navigationAction.request.url else {
+                decisionHandler(.allow)
+                return
+            }
+            if url.scheme == "briskedit-wikilink" {
+                if let file = resolveWikiLink(url) { onOpenFile(file) }
+                decisionHandler(.cancel)
+                return
+            }
+            if url.isFileURL, url.pathExtension.lowercased() == "md" {
+                onOpenFile(url)
+                decisionHandler(.cancel)
+                return
+            }
+            NSWorkspace.shared.open(url)
+            decisionHandler(.cancel)
+        }
+
+        private func resolveWikiLink(_ url: URL) -> URL? {
+            guard let baseURL else { return nil }
+            let raw = url.host?.removingPercentEncoding ?? url.absoluteString.replacingOccurrences(of: "briskedit-wikilink://", with: "").removingPercentEncoding ?? ""
+            let target = raw.split(separator: "#").first.map(String.init) ?? raw
+            let candidates = [
+                baseURL.appendingPathComponent(target),
+                baseURL.appendingPathComponent(target).appendingPathExtension("md")
+            ]
+            return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
         }
     }
 }
@@ -194,11 +243,33 @@ enum MarkdownRenderer {
     }
 
     private static func inline(_ text: some StringProtocol) -> String {
-        escape(String(text))
+        renderWikiLinks(
+            escape(String(text))
             .replacingOccurrences(of: #"!\[([^\]]*)\]\(([^)]+)\)"#, with: "<img src=\"$2\" alt=\"$1\">", options: .regularExpression)
             .replacingOccurrences(of: #"\[([^\]]+)\]\(([^)]+)\)"#, with: "<a href=\"$2\">$1</a>", options: .regularExpression)
             .replacingOccurrences(of: "**([^*]+)**", with: "<strong>$1</strong>", options: .regularExpression)
             .replacingOccurrences(of: "`([^`]+)`", with: "<code>$1</code>", options: .regularExpression)
+        )
+    }
+
+    private static func renderWikiLinks(_ text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"\[\[([^\]|#]+)(?:#[^\]|]+)?(?:\|([^\]]+))?\]\]"#) else { return text }
+        let nsText = text as NSString
+        var rendered = text
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: nsText.length)).reversed() {
+            guard let full = Range(match.range(at: 0), in: rendered),
+                  let targetRange = Range(match.range(at: 1), in: text) else { continue }
+            let target = String(text[targetRange])
+            let label: String
+            if match.range(at: 2).location != NSNotFound, let labelRange = Range(match.range(at: 2), in: text) {
+                label = String(text[labelRange])
+            } else {
+                label = target
+            }
+            let encoded = target.addingPercentEncoding(withAllowedCharacters: .urlHostAllowed) ?? target
+            rendered.replaceSubrange(full, with: "<a href=\"briskedit-wikilink://\(encoded)\">\(label)</a>")
+        }
+        return rendered
     }
 
     private static func escape(_ text: some StringProtocol) -> String {

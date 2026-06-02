@@ -269,6 +269,25 @@ final class WorkspaceModel {
         }
     }
 
+    func requestCloseOtherTabs(keeping id: EditorTab.ID) {
+        for tab in tabs where tab.id != id {
+            requestCloseTab(tab.id)
+        }
+    }
+
+    func requestCloseTabsToRight(of id: EditorTab.ID) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        for tab in tabs.dropFirst(index + 1) {
+            requestCloseTab(tab.id)
+        }
+    }
+
+    func requestCloseAllTabs() {
+        for tab in tabs {
+            requestCloseTab(tab.id)
+        }
+    }
+
     func toggleSplitPreview(_ kind: PreviewKind) {
         splitPreviewKind = (splitPreviewKind == kind) ? nil : kind
     }
@@ -379,6 +398,7 @@ final class WorkspaceModel {
         Task { [weak self] in
             guard let self else { return }
             guard await self.saveBeforeProjectRunIfNeeded() else { return }
+            guard await self.installMissingRunToolsIfNeeded() else { return }
             await self.ensureTerminal().runActiveDocument(self.activeTab?.document, workspaceRoot: self.rootURL)
             await self.checkActiveDocument()
         }
@@ -396,6 +416,34 @@ final class WorkspaceModel {
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return false }
         return await save(tab)
+    }
+
+    private func installMissingRunToolsIfNeeded() async -> Bool {
+        guard let doc = activeTab?.document else { return true }
+        let language = doc.language
+        let missingGroups = await ToolHealthService.missingRunRequirements(for: language, workspaceRoot: rootURL)
+        guard let firstGroup = missingGroups.first, let descriptor = firstGroup.first else { return true }
+
+        let names = firstGroup.map(\.name).joined(separator: " or ")
+        let alert = NSAlert()
+        alert.messageText = "\(names) is required to run \(language.rawValue) files."
+        alert.informativeText = "BriskEdit can try to install it now, or you can install it yourself and run again."
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Open Tool Health")
+        let response = alert.runModal()
+        if response == .alertThirdButtonReturn {
+            showToolHealth = true
+            return false
+        }
+        guard response == .alertFirstButtonReturn else { return false }
+        let result = await ToolHealthService.install(descriptor)
+        if !result.ok {
+            lastError = result.output
+            showToolHealth = true
+            return false
+        }
+        return (await ToolHealthService.missingRunRequirements(for: language, workspaceRoot: rootURL)).isEmpty
     }
 
     // MARK: - Terminal sessions
