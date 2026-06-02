@@ -51,3 +51,7 @@ AGENTS.md
 # Tooling scratch dirs (not versioned)
 .commandcode
 .claude/
+
+
+# Audits
+.audits 
