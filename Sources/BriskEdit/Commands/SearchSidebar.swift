@@ -45,6 +45,11 @@ struct SearchSidebarView: View {
                 if workspace.isSearching {
                     ProgressView().controlSize(.small)
                     Text("Searching…").font(.caption).foregroundStyle(.secondary)
+                } else if let error = workspace.searchError {
+                    Label(error, systemImage: "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                        .lineLimit(3)
                 } else if !workspace.searchQuery.text.isEmpty {
                     Text(summary).font(.caption).foregroundStyle(.secondary)
                 }
@@ -61,7 +66,8 @@ struct SearchSidebarView: View {
         let files = workspace.searchResults.count
         let matches = workspace.searchTotalMatches
         guard matches > 0 else { return "No results" }
-        return "\(matches) result\(matches == 1 ? "" : "s") in \(files) file\(files == 1 ? "" : "s")"
+        let limit = workspace.searchReachedLimit ? " (limit reached)" : ""
+        return "\(matches) result\(matches == 1 ? "" : "s") in \(files) file\(files == 1 ? "" : "s")\(limit)"
     }
 
     private func toggle(_ label: String, help: String, isOn: Binding<Bool>) -> some View {

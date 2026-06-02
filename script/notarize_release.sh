@@ -6,6 +6,7 @@
 #
 # Inputs (env):
 #   BRISKEDIT_VERSION                    required
+#   BRISKEDIT_UPDATE_CHANNEL             stable or beta; stable requires notarization
 #   BRISKEDIT_NOTARY_ENABLED             "true" to actually submit, anything else skips
 #   BRISKEDIT_NOTARY_APPLE_ID            Apple ID email
 #   BRISKEDIT_NOTARY_TEAM_ID             Developer Team ID (10-char)
@@ -16,8 +17,13 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 : "${BRISKEDIT_VERSION:?BRISKEDIT_VERSION is required}"
+CHANNEL="${BRISKEDIT_UPDATE_CHANNEL:-stable}"
 
 if [[ "${BRISKEDIT_NOTARY_ENABLED:-}" != "true" ]]; then
+  if [[ "$CHANNEL" == "stable" ]]; then
+    echo "error: stable releases require notarization (set BRISKEDIT_NOTARY_ENABLED=true)" >&2
+    exit 1
+  fi
   echo "Notarization skipped (BRISKEDIT_NOTARY_ENABLED != true)"
   exit 0
 fi
@@ -42,3 +48,9 @@ fi
 
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
+
+if [[ "$CHANNEL" == "stable" ]]; then
+  codesign --verify --deep --strict dist/BriskEdit.app
+  spctl --assess --type execute -v dist/BriskEdit.app
+  spctl --assess --type open --context context:primary-signature -v "$DMG"
+fi

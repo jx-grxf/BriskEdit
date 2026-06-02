@@ -73,6 +73,7 @@ jobs:
         env:
           BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
           BRISKEDIT_BUILD: ${{ steps.version.outputs.build }}
+          BRISKEDIT_UPDATE_CHANNEL: ${{ steps.version.outputs.channel }}
           BRISKEDIT_SPARKLE_PUBLIC_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PUBLIC_KEY }}
           BRISKEDIT_SIGN_IDENTITY: ${{ secrets.BRISKEDIT_SIGN_IDENTITY }}
         run: ./script/package_dmg.sh
@@ -104,6 +105,7 @@ jobs:
       - name: Notarize DMG
         env:
           BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
+          BRISKEDIT_UPDATE_CHANNEL: ${{ steps.version.outputs.channel }}
           BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
           BRISKEDIT_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.BRISKEDIT_NOTARY_KEYCHAIN_PROFILE }}
           BRISKEDIT_NOTARY_APPLE_ID: ${{ secrets.BRISKEDIT_NOTARY_APPLE_ID }}

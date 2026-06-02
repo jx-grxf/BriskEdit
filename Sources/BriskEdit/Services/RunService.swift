@@ -8,14 +8,19 @@ struct RunCommand: Sendable {
 
 enum RunService {
     @MainActor
-    static func resolve(document: TextDocument?, workspaceRoot: URL?) throws -> RunCommand {
+    static func resolve(document: TextDocument?, workspaceRoot: URL?) async throws -> RunCommand {
         guard let document else { throw RunError.noDocument }
         guard document.language.isRunnable else { throw RunError.unsupported(document.language.rawValue) }
 
-        let sourceURL = try materializedSourceURL(for: document)
+        if requiresSaveBeforeRun(document: document, workspaceRoot: workspaceRoot) {
+            throw RunError.needsSavedProjectFile(document.displayName)
+        }
+
+        let source = try await materializedSource(for: document)
+        let sourceURL = source.url
         let cwd = runDirectory(for: sourceURL, workspaceRoot: workspaceRoot)
         let file = shellQuote(sourceURL.path)
-        let cleanup = sourceURL.path.hasPrefix(tempSourcePrefix) ? " ; rm -f \(file)" : ""
+        let cleanup = source.cleanupAfterRun ? " ; rm -f \(file)" : ""
 
         let line: String
         switch document.language {
@@ -64,15 +69,49 @@ enum RunService {
     }
 
     @MainActor
-    private static func materializedSourceURL(for document: TextDocument) throws -> URL {
+    static func requiresSaveBeforeRun(document: TextDocument, workspaceRoot: URL?) -> Bool {
+        guard document.isDirty, let fileURL = document.fileURL else { return false }
+        switch document.language {
+        case .swift:
+            return ancestor(containing: "Package.swift", from: fileURL.deletingLastPathComponent(), stopAt: workspaceRoot) != nil
+        case .go:
+            return ancestor(containing: "go.mod", from: fileURL.deletingLastPathComponent(), stopAt: workspaceRoot) != nil
+        case .rust:
+            return ancestor(containing: "Cargo.toml", from: fileURL.deletingLastPathComponent(), stopAt: workspaceRoot) != nil
+        default:
+            return false
+        }
+    }
+
+    private struct MaterializedSource {
+        let url: URL
+        let cleanupAfterRun: Bool
+    }
+
+    @MainActor
+    private static func materializedSource(for document: TextDocument) async throws -> MaterializedSource {
         if !document.isDirty, let url = document.fileURL {
-            return url
+            return MaterializedSource(url: url, cleanupAfterRun: false)
         }
 
         let ext = document.language.preferredExtension
-        let url = URL(fileURLWithPath: "\(tempSourcePrefix)\(UUID().uuidString).\(ext)")
-        try document.text.write(to: url, atomically: true, encoding: .utf8)
-        return url
+        let directory = sourceDirectory(for: document)
+        let url = directory.appendingPathComponent(".briskedit-run-\(UUID().uuidString).\(ext)")
+        let text = document.text
+        try await Task.detached(priority: .userInitiated) {
+            try text.write(to: url, atomically: true, encoding: .utf8)
+        }.value
+        return MaterializedSource(url: url, cleanupAfterRun: true)
+    }
+
+    @MainActor
+    private static func sourceDirectory(for document: TextDocument) -> URL {
+        switch document.language {
+        case .c, .cpp:
+            return document.fileURL?.deletingLastPathComponent() ?? FileManager.default.temporaryDirectory
+        default:
+            return FileManager.default.temporaryDirectory
+        }
     }
 
     private static func runDirectory(for sourceURL: URL, workspaceRoot: URL?) -> URL {
@@ -99,10 +138,6 @@ enum RunService {
         "/tmp/briskedit-\(UUID().uuidString)"
     }
 
-    private static var tempSourcePrefix: String {
-        "/tmp/briskedit-source-"
-    }
-
     static func shellQuote(_ value: String) -> String {
         "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
@@ -111,6 +146,7 @@ enum RunService {
 enum RunError: LocalizedError {
     case noDocument
     case unsupported(String)
+    case needsSavedProjectFile(String)
 
     var errorDescription: String? {
         switch self {
@@ -118,6 +154,8 @@ enum RunError: LocalizedError {
             "No active document to run."
         case .unsupported(let language):
             "Running \(language) files is not supported yet."
+        case .needsSavedProjectFile(let name):
+            "Save \(name) before running this project."
         }
     }
 }

@@ -65,8 +65,8 @@ var failures: [String] = []
 if delegate.enclosureURL != expectedURL {
     failures.append("enclosure url mismatch: got \(delegate.enclosureURL ?? "nil"), expected \(expectedURL)")
 }
-if let actualChannel = delegate.channel, actualChannel != expectedChannel {
-    failures.append("channel mismatch: got \(actualChannel), expected \(expectedChannel)")
+if delegate.channel != expectedChannel {
+    failures.append("channel mismatch: got \(delegate.channel ?? "nil"), expected \(expectedChannel)")
 }
 
 if failures.isEmpty {

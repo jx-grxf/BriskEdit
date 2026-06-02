@@ -115,11 +115,17 @@ private struct TerminalSessionChip: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: "terminal")
-                .font(.caption2)
-            Text(name)
-                .font(.caption)
-                .lineLimit(1)
+            Button(action: onSelect) {
+                HStack(spacing: 4) {
+                    Image(systemName: "terminal")
+                        .font(.caption2)
+                    Text(name)
+                        .font(.caption)
+                        .lineLimit(1)
+                }
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Select terminal \(name)")
             Button(action: onClose) {
                 Image(systemName: "trash")
                     .font(.caption2)
@@ -127,6 +133,7 @@ private struct TerminalSessionChip: View {
             .buttonStyle(.borderless)
             .opacity(hovering || isActive ? 1 : 0)
             .help("Close \(name)")
+            .accessibilityLabel("Close terminal \(name)")
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
@@ -139,7 +146,6 @@ private struct TerminalSessionChip: View {
                 .strokeBorder(isActive ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
         .onHover { hovering = $0 }
     }
 }

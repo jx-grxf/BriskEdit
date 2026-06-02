@@ -73,9 +73,9 @@ final class TerminalController: Identifiable {
         send(text.hasSuffix("\n") ? text : text + "\n")
     }
 
-    func runActiveDocument(_ document: TextDocument?, workspaceRoot: URL?) {
+    func runActiveDocument(_ document: TextDocument?, workspaceRoot: URL?) async {
         do {
-            let command = try RunService.resolve(document: document, workspaceRoot: workspaceRoot)
+            let command = try await RunService.resolve(document: document, workspaceRoot: workspaceRoot)
             currentDirectory = command.cwd
             title = command.title
             if !isRunning {

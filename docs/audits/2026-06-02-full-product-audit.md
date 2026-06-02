@@ -238,6 +238,23 @@ Plan:
 
 ## Suggested Implementation Order
 
+Status in PR #8:
+
+- Done: save/autosave revision correctness.
+- Done: LSP lifecycle/rooting and language-change diagnostics retargeting.
+- Done: bounded search with ripgrep streaming, max filesize, invalid-regex and
+  process-error feedback.
+- Done: debounced Markdown preview with scroll preservation and broader block
+  rendering.
+- Done: save-before-run behavior for dirty project runs and sibling temp files
+  for C/C++ local headers.
+- Done: detached workspace file operations for create, folder create, duplicate,
+  import, move, rename, and trash paths.
+- Done: tab, terminal, and git rows use explicit controls with accessibility
+  labels where practical; narrow Markdown preview auto-hides.
+- Done: beta feed semantics are beta-only and stable release gates require
+  Developer ID signing, notarization, stapling, and Gatekeeper checks.
+
 1. `fix/save-revision-race`: save/autosave revision correctness and tests.
 2. `fix/lsp-lifecycle-rooting`: LSP root keys, request ordering, failed-start
    cleanup, diagnostics retargeting.

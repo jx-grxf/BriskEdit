@@ -5,9 +5,9 @@ End-to-end procedure for cutting a BriskEdit release.
 ## Channels
 
 - **stable** — tags like `v0.2.0`. Published to the latest release, advertised on the public appcast.
-- **beta** — tags like `v0.2.0-beta.1`. Published as a GitHub prerelease and a separate appcast feed users opt into in Settings → Updates.
+- **beta** — tags like `v0.2.0-beta.1`. Published as a GitHub prerelease and a separate beta-only appcast feed users opt into in Settings → Updates.
 
-The Sparkle controller filters channels via `allowedChannels(for:)` in `UpdateService`. Stable users never see beta entries.
+The Sparkle controller filters channels via `allowedChannels(for:)` in `UpdateService`. Stable users never see beta entries, and beta users poll the moving beta feed only. Stable releases are not mixed into that feed.
 
 ## Prerequisites (one-time)
 
@@ -40,7 +40,7 @@ The Sparkle controller filters channels via `allowedChannels(for:)` in `UpdateSe
    - packages a DMG (`script/package_dmg.sh`)
    - produces a signed Sparkle ZIP + appcast (`script/create_sparkle_assets.sh`)
    - verifies the appcast points at the right release URL
-   - (when secrets are present) notarizes the DMG and staples the ticket
+  - notarizes the DMG and staples the ticket for stable releases; beta releases may skip notarization when CI secrets are absent
    - attaches everything to the GitHub Release
    Manual `workflow_dispatch` accepts an optional `build` input when a specific
    Sparkle build number is needed; otherwise it uses the GitHub run number.
