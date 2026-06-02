@@ -214,26 +214,43 @@ private struct EditorPreferencesView: View {
 
 private struct TerminalPreferencesView: View {
     @Environment(Preferences.self) private var preferences
+    /// Installed fixed-pitch font families — the same set Terminal.app offers.
+    @State private var families: [String] = []
 
     var body: some View {
         @Bindable var prefs = preferences
         Form {
             Section("Font") {
-                TextField("Font name", text: $prefs.terminalFontName)
+                Picker("Font", selection: $prefs.terminalFontName) {
+                    ForEach(families, id: \.self) { family in
+                        Text(family).font(.custom(family, size: 13)).tag(family)
+                    }
+                }
                 Stepper(value: $prefs.terminalFontSize, in: 9...28, step: 1) {
                     Text("Size: \(Int(prefs.terminalFontSize)) pt")
                 }
-                let installed = NSFont(name: prefs.terminalFontName, size: prefs.terminalFontSize) != nil
-                    || NSFontManager.shared.availableFontFamilies.contains(prefs.terminalFontName)
-                Text(installed
-                    ? "Match your Terminal.app profile, e.g. “MesloLGS Nerd Font”, so powerline prompts and glyphs render correctly."
-                    : "“\(prefs.terminalFontName)” isn't installed — falling back to the system monospaced font.")
+                Text("Monospaced fonts installed on this Mac — the same list Terminal.app uses. Pick the one from your Terminal profile (e.g. “MesloLGS Nerd Font”) so powerline prompts and glyphs render correctly.")
                     .font(.caption)
-                    .foregroundStyle(installed ? Color.secondary : Color.orange)
+                    .foregroundStyle(.secondary)
             }
         }
         .formStyle(.grouped)
         .padding()
+        .task { families = monospacedFamilies(including: prefs.terminalFontName) }
+    }
+
+    /// Fixed-pitch font *family* names, sorted. Always includes the current
+    /// selection so a previously-saved font that isn't fixed-pitch still appears.
+    private func monospacedFamilies(including current: String) -> [String] {
+        let manager = NSFontManager.shared
+        var names = Set<String>()
+        for fontName in manager.availableFontNames(with: .fixedPitchFontMask) ?? [] {
+            if let family = NSFont(name: fontName, size: 12)?.familyName {
+                names.insert(family)
+            }
+        }
+        names.insert(current)
+        return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
 }
 

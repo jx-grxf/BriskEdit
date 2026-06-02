@@ -32,6 +32,10 @@ struct OutlineSidebarView: View {
             Divider()
             content
         }
+        // Fill the pane and pin to the top. Without this the VStack hugs its
+        // content, and inside the sidebar's ZStack it gets vertically centered —
+        // leaving a large empty gap above the "Outline" header.
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         // Reload whenever the active tab changes (and on first appear). `.task`
         // auto-cancels its predecessor, so switching tabs quickly never leaves a
         // stale outline request running.

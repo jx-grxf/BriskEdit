@@ -15,6 +15,11 @@ final class WorkspaceModel {
     var showMarkdownPreview: Bool = true
     var showHiddenFiles: Bool = false
     var reloadToken = UUID()
+    /// Per-directory reload tokens. Bumping one reloads just that folder's branch
+    /// in the file tree instead of the whole tree — so creating/deleting/renaming
+    /// a file no longer scrolls the tree back to the top. Full refreshes (hidden
+    /// toggle, manual Refresh, root change) still go through `reloadToken`.
+    var directoryRefreshTokens: [URL: UUID] = [:]
     var selectedSidebarURL: URL?
     var lastError: String?
     /// Which sidebar pane is shown (files / search / source control). Lives here
@@ -358,6 +363,15 @@ final class WorkspaceModel {
         reloadToken = UUID()
     }
 
+    /// Reloads a single folder's children in the file tree (after a create /
+    /// delete / rename in that folder) without touching the rest of the tree, so
+    /// the scroll position is kept. Pass the *directory* whose contents changed.
+    func refreshDirectory(_ url: URL) {
+        let dir = url.standardizedFileURL
+        childCache = childCache.filter { $0.key.url.standardizedFileURL != dir }
+        directoryRefreshTokens[dir] = UUID()
+    }
+
     func toggleHiddenFiles() {
         showHiddenFiles.toggle()
         childCache.removeAll(keepingCapacity: true)
@@ -697,7 +711,7 @@ final class WorkspaceModel {
             do {
                 try await writeEmptyFile(at: url)
                 expandedDirectories.insert(dir)
-                refreshFileTree()
+                refreshDirectory(dir)
                 selectedSidebarURL = url
                 await openFile(at: url)
             } catch {
@@ -741,7 +755,7 @@ final class WorkspaceModel {
             do {
                 try await trashItem(at: url)
                 closeTabs(referencing: url)
-                refreshFileTree()
+                refreshDirectory(url.deletingLastPathComponent())
             } catch {
                 lastError = "Could not delete \(url.lastPathComponent): \(error.localizedDescription)"
             }
@@ -763,7 +777,7 @@ final class WorkspaceModel {
             guard let self else { return }
             do {
                 try await copyItem(at: url, to: candidate)
-                refreshFileTree()
+                refreshDirectory(candidate.deletingLastPathComponent())
             } catch {
                 lastError = "Could not duplicate \(url.lastPathComponent): \(error.localizedDescription)"
             }
@@ -783,7 +797,7 @@ final class WorkspaceModel {
                 try await moveItem(at: url, to: destination)
                 retargetTabs(from: url, to: destination)
                 persistSession()
-                refreshFileTree()
+                refreshDirectory(destination.deletingLastPathComponent())
                 selectedSidebarURL = destination
             } catch {
                 lastError = "Could not rename \(url.lastPathComponent): \(error.localizedDescription)"
@@ -828,7 +842,7 @@ final class WorkspaceModel {
             do {
                 try await copyItem(at: source, to: destination)
                 expandedDirectories.insert(directory)
-                refreshFileTree()
+                refreshDirectory(directory)
             } catch {
                 lastError = "Could not import \(source.lastPathComponent): \(error.localizedDescription)"
             }
@@ -868,7 +882,8 @@ final class WorkspaceModel {
             do {
                 try await moveItem(at: src, to: destination)
                 retargetTabs(from: src, to: destination)
-                refreshFileTree()
+                refreshDirectory(src.deletingLastPathComponent())
+                refreshDirectory(dir)
             } catch {
                 lastError = "Could not move \(src.lastPathComponent): \(error.localizedDescription)"
             }

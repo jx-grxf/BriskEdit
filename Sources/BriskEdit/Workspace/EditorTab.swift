@@ -4,10 +4,11 @@ import Observation
 enum PreviewKind: Equatable {
     case pdf(URL)
     case quickLook(URL)
+    case image(URL)
 
     var url: URL {
         switch self {
-        case .pdf(let url), .quickLook(let url):
+        case .pdf(let url), .quickLook(let url), .image(let url):
             url
         }
     }
@@ -18,6 +19,8 @@ enum PreviewKind: Equatable {
             "doc.richtext"
         case .quickLook:
             "doc.text.magnifyingglass"
+        case .image:
+            "photo"
         }
     }
 
@@ -27,6 +30,8 @@ enum PreviewKind: Equatable {
             .pdf(url)
         case "docx":
             .quickLook(url)
+        case "png", "jpg", "jpeg", "gif", "bmp", "tiff", "tif", "heic", "heif", "webp", "ico", "icns":
+            .image(url)
         default:
             nil
         }

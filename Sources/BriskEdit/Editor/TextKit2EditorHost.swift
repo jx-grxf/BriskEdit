@@ -651,7 +651,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// untouched by the folding machinery.
         func recomputeFoldRegions() {
             guard let textView else { return }
-            guard theme.showCodeFolding else {
+            guard theme.showCodeFolding, document.language.supportsFolding else {
                 folding.unfoldAll()
                 folding.updateRegions([])
                 gutter?.refresh()

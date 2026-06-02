@@ -164,7 +164,23 @@ private struct WindowConfigurator: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> NSView { NSView() }
+    func makeNSView(context: Context) -> NSView {
+        let view = WindowAttachingView()
+        // Configure as soon as the backing view actually joins a window. Doing
+        // this only from `updateNSView` was unreliable: at launch that runs while
+        // `view.window` is still nil, so the full-size frame was never applied and
+        // the window opened at SwiftUI's small default size.
+        view.onMoveToWindow = { [weak coordinator = context.coordinator] window in
+            let edited = isDocumentEdited
+            let hasUnsaved = hasUnsavedChanges
+            let isPrimary = isPrimaryWindow
+            let save = saveAll
+            DispatchQueue.main.async {
+                coordinator?.configure(window: window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, saveAll: save)
+            }
+        }
+        return view
+    }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         let coordinator = context.coordinator
@@ -187,6 +203,12 @@ private struct WindowConfigurator: NSViewRepresentable {
 
         func configure(window: NSWindow?, isPrimaryWindow: Bool, isEdited: Bool, hasUnsaved: Bool, saveAll: @escaping () async -> Bool) {
             guard let window else { return }
+            // We restore the folder + open tabs ourselves (startPrimarySession).
+            // Letting AppKit *also* persist/restore this window produces a second,
+            // duplicate window on cold start ("a new empty one + the old folder").
+            // Opting out of system restoration leaves our own restore as the only
+            // path, so exactly one window comes back.
+            window.isRestorable = false
             if isPrimaryWindow, !PrimaryWindowRegistry.shared.claim(window) {
                 DispatchQueue.main.async { window.close() }
                 return
@@ -237,6 +259,18 @@ private struct WindowConfigurator: NSViewRepresentable {
             if let forwardee, forwardee.responds(to: aSelector) { return forwardee }
             return super.forwardingTarget(for: aSelector)
         }
+    }
+}
+
+/// A zero-size helper view that reports when it is attached to (or detached
+/// from) a window, so the configurator can set up the window the moment it
+/// becomes available — instead of polling from `updateNSView`.
+private final class WindowAttachingView: NSView {
+    var onMoveToWindow: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onMoveToWindow?(window)
     }
 }
 

@@ -20,8 +20,9 @@ final class TextKit2GutterView: NSView {
     /// Clickable chevron rects captured during the last draw, keyed by 1-based line.
     private var foldHitRects: [(line: Int, rect: NSRect)] = []
 
-    /// Fixed width — enough for ~5 digits at typical code sizes.
-    static let width: CGFloat = 48
+    /// Fixed width — enough for ~5 digits at typical code sizes, plus a small
+    /// leading column for the diagnostic dot so it never touches the numbers.
+    static let width: CGFloat = 52
 
     init(theme: EditorTheme) {
         self.theme = theme
@@ -171,11 +172,11 @@ final class TextKit2GutterView: NSView {
             }
         }
 
-        // Diagnostic dot on the leading edge.
+        // Diagnostic dot in its own leading column, kept clear of the numbers.
         if let severity = diagnostics[line] {
             (severity == .error ? NSColor.systemRed : NSColor.systemYellow).setFill()
-            let r: CGFloat = 6
-            NSBezierPath(ovalIn: NSRect(x: 4, y: y + (lineHeight - r) / 2, width: r, height: r)).fill()
+            let r: CGFloat = 5
+            NSBezierPath(ovalIn: NSRect(x: 2, y: y + (lineHeight - r) / 2, width: r, height: r)).fill()
         }
 
         drawNumber(line, font: font, y: y, lineHeight: lineHeight)

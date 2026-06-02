@@ -63,7 +63,11 @@ struct AppCommands: Commands {
             .disabled(workspace?.rootURL == nil)
         }
 
-        CommandMenu("View") {
+        // Add to the *existing* system "View" menu (sidebar/toolbar group) rather
+        // than declaring a second `CommandMenu("View")`, which produced two
+        // separate "View" menus in the menu bar.
+        CommandGroup(after: .toolbar) {
+            Divider()
             Button("Increase Font Size") {
                 preferences.adjustFontSize(by: 1)
             }

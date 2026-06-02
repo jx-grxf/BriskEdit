@@ -28,7 +28,7 @@ struct MarkdownPreview: View {
             .frame(height: 34)
             .background(.bar)
             Divider()
-            MarkdownWebView(html: html, baseURL: document.fileURL?.deletingLastPathComponent(), onOpenFile: onOpenFile)
+            MarkdownWebView(html: html, documentURL: document.fileURL, onOpenFile: onOpenFile)
         }
         .onAppear { scheduleRender(debounce: false) }
         .onChange(of: document.revision) { _, _ in scheduleRender(debounce: true) }
@@ -54,11 +54,14 @@ struct MarkdownPreview: View {
 
 private struct MarkdownWebView: NSViewRepresentable {
     let html: String
-    let baseURL: URL?
+    /// The previewed file's own URL. Used as the WebKit base URL so that relative
+    /// links/images and in-page `#anchor` links resolve against the document
+    /// itself (an anchor stays in the preview instead of opening Finder).
+    let documentURL: URL?
     let onOpenFile: (URL) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(baseURL: baseURL, onOpenFile: onOpenFile)
+        Coordinator(documentURL: documentURL, onOpenFile: onOpenFile)
     }
 
     func makeNSView(context: Context) -> WKWebView {
@@ -69,7 +72,7 @@ private struct MarkdownWebView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        context.coordinator.baseURL = baseURL
+        context.coordinator.documentURL = documentURL
         context.coordinator.onOpenFile = onOpenFile
         guard context.coordinator.lastHTML != html else { return }
         context.coordinator.lastHTML = html
@@ -77,18 +80,21 @@ private struct MarkdownWebView: NSViewRepresentable {
             if let pair = value as? [Double], pair.count == 2 {
                 context.coordinator.pendingScroll = CGPoint(x: pair[0], y: pair[1])
             }
-            webView.loadHTMLString(html, baseURL: baseURL)
+            webView.loadHTMLString(html, baseURL: documentURL)
         }
     }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
         var lastHTML: String?
         var pendingScroll: CGPoint?
-        var baseURL: URL?
+        var documentURL: URL?
         var onOpenFile: (URL) -> Void
 
-        init(baseURL: URL?, onOpenFile: @escaping (URL) -> Void) {
-            self.baseURL = baseURL
+        /// Directory the document lives in — the anchor for relative/wiki links.
+        private var baseDirectory: URL? { documentURL?.deletingLastPathComponent() }
+
+        init(documentURL: URL?, onOpenFile: @escaping (URL) -> Void) {
+            self.documentURL = documentURL
             self.onOpenFile = onOpenFile
         }
 
@@ -109,22 +115,42 @@ private struct MarkdownWebView: NSViewRepresentable {
                 decisionHandler(.cancel)
                 return
             }
-            if url.isFileURL, url.pathExtension.lowercased() == "md" {
-                onOpenFile(url)
-                decisionHandler(.cancel)
+            // In-page anchor (same document, only the fragment differs): let
+            // WebKit scroll to it instead of treating it as a navigation.
+            if let documentURL, url.isFileURL, url.fragment != nil,
+               url.path == documentURL.path {
+                decisionHandler(.allow)
                 return
+            }
+            // Relative/absolute link to another local Markdown file → open it.
+            if url.isFileURL {
+                let target = url.pathExtension.isEmpty
+                    ? url.appendingPathExtension("md")
+                    : url
+                if target.pathExtension.lowercased() == "md",
+                   FileManager.default.fileExists(atPath: target.path) {
+                    onOpenFile(target)
+                    decisionHandler(.cancel)
+                    return
+                }
+                // Any other existing local file: hand off to the editor too.
+                if FileManager.default.fileExists(atPath: url.path) {
+                    onOpenFile(url)
+                    decisionHandler(.cancel)
+                    return
+                }
             }
             NSWorkspace.shared.open(url)
             decisionHandler(.cancel)
         }
 
         private func resolveWikiLink(_ url: URL) -> URL? {
-            guard let baseURL else { return nil }
+            guard let baseDirectory else { return nil }
             let raw = url.host?.removingPercentEncoding ?? url.absoluteString.replacingOccurrences(of: "briskedit-wikilink://", with: "").removingPercentEncoding ?? ""
             let target = raw.split(separator: "#").first.map(String.init) ?? raw
             let candidates = [
-                baseURL.appendingPathComponent(target),
-                baseURL.appendingPathComponent(target).appendingPathExtension("md")
+                baseDirectory.appendingPathComponent(target),
+                baseDirectory.appendingPathComponent(target).appendingPathExtension("md")
             ]
             return candidates.first { FileManager.default.fileExists(atPath: $0.path) }
         }

@@ -212,6 +212,8 @@ struct EditorTabsView: View {
             PDFViewerHost(url: url)
         case .quickLook(let url):
             QuickLookPreviewHost(url: url)
+        case .image(let url):
+            ImageViewerHost(url: url)
         }
     }
 }
@@ -296,6 +298,8 @@ private struct SplitPreviewPane: View {
             PDFViewerHost(url: url)
         case .quickLook(let url):
             QuickLookPreviewHost(url: url)
+        case .image(let url):
+            ImageViewerHost(url: url)
         }
     }
 }

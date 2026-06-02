@@ -345,6 +345,16 @@ enum SourceLanguage: String, Sendable, CaseIterable, Identifiable {
         }
     }
 
+    /// Whether indentation-based code folding is meaningful. Disabled for prose
+    /// (Markdown, plain text) where leading whitespace is layout — not nesting —
+    /// so chevrons would appear on arbitrary lines (ASCII diagrams, lists, …).
+    var supportsFolding: Bool {
+        switch self {
+        case .markdown, .plainText: false
+        default: true
+        }
+    }
+
     var preferredExtension: String {
         switch self {
         case .c: "c"
