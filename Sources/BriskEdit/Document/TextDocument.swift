@@ -219,7 +219,9 @@ struct PendingReveal: Equatable, Sendable {
     var length: Int
 }
 
-enum SourceLanguage: String, Sendable, CaseIterable {
+enum SourceLanguage: String, Sendable, CaseIterable, Identifiable {
+    var id: String { rawValue }
+
     case c = "C"
     case cpp = "C++"
     case css = "CSS"

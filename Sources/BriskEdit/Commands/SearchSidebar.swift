@@ -34,11 +34,10 @@ struct SearchSidebarView: View {
                 TextField("Replace", text: $workspace.searchReplacement)
                     .textFieldStyle(.roundedBorder)
                     .onSubmit { workspace.replaceAllInProject() }
-                Button {
+                Button("Replace All", systemImage: "arrow.2.squarepath") {
                     workspace.replaceAllInProject()
-                } label: {
-                    Image(systemName: "arrow.2.squarepath")
                 }
+                .labelStyle(.iconOnly)
                 .help("Replace all")
                 .disabled(workspace.searchResults.isEmpty)
             }
@@ -74,6 +73,8 @@ struct SearchSidebarView: View {
         .buttonStyle(.plain)
         .background(isOn.wrappedValue ? Color.accentColor.opacity(0.3) : Color.clear, in: RoundedRectangle(cornerRadius: 4))
         .help(help)
+        .accessibilityLabel(help)
+        .accessibilityAddTraits(isOn.wrappedValue ? .isSelected : [])
     }
 
     private var results: some View {

@@ -71,24 +71,7 @@ struct AppCommands: Commands {
 
             Menu("Language") {
                 if let doc = workspace?.activeTab?.document {
-                    Button {
-                        doc.languageOverride = nil
-                    } label: {
-                        Label("Auto-detect (\(doc.detectedLanguage.rawValue))",
-                              systemImage: doc.languageOverride == nil ? "checkmark" : "wand.and.stars")
-                    }
-                    Divider()
-                    ForEach(SourceLanguage.allCases, id: \.self) { language in
-                        Button {
-                            doc.languageOverride = language
-                        } label: {
-                            if doc.language == language {
-                                Label(language.rawValue, systemImage: "checkmark")
-                            } else {
-                                Text(language.rawValue)
-                            }
-                        }
-                    }
+                    LanguageMenuItems(document: doc)
                 }
             }
             .disabled(workspace?.activeTab?.document == nil)

@@ -379,24 +379,7 @@ private struct LanguagePicker: View {
 
     var body: some View {
         Menu {
-            Button {
-                document.languageOverride = nil
-            } label: {
-                Label("Auto-detect (\(document.detectedLanguage.rawValue))",
-                      systemImage: document.languageOverride == nil ? "checkmark" : "wand.and.stars")
-            }
-            Divider()
-            ForEach(SourceLanguage.allCases, id: \.self) { language in
-                Button {
-                    document.languageOverride = language
-                } label: {
-                    if document.language == language {
-                        Label(language.rawValue, systemImage: "checkmark")
-                    } else {
-                        Text(language.rawValue)
-                    }
-                }
-            }
+            LanguageMenuItems(document: document)
         } label: {
             Text(document.language.rawValue)
                 .font(.caption.monospaced())

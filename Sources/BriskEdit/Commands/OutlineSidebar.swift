@@ -32,8 +32,10 @@ struct OutlineSidebarView: View {
             Divider()
             content
         }
-        .onAppear { workspace.refreshOutline() }
-        .onChange(of: workspace.activeTabID) { _, _ in workspace.refreshOutline() }
+        // Reload whenever the active tab changes (and on first appear). `.task`
+        // auto-cancels its predecessor, so switching tabs quickly never leaves a
+        // stale outline request running.
+        .task(id: workspace.activeTabID) { workspace.refreshOutline() }
     }
 
     @ViewBuilder

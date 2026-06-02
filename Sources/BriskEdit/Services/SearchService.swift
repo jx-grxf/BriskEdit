@@ -142,27 +142,24 @@ enum SearchService {
             guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
             var matches: [SearchMatch] = []
             let ns = content as NSString
-            ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines]) { line, range, _, stop in
+            // Track the 1-based line number as we walk lines in order, instead of
+            // rescanning from the file start for every matching line (which made
+            // the fallback O(n²) on large files).
+            var currentLine = 0
+            ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines]) { line, _, _, stop in
+                currentLine += 1
                 guard total < matchLimit else { stop.pointee = true; return }
                 let lineText = (line ?? "")
                 let lineNS = lineText as NSString
-                var lineNo = 0
                 regex.enumerateMatches(in: lineText, range: NSRange(location: 0, length: lineNS.length)) { match, _, _ in
                     guard let match else { return }
-                    if lineNo == 0 { lineNo = lineNumber(at: range.location, in: ns) }
-                    matches.append(SearchMatch(line: lineNo, column: match.range.location + 1, length: match.range.length, lineText: trimLine(lineText)))
+                    matches.append(SearchMatch(line: currentLine, column: match.range.location + 1, length: match.range.length, lineText: trimLine(lineText)))
                     total += 1
                 }
             }
             if !matches.isEmpty { results.append(SearchFileResult(url: url, matches: matches)) }
         }
         return results
-    }
-
-    private static func lineNumber(at location: Int, in text: NSString) -> Int {
-        var line = 1
-        text.enumerateSubstrings(in: NSRange(location: 0, length: location), options: [.byLines, .substringNotRequired]) { _, _, _, _ in line += 1 }
-        return line
     }
 
     private static func compile(_ query: SearchQuery) -> NSRegularExpression? {

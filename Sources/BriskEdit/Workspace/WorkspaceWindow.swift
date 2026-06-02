@@ -41,11 +41,10 @@ struct WorkspaceWindow: View {
                 }
             }
             ToolbarItemGroup(placement: .primaryAction) {
-                Button {
+                Button("Toggle Terminal", systemImage: "terminal") {
                     workspace.toggleTerminal()
-                } label: {
-                    Image(systemName: "terminal")
                 }
+                .labelStyle(.iconOnly)
                 .help("Toggle terminal")
 
                 RunButton(workspace: workspace)
@@ -75,11 +74,11 @@ struct WorkspaceWindow: View {
     private var sidebar: some View {
         if let root = workspace.rootURL {
             VStack(spacing: 0) {
-                Picker("", selection: Bindable(workspace).sidebarTab) {
-                    Image(systemName: "folder").tag(SidebarTab.files)
-                    Image(systemName: "magnifyingglass").tag(SidebarTab.search)
-                    Image(systemName: "list.bullet.indent").tag(SidebarTab.outline)
-                    Image(systemName: "arrow.triangle.branch").tag(SidebarTab.sourceControl)
+                Picker("Sidebar section", selection: Bindable(workspace).sidebarTab) {
+                    Image(systemName: "folder").accessibilityLabel("Files").tag(SidebarTab.files)
+                    Image(systemName: "magnifyingglass").accessibilityLabel("Search").tag(SidebarTab.search)
+                    Image(systemName: "list.bullet.indent").accessibilityLabel("Outline").tag(SidebarTab.outline)
+                    Image(systemName: "arrow.triangle.branch").accessibilityLabel("Source Control").tag(SidebarTab.sourceControl)
                 }
                 .pickerStyle(.segmented)
                 .labelsHidden()

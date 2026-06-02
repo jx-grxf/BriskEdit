@@ -316,6 +316,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var highlightWork: DispatchWorkItem?
         private var gitWork: DispatchWorkItem?
         private var lspWork: DispatchWorkItem?
+        private var minimapWork: DispatchWorkItem?
         private var lspItems: [LSPCompletion] = []
         private var lspDiagnosticsURI: String?
         var lastSyncedRevision = 0
@@ -381,7 +382,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             scheduleLSP(in: textView)
             updateCompletionPopup(in: textView)
             gutter?.refresh()
-            minimap?.invalidateContent()
+            scheduleMinimapRebuild()
             hideHover()
         }
 
@@ -614,6 +615,18 @@ struct TextKit2EditorHost: NSViewRepresentable {
             }
             highlightWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+        }
+
+        /// Debounced minimap content rebuild. The minimap re-scans the whole
+        /// document to build its per-line word bars; doing that on every keystroke
+        /// (each draw) is wasteful, so coalesce rapid typing into a single rebuild
+        /// once edits settle — the overview can lag a beat without anyone noticing.
+        private func scheduleMinimapRebuild() {
+            guard minimap != nil else { return }
+            minimapWork?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.minimap?.invalidateContent() }
+            minimapWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
         }
 
         /// Debounced recompute of the git gutter diff (buffer vs HEAD). Cleared
