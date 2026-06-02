@@ -1,10 +1,11 @@
 # Release Notes
 
-## 0.3.0-beta.1 — search, code intelligence & folding
+## 0.3.0-beta.2 — search, code intelligence & folding
 
 A beta build. Still an unsigned developer preview — on first launch, right-click
 `BriskEdit.app` → **Open** → confirm. To receive further beta updates, set the
-update channel to **Beta** in Settings.
+update channel to **Beta** in Settings — the beta channel now polls its own
+update feed, so in-app updates work for beta testers.
 
 ### New
 

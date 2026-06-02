@@ -103,6 +103,18 @@ private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
         }
     }
 
+    /// Beta builds must poll a *different* feed than stable ones. The bundle's
+    /// `SUFeedURL` points at the `latest` GitHub release (stable only — GitHub's
+    /// "latest" never resolves to a prerelease). Betas live behind the moving
+    /// `beta` release, so on the beta channel we swap the path to that feed.
+    /// Returning nil keeps the bundle default (the stable `latest` feed).
+    func feedURLString(for updater: SPUUpdater) -> String? {
+        guard channel == .beta else { return nil }
+        let bundleFeed = Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String
+        return bundleFeed?.replacingOccurrences(of: "releases/latest/download", with: "releases/download/beta")
+            ?? "https://github.com/jx-grxf/BriskEdit/releases/download/beta/appcast.xml"
+    }
+
     func updater(_ updater: SPUUpdater, didFindValidUpdate item: SUAppcastItem) {
         let version = item.displayVersionString
         onFoundUpdate?(version)
