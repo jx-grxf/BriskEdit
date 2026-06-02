@@ -43,6 +43,7 @@ sparkle_private_key
 # Lokale Projektnotizen / Agenten-Kontext (nicht versionieren)
 Brain/
 CLAUDE.md
+AGENTS.md
 
 # Coverage
 *.profraw

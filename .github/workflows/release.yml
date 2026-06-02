@@ -172,3 +172,28 @@ jobs:
               --notes "Moving Sparkle beta appcast feed. Install beta builds from versioned prereleases." \
               --prerelease
           fi
+
+      # The release is now published with its assets. Trigger a rebuild of the
+      # marketing site (johannesgrof.me) so its build-time GitHub fetch picks up
+      # the new version and download links. Fires for both stable and beta tags.
+      # The release above is created with GITHUB_TOKEN, which by design does not
+      # emit a `release` event another workflow could listen on, so we kick the
+      # site from here instead of a separate `on: release` workflow.
+      - name: Refresh website with new release
+        if: success()
+        env:
+          DEPLOY_HOOK: ${{ secrets.WEBSITE_DEPLOY_HOOK }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_HOOK:-}" ]; then
+            echo "WEBSITE_DEPLOY_HOOK secret not set — skipping website rebuild." >&2
+            exit 0
+          fi
+          echo "Triggering johannesgrof.me rebuild for ${RELEASE_TAG}…"
+          code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$DEPLOY_HOOK")"
+          echo "Deploy hook responded with HTTP ${code}"
+          case "$code" in
+            2*) echo "Website rebuild queued." ;;
+            *) echo "Deploy hook failed (HTTP ${code})." >&2; exit 1 ;;
+          esac

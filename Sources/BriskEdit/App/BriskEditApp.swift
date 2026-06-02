@@ -11,6 +11,7 @@ struct BriskEditApp: App {
             WorkspaceWindow(kind: kind)
                 .environment(preferences)
                 .environment(updates)
+                .environment(ThemeStore.shared)
                 .frame(minWidth: 900, minHeight: 560)
         } defaultValue: {
             .primary
@@ -25,6 +26,7 @@ struct BriskEditApp: App {
             SettingsScene()
                 .environment(preferences)
                 .environment(updates)
+                .environment(ThemeStore.shared)
         }
     }
 }

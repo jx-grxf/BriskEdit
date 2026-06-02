@@ -44,7 +44,7 @@ struct AppCommands: Commands {
             .disabled(workspace?.activeTab == nil)
         }
 
-        CommandMenu("Selection") {
+        CommandMenu("Go") {
             Button("Go to File…") {
                 workspace?.showFileFinder = true
             }
@@ -64,8 +64,34 @@ struct AppCommands: Commands {
         }
 
         CommandMenu("View") {
+            Button("Increase Font Size") {
+                preferences.adjustFontSize(by: 1)
+            }
+            .keyboardShortcut("=", modifiers: .command)
+
+            Button("Decrease Font Size") {
+                preferences.adjustFontSize(by: -1)
+            }
+            .keyboardShortcut("-", modifiers: .command)
+
+            Button("Actual Size") {
+                preferences.resetFontSize()
+            }
+            .keyboardShortcut("0", modifiers: .command)
+
+            Divider()
+
             Toggle("Show Minimap", isOn: $preferences.showMinimap)
                 .keyboardShortcut("m", modifiers: [.command, .control])
+
+            Menu("Theme") {
+                Picker("Theme", selection: $preferences.themeID) {
+                    ForEach(ThemeStore.shared.themes) { theme in
+                        Text(theme.name).tag(theme.id)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
 
             Divider()
 

@@ -1,5 +1,33 @@
 # Release Notes
 
+## 0.3.0-beta.3 — themes & release automation
+
+A beta build. Still an unsigned developer preview — on first launch, right-click
+`BriskEdit.app` → **Open** → confirm. To receive further beta updates, set the
+update channel to **Beta** in Settings.
+
+### New
+
+- **Color themes.** Choose from built-in palettes including System (VS Code),
+  One Dark, Dracula, Nord, Solarized Dark, Monokai, and GitHub Light.
+- **VS Code theme import.** Import `.json` color themes, persist them in
+  Application Support, preview them in Settings, and remove imported themes
+  again when they are no longer needed.
+- **Appearance settings.** Editor font, minimap visibility, and git gutter bars
+  now live in a dedicated Appearance tab.
+- **Font-size commands.** Increase, decrease, and reset editor font size from the
+  View menu with standard keyboard shortcuts.
+
+### Improved
+
+- Release builds can now trigger a johannesgrof.me rebuild after publishing so
+  the website picks up new stable and beta downloads without a separate manual
+  refresh.
+
+### Compatibility
+
+Requires macOS 26 or newer. Xcode 26+ to build from source.
+
 ## 0.3.0-beta.2 — search, code intelligence & folding
 
 A beta build. Still an unsigned developer preview — on first launch, right-click
