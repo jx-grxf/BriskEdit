@@ -143,6 +143,19 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.gutter = gutter
         context.coordinator.scrollView = scrollView
 
+        // Code folding: a content-storage delegate collapses folded lines
+        // (display-only, never mutates the storage). The gutter draws/toggles
+        // chevrons; toggling drops rendering attributes, so re-highlight after.
+        let folding = context.coordinator.folding
+        folding.contentStorage = textView.textContentStorage
+        textView.textContentStorage?.delegate = folding
+        gutter.folding = folding
+        gutter.onFoldToggled = { [weak coordinator = context.coordinator] in
+            coordinator?.applyHighlight()
+            coordinator?.gutter?.refresh()
+            coordinator?.minimap?.refresh()
+        }
+
         // Zoomed-out overview on the right, a read-only sibling like the gutter.
         let minimap = MinimapView(theme: theme)
         minimap.textView = textView
@@ -187,6 +200,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         context.coordinator.lastSyncedRevision = document.revision
         context.coordinator.lastLanguage = document.language
+        context.coordinator.recomputeFoldRegions()
         context.coordinator.applyHighlight()
         context.coordinator.warmUpLSP()
         context.coordinator.scheduleGitDiff()
@@ -321,6 +335,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var lspDiagnosticsURI: String?
         var lastSyncedRevision = 0
         private let popup = CompletionPopup()
+        let folding = FoldingController()
         private let hoverPanel = HoverPanel()
         private var hoverWork: DispatchWorkItem?
         private var hoverIndex = -1
@@ -611,10 +626,22 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private func scheduleHighlight() {
             highlightWork?.cancel()
             let work = DispatchWorkItem { [weak self] in
+                self?.recomputeFoldRegions()
                 self?.applyHighlight()
             }
             highlightWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+        }
+
+        /// Re-detects foldable regions after an edit. The analysis is cheap
+        /// (indentation only); the content-storage relayout inside `updateRegions`
+        /// only fires when something is actually folded, so plain typing stays
+        /// untouched by the folding machinery.
+        func recomputeFoldRegions() {
+            guard let textView else { return }
+            let regions = FoldingAnalyzer.regions(in: textView.string as NSString, tabWidth: theme.tabWidth)
+            folding.updateRegions(regions)
+            gutter?.refresh()
         }
 
         /// Debounced minimap content rebuild. The minimap re-scans the whole
