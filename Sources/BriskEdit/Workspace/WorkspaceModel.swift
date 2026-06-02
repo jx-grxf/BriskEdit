@@ -182,7 +182,7 @@ final class WorkspaceModel {
         let language = doc.language
         let uri = url.absoluteString
         let text = doc.text
-        let root = url.deletingLastPathComponent().path
+        let root = rootURL?.path ?? url.deletingLastPathComponent().path
         outlineTask = Task { [weak self] in
             let symbols = await LSPService.shared.documentSymbols(language: language, uri: uri, text: text, root: root)
             guard let self, !Task.isCancelled else { return }
@@ -365,9 +365,7 @@ final class WorkspaceModel {
     /// for the gutter. No-op for languages without a check driver.
     func checkActiveDocument() async {
         guard let doc = activeTab?.document else { return }
-        if let diagnostics = await DiagnosticsService.check(text: doc.text, language: doc.language, fileURL: doc.fileURL) {
-            doc.diagnostics = diagnostics
-        }
+        doc.diagnostics = await DiagnosticsService.check(text: doc.text, language: doc.language, fileURL: doc.fileURL) ?? []
     }
 
     func runActiveDocument() {
@@ -497,6 +495,7 @@ final class WorkspaceModel {
         await formatBeforeSave(tab.document)
         do {
             try await tab.document.save(to: url)
+            startWatching(tab)
             persistSession()
         } catch {
             NSLog("BriskEdit: save-as failed: %@", String(describing: error))

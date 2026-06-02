@@ -18,6 +18,7 @@ final class TextDocument {
     /// Bumped on every text mutation so the editor can detect *external* changes
     /// cheaply, instead of comparing entire (possibly huge) strings each update.
     private(set) var revision: Int = 0
+    private var lastSavedRevision: Int = 0
     /// A request to scroll to and select a range, set by navigation features
     /// (Find in Files, symbol outline, go-to-definition). The editor consumes it
     /// when `revealToken` changes, mirroring the `revision` pattern.
@@ -118,6 +119,7 @@ final class TextDocument {
         guard newText != text else { return }
         text = newText
         revision &+= 1
+        isDirty = true
         rebuildLineIndex()
     }
 
@@ -135,6 +137,7 @@ final class TextDocument {
         encoding = loaded.1
         revision &+= 1
         isDirty = false
+        lastSavedRevision = revision
         externalChangePending = false
         rebuildLineIndex()
     }
@@ -178,21 +181,29 @@ final class TextDocument {
 
     func save() async throws {
         guard let url = fileURL else { throw CocoaError(.fileWriteUnknown) }
-        try await write(to: url, encoding: encoding)
-        isDirty = false
+        let savedRevision = try await write(to: url, encoding: encoding)
+        lastSavedRevision = savedRevision
+        if revision == savedRevision {
+            isDirty = false
+        }
     }
 
     func save(to url: URL) async throws {
-        try await write(to: url, encoding: encoding)
+        let savedRevision = try await write(to: url, encoding: encoding)
         fileURL = url
-        isDirty = false
+        lastSavedRevision = savedRevision
+        if revision == savedRevision {
+            isDirty = false
+        }
     }
 
-    private func write(to url: URL, encoding: String.Encoding) async throws {
+    private func write(to url: URL, encoding: String.Encoding) async throws -> Int {
         let snapshot = text
+        let snapshotRevision = revision
         try await Task.detached(priority: .userInitiated) { [snapshot, encoding] in
             try snapshot.write(to: url, atomically: true, encoding: encoding)
         }.value
+        return snapshotRevision
     }
 
     private func rebuildLineIndex() {

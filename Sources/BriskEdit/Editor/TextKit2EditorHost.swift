@@ -75,6 +75,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
     @Bindable var document: TextDocument
     let theme: EditorTheme
     var showMinimap: Bool = true
+    var workspaceRootURL: URL?
     /// Opens a (possibly different) file at a 1-based line/column — used for
     /// go-to-definition. Provided by the host view, which owns the workspace.
     var onOpenLocation: ((URL, Int, Int) -> Void)?
@@ -87,6 +88,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.document = document
         context.coordinator.theme = theme
+        context.coordinator.workspaceRootURL = workspaceRootURL
         textView.onResignFirstResponder = { [weak coordinator = context.coordinator] in
             coordinator?.dismissCompletions()
         }
@@ -218,6 +220,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.document = document
         coordinator.openLocation = onOpenLocation
+        coordinator.workspaceRootURL = workspaceRootURL
         let themeChanged = coordinator.theme != theme
         coordinator.theme = theme
 
@@ -265,6 +268,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         if didReseed || themeChanged || languageChanged {
             coordinator.applyHighlight()
         }
+        coordinator.syncLSPIdentity()
         if didReseed {
             coordinator.minimap?.invalidateContent()
         }
@@ -327,12 +331,15 @@ struct TextKit2EditorHost: NSViewRepresentable {
         weak var minimap: MinimapView?
         var minimapWidthConstraint: NSLayoutConstraint?
         weak var scrollView: NSScrollView?
+        var workspaceRootURL: URL?
         private var highlightWork: DispatchWorkItem?
         private var gitWork: DispatchWorkItem?
         private var lspWork: DispatchWorkItem?
         private var minimapWork: DispatchWorkItem?
         private var lspItems: [LSPCompletion] = []
         private var lspDiagnosticsURI: String?
+        private var lspLanguage: SourceLanguage?
+        private var lspRoot: String?
         var lastSyncedRevision = 0
         private let popup = CompletionPopup()
         let folding = FoldingController()
@@ -473,7 +480,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let language = document.language
             let uri = url.absoluteString
             let text = textView.string
-            let root = url.deletingLastPathComponent().path
+            let root = lspRootPath(for: url)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let info = await LSPService.shared.hover(language: language, uri: uri, text: text, line: line, character: character, root: root)
@@ -496,7 +503,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let language = document.language
             let uri = url.absoluteString
             let text = textView.string
-            let root = url.deletingLastPathComponent().path
+            let root = lspRootPath(for: url)
             Task { @MainActor [weak self] in
                 guard let location = await LSPService.shared.definition(language: language, uri: uri, text: text, line: line, character: character, root: root),
                       let targetURL = URL(string: location.uri) else { return }
@@ -757,7 +764,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let nsString = text as NSString
             let (line, character) = Self.lspPosition(in: nsString, location: textView.selectedRange().location)
             let uri = url.absoluteString
-            let root = url.deletingLastPathComponent().path
+            let root = lspRootPath(for: url)
 
             let work = DispatchWorkItem { [weak self] in
                 Task { @MainActor [weak self] in
@@ -785,17 +792,42 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let language = document.language
             guard LSPService.config(for: language) != nil else { return }
             let uri = url.absoluteString
+            let root = lspRootPath(for: url)
             lspDiagnosticsURI = uri
+            lspLanguage = language
+            lspRoot = root
             // Route this server's diagnostics into the document for the gutter.
             LSPDiagnosticsBus.shared.setHandler(uri: uri) { [weak self] diagnostics in
                 self?.document.diagnostics = diagnostics
             }
             let text = textView.string
-            let root = url.deletingLastPathComponent().path
             Task { @MainActor in
                 await LSPService.shared.openDocument(language: language, uri: uri, text: text, root: root)
             }
             scheduleLSP(in: textView)
+        }
+
+        func syncLSPIdentity() {
+            let uri = document.fileURL?.absoluteString
+            let language = document.language
+            let root = document.fileURL.map(lspRootPath)
+            guard uri != lspDiagnosticsURI || language != lspLanguage || root != lspRoot else { return }
+            if let oldURI = lspDiagnosticsURI {
+                LSPDiagnosticsBus.shared.removeHandler(uri: oldURI)
+                if let oldLanguage = lspLanguage {
+                    Task { await LSPService.shared.didClose(language: oldLanguage, uri: oldURI) }
+                }
+            }
+            lspDiagnosticsURI = nil
+            lspLanguage = nil
+            lspRoot = nil
+            lspItems = []
+            document.diagnostics = []
+            warmUpLSP()
+        }
+
+        private func lspRootPath(for url: URL) -> String {
+            workspaceRootURL?.path ?? url.deletingLastPathComponent().path
         }
 
         private static func lspPosition(in nsString: NSString, location: Int) -> (line: Int, character: Int) {
