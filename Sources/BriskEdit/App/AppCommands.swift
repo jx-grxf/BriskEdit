@@ -29,6 +29,20 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("o", modifiers: [.command, .shift])
 
+            Menu("Open Recent") {
+                let folders = RecentWorkspacesStore.shared.folders
+                if folders.isEmpty {
+                    Button("No Recent Folders") {}.disabled(true)
+                } else {
+                    ForEach(folders, id: \.self) { url in
+                        Button(url.lastPathComponent) { openRecent(url) }
+                            .help(url.path)
+                    }
+                    Divider()
+                    Button("Clear Menu") { RecentWorkspacesStore.shared.clear() }
+                }
+            }
+
             Button("Close Folder") {
                 workspace?.closeFolder()
             }
@@ -44,7 +58,7 @@ struct AppCommands: Commands {
             .disabled(workspace?.activeTab == nil)
         }
 
-        CommandMenu("Selection") {
+        CommandMenu("Go") {
             Button("Go to File…") {
                 workspace?.showFileFinder = true
             }
@@ -63,11 +77,51 @@ struct AppCommands: Commands {
             .disabled(workspace?.rootURL == nil)
         }
 
-        CommandMenu("View") {
+        // Add to the *existing* system "View" menu (sidebar/toolbar group) rather
+        // than declaring a second `CommandMenu("View")`, which produced two
+        // separate "View" menus in the menu bar.
+        CommandGroup(after: .toolbar) {
+            Divider()
+            Button("Increase Font Size") {
+                preferences.adjustFontSize(by: 1)
+            }
+            .keyboardShortcut("=", modifiers: .command)
+
+            Button("Decrease Font Size") {
+                preferences.adjustFontSize(by: -1)
+            }
+            .keyboardShortcut("-", modifiers: .command)
+
+            Button("Actual Size") {
+                preferences.resetFontSize()
+            }
+            .keyboardShortcut("0", modifiers: .command)
+
+            Divider()
+
             Toggle("Show Minimap", isOn: $preferences.showMinimap)
                 .keyboardShortcut("m", modifiers: [.command, .control])
 
-            Divider()
+            Toggle("Show Hover Documentation", isOn: $preferences.showHoverTooltips)
+
+            Toggle("Show Code Folding Controls", isOn: $preferences.showCodeFolding)
+
+            Toggle("Show Git Change Bars", isOn: $preferences.showGitGutter)
+
+            Button("Toggle Markdown Preview") {
+                workspace?.showMarkdownPreview.toggle()
+            }
+            .keyboardShortcut("m", modifiers: [.command, .shift])
+            .disabled(workspace?.activeTab?.document.language != .markdown)
+
+            Menu("Theme") {
+                Picker("Theme", selection: $preferences.themeID) {
+                    ForEach(ThemeStore.shared.themes) { theme in
+                        Text(theme.name).tag(theme.id)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
 
             Menu("Language") {
                 if let doc = workspace?.activeTab?.document {
@@ -94,12 +148,6 @@ struct AppCommands: Commands {
                 workspace?.showToolHealth = true
             }
 
-            Divider()
-
-            Button("Toggle Markdown Preview") {
-                workspace?.showMarkdownPreview.toggle()
-            }
-            .keyboardShortcut("m", modifiers: [.command, .shift])
         }
 
         CommandMenu("Terminal") {
@@ -133,6 +181,30 @@ struct AppCommands: Commands {
             Button("Check for Updates…") {
                 updates.checkForUpdates()
             }
+        }
+
+        // Replace the default "BriskEdit Help" item (which only shows an
+        // "Help isn't available" alert) with a link to the project on GitHub.
+        CommandGroup(replacing: .help) {
+            Button("BriskEdit on GitHub") {
+                if let url = URL(string: "https://github.com/jx-grxf/BriskEdit") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func openRecent(_ url: URL) {
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            NSSound.beep()
+            return
+        }
+        if let workspace {
+            workspace.setWorkspaceRoot(url)
+        } else {
+            openWindow(value: WindowKind.secondary(UUID()))
         }
     }
 

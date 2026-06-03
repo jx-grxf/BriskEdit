@@ -5,6 +5,8 @@ struct WorkspaceWindow: View {
     let kind: WindowKind
     @State private var workspace = WorkspaceModel()
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @State private var didStartSession = false
+    @State private var secretBanner: String?
     @Environment(Preferences.self) private var preferences
     @Environment(UpdateService.self) private var updates
     @Environment(\.openWindow) private var openWindow
@@ -18,16 +20,50 @@ struct WorkspaceWindow: View {
         }
         .navigationSplitViewStyle(.balanced)
         .task {
-            if kind.restoresSession { await workspace.restoreWorkspace() }
+            guard !didStartSession else { return }
+            didStartSession = true
+            if kind.restoresSession {
+                await workspace.startPrimarySession(restoreLastWorkspace: preferences.startupBehavior == .restoreLastWorkspace)
+            }
         }
         .onAppear {
             NewWindowCoordinator.shared.open = { openWindow(value: WindowKind.secondary(UUID())) }
         }
         .background(WindowConfigurator(
+            isPrimaryWindow: kind.restoresSession,
             isDocumentEdited: workspace.hasUnsavedChanges,
             hasUnsavedChanges: workspace.hasUnsavedChanges,
             saveAll: { await workspace.saveAllForQuit() }
         ))
+        .overlay(alignment: .top) {
+            if let banner = secretBanner {
+                HStack(spacing: 10) {
+                    Image(systemName: "sparkles")
+                    Text(banner).font(.callout.weight(.medium))
+                    if SecretMode.isEnabled {
+                        Button("Deactivate") {
+                            SecretMode.isEnabled = false
+                            showSecretBanner("Secret deactivated")
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                .padding(.horizontal, 14)
+                .padding(.vertical, 9)
+                .background(.ultraThinMaterial, in: Capsule())
+                .overlay(Capsule().strokeBorder(.white.opacity(0.12)))
+                .shadow(radius: 8, y: 2)
+                .padding(.top, 12)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .task(id: banner) {
+                    try? await Task.sleep(for: .seconds(2.6))
+                    withAnimation { secretBanner = nil }
+                }
+            }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .briskEditTitleSecret)) { note in
+            if let message = note.userInfo?["message"] as? String { showSecretBanner(message) }
+        }
         .toolbar {
             if updates.isUpdateAvailable {
                 ToolbarItem(placement: .navigation) {
@@ -85,16 +121,7 @@ struct WorkspaceWindow: View {
                 .padding(.horizontal, 10)
                 .padding(.vertical, 6)
                 Divider()
-                switch workspace.sidebarTab {
-                case .files:
-                    FileTreeView(root: root, workspace: workspace)
-                case .search:
-                    SearchSidebarView(workspace: workspace)
-                case .outline:
-                    OutlineSidebarView(workspace: workspace)
-                case .sourceControl:
-                    GitSidebarView(workspace: workspace, root: root)
-                }
+                sidebarPanes(root: root)
             }
             // Pin to the top and fill the column — otherwise a short pane (empty
             // search, "No symbols" outline) lets the whole stack center itself and
@@ -112,6 +139,19 @@ struct WorkspaceWindow: View {
         }
     }
 
+    private func sidebarPanes(root: URL) -> some View {
+        ZStack {
+            FileTreeView(root: root, workspace: workspace)
+                .visibleSidebarPane(workspace.sidebarTab == .files)
+            SearchSidebarView(workspace: workspace)
+                .visibleSidebarPane(workspace.sidebarTab == .search)
+            OutlineSidebarView(workspace: workspace)
+                .visibleSidebarPane(workspace.sidebarTab == .outline)
+            GitSidebarView(workspace: workspace, root: root)
+                .visibleSidebarPane(workspace.sidebarTab == .sourceControl)
+        }
+    }
+
     private var detail: some View {
         EditorTabsView(workspace: workspace, onOpenFile: { openFile() })
             .environment(preferences)
@@ -119,6 +159,10 @@ struct WorkspaceWindow: View {
                 workspace.openDropped(urls)
                 return true
             }
+    }
+
+    private func showSecretBanner(_ message: String) {
+        withAnimation { secretBanner = message }
     }
 
     @MainActor
@@ -147,21 +191,39 @@ struct WorkspaceWindow: View {
 /// intercepts window close to prompt for unsaved changes — without losing
 /// SwiftUI's own window-delegate behavior (calls are forwarded to it).
 private struct WindowConfigurator: NSViewRepresentable {
+    let isPrimaryWindow: Bool
     let isDocumentEdited: Bool
     let hasUnsavedChanges: Bool
     let saveAll: () async -> Bool
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    func makeNSView(context: Context) -> NSView { NSView() }
+    func makeNSView(context: Context) -> NSView {
+        let view = WindowAttachingView()
+        // Configure as soon as the backing view actually joins a window. Doing
+        // this only from `updateNSView` was unreliable: at launch that runs while
+        // `view.window` is still nil, so the full-size frame was never applied and
+        // the window opened at SwiftUI's small default size.
+        view.onMoveToWindow = { [weak coordinator = context.coordinator] window in
+            let edited = isDocumentEdited
+            let hasUnsaved = hasUnsavedChanges
+            let isPrimary = isPrimaryWindow
+            let save = saveAll
+            DispatchQueue.main.async {
+                coordinator?.configure(window: window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, saveAll: save)
+            }
+        }
+        return view
+    }
 
     func updateNSView(_ nsView: NSView, context: Context) {
         let coordinator = context.coordinator
         let edited = isDocumentEdited
         let hasUnsaved = hasUnsavedChanges
+        let isPrimary = isPrimaryWindow
         let save = saveAll
         DispatchQueue.main.async {
-            coordinator.configure(window: nsView.window, isEdited: edited, hasUnsaved: hasUnsaved, saveAll: save)
+            coordinator.configure(window: nsView.window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, saveAll: save)
         }
     }
 
@@ -171,9 +233,20 @@ private struct WindowConfigurator: NSViewRepresentable {
         private weak var forwardee: NSWindowDelegate?
         private var hasUnsaved = false
         private var saveAll: () async -> Bool = { true }
+        private var didApplyInitialFrame = false
 
-        func configure(window: NSWindow?, isEdited: Bool, hasUnsaved: Bool, saveAll: @escaping () async -> Bool) {
+        func configure(window: NSWindow?, isPrimaryWindow: Bool, isEdited: Bool, hasUnsaved: Bool, saveAll: @escaping () async -> Bool) {
             guard let window else { return }
+            // We restore the folder + open tabs ourselves (startPrimarySession).
+            // Letting AppKit *also* persist/restore this window produces a second,
+            // duplicate window on cold start ("a new empty one + the old folder").
+            // Opting out of system restoration leaves our own restore as the only
+            // path, so exactly one window comes back.
+            window.isRestorable = false
+            if isPrimaryWindow, !PrimaryWindowRegistry.shared.claim(window) {
+                DispatchQueue.main.async { window.close() }
+                return
+            }
             self.window = window
             self.hasUnsaved = hasUnsaved
             self.saveAll = saveAll
@@ -182,6 +255,97 @@ private struct WindowConfigurator: NSViewRepresentable {
                 forwardee = window.delegate
                 window.delegate = self
             }
+            if !didApplyInitialFrame {
+                didApplyInitialFrame = true
+                enforceFullSizeFrame(on: window)
+            }
+            installTitleClickHook(on: window)
+        }
+
+        /// SwiftUI resizes the window to its content's ideal size *after* our first
+        /// pass, and the exact moment varies — a single re-apply (or even two)
+        /// loses that race and the window opens small. Re-apply across a ~1.2s
+        /// settling window so we win regardless of when SwiftUI settles;
+        /// `applyFullSizeFrame` is a no-op once the frame already matches, so this
+        /// stops touching the window the instant it's correct.
+        private func enforceFullSizeFrame(on window: NSWindow) {
+            let delays: [Double] = [0, 0.05, 0.12, 0.25, 0.4, 0.6, 0.85, 1.2]
+            for delay in delays {
+                if delay == 0 {
+                    applyFullSizeFrame(to: window)
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak window] in
+                        guard let self, let window else { return }
+                        self.applyFullSizeFrame(to: window)
+                    }
+                }
+            }
+        }
+
+        private func applyFullSizeFrame(to window: NSWindow) {
+            guard let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
+            let target = screen.visibleFrame
+            // Already flush full-size — don't fight a settled (or user-resized)
+            // window. Compare *origin too*: `defaultSize` can match the size while
+            // SwiftUI centers the window, so a size-only check skipped the
+            // reposition and left uneven margins.
+            let frame = window.frame
+            if abs(frame.width - target.width) < 2, abs(frame.height - target.height) < 2,
+               abs(frame.origin.x - target.origin.x) < 2, abs(frame.origin.y - target.origin.y) < 2 {
+                return
+            }
+            window.setFrame(target, display: true, animate: false)
+        }
+
+        // MARK: - Title click hook
+
+        private var titleClickCount = 0
+        private var didInstallTitleHook = false
+
+        /// Attaches a click recognizer to the existing window title so the title
+        /// stays the single one in the bar (no extra toolbar item). The title
+        /// label only exists after the toolbar lays out, so retry briefly.
+        private func installTitleClickHook(on window: NSWindow, attempt: Int = 0) {
+            guard !didInstallTitleHook else { return }
+            guard let label = Self.titleLabel(in: window) else {
+                guard attempt < 6 else { return }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) { [weak self, weak window] in
+                    guard let self, let window else { return }
+                    self.installTitleClickHook(on: window, attempt: attempt + 1)
+                }
+                return
+            }
+            didInstallTitleHook = true
+            let recognizer = NSClickGestureRecognizer(target: self, action: #selector(handleTitleClick))
+            recognizer.numberOfClicksRequired = 1
+            label.addGestureRecognizer(recognizer)
+        }
+
+        @objc private func handleTitleClick() {
+            titleClickCount += 1
+            guard titleClickCount >= 5 else { return }
+            titleClickCount = 0
+            SecretMode.isEnabled.toggle()
+            let message = SecretMode.isEnabled ? "Secret activated" : "Secret deactivated"
+            NotificationCenter.default.post(name: .briskEditTitleSecret, object: nil, userInfo: ["message": message])
+        }
+
+        /// Finds the titlebar's title label — the first non-editable text field
+        /// inside the titlebar container (reached via the traffic-light button's
+        /// superview), so the search can't stray into the window content.
+        private static func titleLabel(in window: NSWindow) -> NSView? {
+            guard let titlebar = window.standardWindowButton(.closeButton)?.superview else { return nil }
+            return firstStaticTextField(in: titlebar)
+        }
+
+        private static func firstStaticTextField(in view: NSView) -> NSTextField? {
+            if let field = view as? NSTextField, !field.isEditable, !(field is NSSearchField) {
+                return field
+            }
+            for subview in view.subviews {
+                if let found = firstStaticTextField(in: subview) { return found }
+            }
+            return nil
         }
 
         func windowShouldClose(_ sender: NSWindow) -> Bool {
@@ -215,6 +379,47 @@ private struct WindowConfigurator: NSViewRepresentable {
             if let forwardee, forwardee.responds(to: aSelector) { return forwardee }
             return super.forwardingTarget(for: aSelector)
         }
+    }
+}
+
+extension Notification.Name {
+    /// Posted when the window title's hidden toggle fires; carries a "message".
+    static let briskEditTitleSecret = Notification.Name("briskEditTitleSecret")
+}
+
+/// A zero-size helper view that reports when it is attached to (or detached
+/// from) a window, so the configurator can set up the window the moment it
+/// becomes available — instead of polling from `updateNSView`.
+private final class WindowAttachingView: NSView {
+    var onMoveToWindow: ((NSWindow?) -> Void)?
+
+    override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        onMoveToWindow?(window)
+    }
+}
+
+@MainActor
+private final class PrimaryWindowRegistry {
+    static let shared = PrimaryWindowRegistry()
+    private weak var primaryWindow: NSWindow?
+
+    private init() {}
+
+    func claim(_ window: NSWindow) -> Bool {
+        if let primaryWindow, primaryWindow !== window, primaryWindow.isVisible {
+            return false
+        }
+        primaryWindow = window
+        return true
+    }
+}
+
+private extension View {
+    func visibleSidebarPane(_ isVisible: Bool) -> some View {
+        opacity(isVisible ? 1 : 0)
+            .allowsHitTesting(isVisible)
+            .accessibilityHidden(!isVisible)
     }
 }
 

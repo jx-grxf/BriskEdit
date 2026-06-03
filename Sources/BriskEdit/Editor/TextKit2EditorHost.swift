@@ -15,6 +15,8 @@ final class BriskCodeTextView: NSTextView {
     var onHoverExit: (() -> Void)?
     private var hoverTrackingArea: NSTrackingArea?
 
+    override var isOpaque: Bool { true }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
@@ -71,10 +73,39 @@ final class BriskCodeTextView: NSTextView {
     }
 }
 
+private final class EditorBackingView: NSView {
+    var fillColor: NSColor {
+        didSet {
+            layer?.backgroundColor = fillColor.cgColor
+            needsDisplay = true
+        }
+    }
+
+    init(fillColor: NSColor) {
+        self.fillColor = fillColor
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = fillColor.cgColor
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isOpaque: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        fillColor.setFill()
+        dirtyRect.fill()
+    }
+}
+
 struct TextKit2EditorHost: NSViewRepresentable {
     @Bindable var document: TextDocument
     let theme: EditorTheme
     var showMinimap: Bool = true
+    var showHoverTooltips: Bool = true
+    var workspaceRootURL: URL?
     /// Opens a (possibly different) file at a 1-based line/column — used for
     /// go-to-definition. Provided by the host view, which owns the workspace.
     var onOpenLocation: ((URL, Int, Int) -> Void)?
@@ -87,6 +118,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.document = document
         context.coordinator.theme = theme
+        context.coordinator.showHoverTooltips = showHoverTooltips
+        context.coordinator.workspaceRootURL = workspaceRootURL
         textView.onResignFirstResponder = { [weak coordinator = context.coordinator] in
             coordinator?.dismissCompletions()
         }
@@ -114,6 +147,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
         scrollView.backgroundColor = theme.background
+        scrollView.contentView.drawsBackground = true
+        scrollView.contentView.backgroundColor = theme.background
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
@@ -162,7 +197,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         minimap.scrollView = scrollView
         context.coordinator.minimap = minimap
 
-        let container = NSView()
+        let container = EditorBackingView(fillColor: theme.background)
         // Let SwiftUI own the container's frame (TAMIC = true, the AppKit
         // default — same as the PDF/QuickLook preview hosts). Keeping this
         // `false` left the container's *own* size undefined: its subviews are
@@ -218,6 +253,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         let coordinator = context.coordinator
         coordinator.document = document
         coordinator.openLocation = onOpenLocation
+        coordinator.workspaceRootURL = workspaceRootURL
+        coordinator.showHoverTooltips = showHoverTooltips
         let themeChanged = coordinator.theme != theme
         coordinator.theme = theme
 
@@ -230,8 +267,10 @@ struct TextKit2EditorHost: NSViewRepresentable {
         if themeChanged {
             configure(textView, theme: theme)
             coordinator.scrollView?.backgroundColor = theme.background
+            coordinator.scrollView?.contentView.backgroundColor = theme.background
             coordinator.gutter?.setTheme(theme)
             coordinator.minimap?.setTheme(theme)
+            (container as? EditorBackingView)?.fillColor = theme.background
         }
 
         // Toggle the minimap without rebuilding the editor.
@@ -265,6 +304,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         if didReseed || themeChanged || languageChanged {
             coordinator.applyHighlight()
         }
+        coordinator.syncLSPIdentity()
         if didReseed {
             coordinator.minimap?.invalidateContent()
         }
@@ -327,18 +367,22 @@ struct TextKit2EditorHost: NSViewRepresentable {
         weak var minimap: MinimapView?
         var minimapWidthConstraint: NSLayoutConstraint?
         weak var scrollView: NSScrollView?
+        var workspaceRootURL: URL?
         private var highlightWork: DispatchWorkItem?
         private var gitWork: DispatchWorkItem?
         private var lspWork: DispatchWorkItem?
         private var minimapWork: DispatchWorkItem?
         private var lspItems: [LSPCompletion] = []
         private var lspDiagnosticsURI: String?
+        private var lspLanguage: SourceLanguage?
+        private var lspRoot: String?
         var lastSyncedRevision = 0
         private let popup = CompletionPopup()
         let folding = FoldingController()
         private let hoverPanel = HoverPanel()
         private var hoverWork: DispatchWorkItem?
         private var hoverIndex = -1
+        var showHoverTooltips = true
         private var completionRange: NSRange?
         private var ignoreNextSelectionChange = false
         private var lastRevealToken = 0
@@ -452,6 +496,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// type/docs in a floating panel. Cancelled by movement, edits and scroll.
         func scheduleHover(at point: NSPoint) {
             hoverWork?.cancel()
+            guard showHoverTooltips else { hoverPanel.hide(); return }
             guard let textView, document.fileURL != nil, LSPService.config(for: document.language) != nil else { return }
             let work = DispatchWorkItem { [weak self] in self?.performHover(at: point, in: textView) }
             hoverWork = work
@@ -473,7 +518,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let language = document.language
             let uri = url.absoluteString
             let text = textView.string
-            let root = url.deletingLastPathComponent().path
+            let root = lspRootPath(for: url)
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let info = await LSPService.shared.hover(language: language, uri: uri, text: text, line: line, character: character, root: root)
@@ -496,7 +541,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let language = document.language
             let uri = url.absoluteString
             let text = textView.string
-            let root = url.deletingLastPathComponent().path
+            let root = lspRootPath(for: url)
             Task { @MainActor [weak self] in
                 guard let location = await LSPService.shared.definition(language: language, uri: uri, text: text, line: line, character: character, root: root),
                       let targetURL = URL(string: location.uri) else { return }
@@ -639,6 +684,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// untouched by the folding machinery.
         func recomputeFoldRegions() {
             guard let textView else { return }
+            guard theme.showCodeFolding, document.language.supportsFolding else {
+                folding.unfoldAll()
+                folding.updateRegions([])
+                gutter?.refresh()
+                return
+            }
             let regions = FoldingAnalyzer.regions(in: textView.string as NSString, tabWidth: theme.tabWidth)
             folding.updateRegions(regions)
             gutter?.refresh()
@@ -757,7 +808,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let nsString = text as NSString
             let (line, character) = Self.lspPosition(in: nsString, location: textView.selectedRange().location)
             let uri = url.absoluteString
-            let root = url.deletingLastPathComponent().path
+            let root = lspRootPath(for: url)
 
             let work = DispatchWorkItem { [weak self] in
                 Task { @MainActor [weak self] in
@@ -785,17 +836,42 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let language = document.language
             guard LSPService.config(for: language) != nil else { return }
             let uri = url.absoluteString
+            let root = lspRootPath(for: url)
             lspDiagnosticsURI = uri
+            lspLanguage = language
+            lspRoot = root
             // Route this server's diagnostics into the document for the gutter.
             LSPDiagnosticsBus.shared.setHandler(uri: uri) { [weak self] diagnostics in
                 self?.document.diagnostics = diagnostics
             }
             let text = textView.string
-            let root = url.deletingLastPathComponent().path
             Task { @MainActor in
                 await LSPService.shared.openDocument(language: language, uri: uri, text: text, root: root)
             }
             scheduleLSP(in: textView)
+        }
+
+        func syncLSPIdentity() {
+            let uri = document.fileURL?.absoluteString
+            let language = document.language
+            let root = document.fileURL.map(lspRootPath)
+            guard uri != lspDiagnosticsURI || language != lspLanguage || root != lspRoot else { return }
+            if let oldURI = lspDiagnosticsURI {
+                LSPDiagnosticsBus.shared.removeHandler(uri: oldURI)
+                if let oldLanguage = lspLanguage {
+                    Task { await LSPService.shared.didClose(language: oldLanguage, uri: oldURI) }
+                }
+            }
+            lspDiagnosticsURI = nil
+            lspLanguage = nil
+            lspRoot = nil
+            lspItems = []
+            document.diagnostics = []
+            warmUpLSP()
+        }
+
+        private func lspRootPath(for url: URL) -> String {
+            workspaceRootURL?.path ?? url.deletingLastPathComponent().path
         }
 
         private static func lspPosition(in nsString: NSString, location: Int) -> (line: Int, character: Int) {

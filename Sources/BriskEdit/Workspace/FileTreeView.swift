@@ -20,7 +20,6 @@ struct FileTreeView: View {
                         .environment(workspace)
                 }
                 .listStyle(.sidebar)
-                .id(workspace.reloadToken)
                 .dropDestination(for: URL.self) { urls, _ in
                     workspace.handleTreeDrop(urls, into: root)
                 }
@@ -193,10 +192,22 @@ private struct FileTreeBranch: View {
         self.depth = depth
     }
 
+    /// Reloads this branch's children when the whole tree refreshes
+    /// (`reloadToken`), when *this* folder is individually refreshed (its
+    /// per-directory token), or when the hidden-files toggle changes. Keying the
+    /// task on the per-directory token means creating a file elsewhere no longer
+    /// reloads — and scroll-resets — this branch.
+    private var branchReloadKey: String {
+        let dirToken = workspace.directoryRefreshTokens[node.url.standardizedFileURL]?.uuidString ?? ""
+        return "\(node.id.path)|\(workspace.reloadToken)|\(dirToken)|\(workspace.showHiddenFiles)"
+    }
+
     /// Expansion state lives in the model so reloads don't collapse the tree.
+    /// The root folder is seeded into `expandedDirectories` when a workspace
+    /// opens, so it starts expanded but — unlike before — can also be collapsed.
     private var isExpanded: Binding<Bool> {
         Binding(
-            get: { depth == 0 || workspace.expandedDirectories.contains(node.url) },
+            get: { workspace.expandedDirectories.contains(node.url) },
             set: { expand in
                 if expand { workspace.expandedDirectories.insert(node.url) }
                 else { workspace.expandedDirectories.remove(node.url) }
@@ -220,7 +231,7 @@ private struct FileTreeBranch: View {
                     }
             }
             .tag(node.url)
-            .task(id: "\(node.id.path)|\(workspace.reloadToken)|\(workspace.showHiddenFiles)") {
+            .task(id: branchReloadKey) {
                 if isExpanded.wrappedValue {
                     await loadChildren(force: true)
                 }

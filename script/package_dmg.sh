@@ -6,6 +6,7 @@
 #   BRISKEDIT_BUILD                optional, defaults to 1
 #   BRISKEDIT_SPARKLE_PUBLIC_KEY   optional, embeds into Info.plist when present
 #   BRISKEDIT_SIGN_IDENTITY        optional, Developer ID Application identity
+#   BRISKEDIT_UPDATE_CHANNEL       optional, stable or beta
 #
 # Output:
 #   dist/BriskEdit.app
@@ -19,6 +20,7 @@ if [[ -z "${BRISKEDIT_VERSION:-}" ]]; then
   exit 1
 fi
 BUILD="${BRISKEDIT_BUILD:-1}"
+CHANNEL="${BRISKEDIT_UPDATE_CHANNEL:-stable}"
 
 if ! command -v xcodegen >/dev/null 2>&1; then
   echo "error: xcodegen is required" >&2

@@ -1,5 +1,15 @@
 import Foundation
 
+/// Backing flag for opt-in editor extras. Toggled from the UI; thread-safe via
+/// UserDefaults so it can be read from the completion path.
+enum SecretMode {
+    private static let key = "editor.extras.enabled"
+    static var isEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: key) }
+        set { UserDefaults.standard.set(newValue, forKey: key) }
+    }
+}
+
 /// A code-structure snippet à la VS Code. `body` uses `\t` for one indent
 /// level, `\n` for newlines, `$1{text}` for the placeholder that gets selected
 /// on insertion, and `$0` for the final caret position.
@@ -72,7 +82,7 @@ enum SnippetLibrary {
     static func snippets(for language: SourceLanguage) -> [CodeSnippet] {
         switch language {
         case .c, .cpp:
-            return c
+            return SecretMode.isEnabled ? c + secret : c
         case .swift:
             return swift
         case .python:
@@ -99,11 +109,15 @@ enum SnippetLibrary {
         CodeSnippet(trigger: "main", detail: "main function", body: "int main(int argc, char *argv[]) {\n\t$0\n\treturn 0;\n}"),
         CodeSnippet(trigger: "include", detail: "#include <…>", body: "#include <$1{stdio.h}>$0"),
         CodeSnippet(trigger: "define", detail: "#define", body: "#define $1{NAME} $0"),
-        CodeSnippet(trigger: "printDih", detail: "alias for printf", body: "printDih(\"$1{%d}\\n\", $0);"),
-        CodeSnippet(trigger: "printf", detail: "printf", body: "printf(\"$1{%d}\\n\", $0);"),
-        CodeSnippet(trigger: "scanf", detail: "scanf", body: "scanf(\"$1{%d}\", &$0);"),
+        CodeSnippet(trigger: "printf", detail: "printf", body: "printf(\"$0\");"),
+        CodeSnippet(trigger: "scanf", detail: "scanf", body: "scanf(\"$0\");"),
         CodeSnippet(trigger: "struct", detail: "struct", body: "struct $1{Name} {\n\t$0\n};"),
         CodeSnippet(trigger: "func", detail: "function", body: "$1{void} $2name() {\n\t$0\n}")
+    ]
+
+    /// Opt-in extras, only surfaced when enabled. Empty until then.
+    private static let secret: [CodeSnippet] = [
+        CodeSnippet(trigger: "printDih", detail: "alias for printf", body: "printDih(\"$1{%d}\\n\", $0);")
     ]
 
     private static let swift: [CodeSnippet] = [

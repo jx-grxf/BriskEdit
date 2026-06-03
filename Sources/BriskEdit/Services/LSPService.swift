@@ -170,7 +170,12 @@ actor LSPService {
         )
     }
 
-    private var servers: [String: Server] = [:]
+    private struct ServerKey: Hashable {
+        let id: String
+        let rootURI: String?
+    }
+
+    private var servers: [ServerKey: Server] = [:]
 
     /// Returns semantic completions for the position, syncing the buffer first.
     func completions(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> [LSPCompletion] {
@@ -227,8 +232,10 @@ actor LSPService {
     /// Tells the server a document was closed (tab closed) so it drops the
     /// buffer and stops emitting diagnostics for it.
     func didClose(language: SourceLanguage, uri: String) async {
-        guard let config = Self.config(for: language), let server = servers[config.id] else { return }
-        await server.close(uri: uri)
+        guard let config = Self.config(for: language) else { return }
+        for (key, server) in servers where key.id == config.id {
+            await server.close(uri: uri)
+        }
     }
 
     /// Shuts every running server down (LSP `shutdown`/`exit`, then terminate).
@@ -242,15 +249,22 @@ actor LSPService {
     }
 
     private func ensureServer(_ config: ServerConfig, root: String?) async -> Server? {
-        if let existing = servers[config.id] {
+        let key = ServerKey(id: config.id, rootURI: Self.rootURI(for: root))
+        if let existing = servers[key] {
             return await existing.initialized ? existing : nil
         }
         let server = Server(config: config)
-        servers[config.id] = server
+        servers[key] = server
         guard await server.start(root: root) else {
+            await server.shutdown()
+            servers[key] = nil
             return nil
         }
         return server
+    }
+
+    private static func rootURI(for root: String?) -> String? {
+        root.map { URL(fileURLWithPath: $0).absoluteString }
     }
 
     // MARK: - Completion parsing
@@ -418,7 +432,7 @@ private actor Server {
         outHandle = outPipe.fileHandleForReading
         LSPProcessRegistry.shared.register(proc)
 
-        let rootUri = root.map { "file://\($0)" }
+        let rootUri = root.map { URL(fileURLWithPath: $0).absoluteString }
         let initParams: [String: Any] = [
             "processId": NSNull(),
             "rootUri": rootUri ?? NSNull(),
@@ -431,6 +445,7 @@ private actor Server {
         ]
         guard await request(method: "initialize", params: initParams) != nil else {
             failed = true
+            await shutdown()
             return false
         }
         notify(method: "initialized", params: [:])
@@ -492,12 +507,18 @@ private actor Server {
     func request(method: String, params: [String: Any]) async -> Data? {
         let id = nextId
         nextId += 1
-        send(message: ["jsonrpc": "2.0", "id": id, "method": method, "params": params])
+        let message: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
         return await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
             pending[id] = continuation
+            guard send(message: message) else {
+                if let continuation = pending.removeValue(forKey: id) {
+                    continuation.resume(returning: nil)
+                }
+                return
+            }
             Task {
                 try? await Task.sleep(for: .seconds(5))
-                self.timeout(id: id)
+                await self.timeout(id: id)
             }
         }
     }
@@ -512,11 +533,17 @@ private actor Server {
         send(message: ["jsonrpc": "2.0", "method": method, "params": params])
     }
 
-    private func send(message: [String: Any]) {
-        guard let stdin, let body = try? JSONSerialization.data(withJSONObject: message) else { return }
+    @discardableResult
+    private func send(message: [String: Any]) -> Bool {
+        guard let stdin, let body = try? JSONSerialization.data(withJSONObject: message) else { return false }
         var frame = Data("Content-Length: \(body.count)\r\n\r\n".utf8)
         frame.append(body)
-        try? stdin.write(contentsOf: frame)
+        do {
+            try stdin.write(contentsOf: frame)
+            return true
+        } catch {
+            return false
+        }
     }
 
     private func ingest(_ data: Data) {

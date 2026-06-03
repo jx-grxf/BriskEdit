@@ -20,19 +20,22 @@ final class TextKit2GutterView: NSView {
     /// Clickable chevron rects captured during the last draw, keyed by 1-based line.
     private var foldHitRects: [(line: Int, rect: NSRect)] = []
 
-    /// Fixed width — enough for ~5 digits at typical code sizes.
+    /// Fixed width — enough for ~5 digits at typical code sizes, plus a small
+    /// leading column for the diagnostic dot so it never touches the numbers.
     static let width: CGFloat = 48
 
     init(theme: EditorTheme) {
         self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
+        layer?.backgroundColor = theme.gutterBackground.cgColor
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
+    override var isOpaque: Bool { true }
 
     /// Repaint whenever Auto Layout (re)positions the gutter. The scroll view
     /// reaches its real size a layout pass *after* the editor first appears
@@ -47,6 +50,7 @@ final class TextKit2GutterView: NSView {
 
     func setTheme(_ theme: EditorTheme) {
         self.theme = theme
+        layer?.backgroundColor = theme.gutterBackground.cgColor
         needsDisplay = true
     }
 
@@ -171,11 +175,11 @@ final class TextKit2GutterView: NSView {
             }
         }
 
-        // Diagnostic dot on the leading edge.
+        // Diagnostic dot in its own leading column, kept clear of the numbers.
         if let severity = diagnostics[line] {
             (severity == .error ? NSColor.systemRed : NSColor.systemYellow).setFill()
-            let r: CGFloat = 6
-            NSBezierPath(ovalIn: NSRect(x: 4, y: y + (lineHeight - r) / 2, width: r, height: r)).fill()
+            let r: CGFloat = 5
+            NSBezierPath(ovalIn: NSRect(x: 2, y: y + (lineHeight - r) / 2, width: r, height: r)).fill()
         }
 
         drawNumber(line, font: font, y: y, lineHeight: lineHeight)
@@ -186,9 +190,9 @@ final class TextKit2GutterView: NSView {
     /// foldable region: a down-triangle when expanded, a right-triangle when
     /// collapsed. Its rect is recorded for click hit-testing.
     private func drawFoldChevron(_ line: Int, y: CGFloat, lineHeight: CGFloat) {
-        guard let folding, folding.region(forHeaderLine: line - 1) != nil else { return }
+        guard theme.showCodeFolding, let folding, folding.region(forHeaderLine: line - 1) != nil else { return }
         let folded = folding.isFolded(headerLine: line - 1)
-        let box = NSRect(x: bounds.width - 16, y: y, width: 14, height: lineHeight)
+        let box = NSRect(x: bounds.width - 11, y: y, width: 9, height: lineHeight)
         foldHitRects.append((line: line, rect: box))
 
         let s: CGFloat = 7
@@ -216,8 +220,9 @@ final class TextKit2GutterView: NSView {
         ]
         let string = NSAttributedString(string: "\(line)", attributes: attributes)
         let size = string.size()
-        // Leave a fixed column on the inner edge for the fold chevron.
-        let x = bounds.width - size.width - 16
+        // Leave a slim column on the inner edge for the fold chevron — kept tight
+        // so the numbers sit close to the code rather than floating far left.
+        let x = bounds.width - size.width - 11
         let centeredY = y + max(0, (lineHeight - size.height) / 2)
         string.draw(at: CGPoint(x: x, y: centeredY))
     }

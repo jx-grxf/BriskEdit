@@ -181,20 +181,28 @@ struct GitSidebarView: View {
 
     private func row(_ change: GitFileChange, action: String, help: String, perform action2: @escaping () -> Void) -> some View {
         HStack(spacing: 8) {
-            statusBadge(change.status)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(change.displayName).lineLimit(1).truncationMode(.middle)
-                if !change.directory.isEmpty {
-                    Text(change.directory).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+            Button {
+                openFile(change)
+            } label: {
+                HStack(spacing: 8) {
+                    statusBadge(change.status)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(change.displayName).lineLimit(1).truncationMode(.middle)
+                        if !change.directory.isEmpty {
+                            Text(change.directory).font(.caption2).foregroundStyle(.secondary).lineLimit(1).truncationMode(.head)
+                        }
+                    }
                 }
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Open \(change.displayName)")
             Spacer()
             Button(action: action2) { Image(systemName: action) }
                 .buttonStyle(.borderless)
                 .help(help)
+                .accessibilityLabel("\(help) \(change.displayName)")
         }
         .contentShape(Rectangle())
-        .onTapGesture { openFile(change) }
         .contextMenu {
             Button("Open") { openFile(change) }
             if change.status != "?" {

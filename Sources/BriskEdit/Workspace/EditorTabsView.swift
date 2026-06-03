@@ -14,9 +14,13 @@ struct EditorTabsView: View {
     @SceneStorage("workspace.previewSplitWidth") private var storedPreviewSplitWidth: Double = 400
     @State private var previewResizeStart: Double?
     @State private var livePreviewSplitWidth: Double?
+    @SceneStorage("workspace.markdownPreviewWidth") private var storedMarkdownPreviewWidth: Double = 380
+    @State private var markdownResizeStart: Double?
+    @State private var liveMarkdownPreviewWidth: Double?
 
     private var terminalHeight: Double { liveTerminalHeight ?? storedTerminalHeight }
     private var previewSplitWidth: Double { livePreviewSplitWidth ?? storedPreviewSplitWidth }
+    private var markdownPreviewWidth: Double { liveMarkdownPreviewWidth ?? storedMarkdownPreviewWidth }
 
     var body: some View {
         editorArea
@@ -81,7 +85,7 @@ struct EditorTabsView: View {
                     ExternalChangeBanner(document: tab.document)
                 }
                 HStack(spacing: 0) {
-                    editorSurface(for: tab)
+                    editorSurface(for: tab, availableWidth: width)
                         .frame(minWidth: 320)
                         .layoutPriority(1)
                     if let previewKind = workspace.splitPreviewKind {
@@ -131,6 +135,25 @@ struct EditorTabsView: View {
             }
     }
 
+    private func clampedMarkdownWidth(maxWidth: CGFloat) -> CGFloat {
+        min(max(CGFloat(markdownPreviewWidth), 260), max(300, maxWidth))
+    }
+
+    private func resizeMarkdownGesture(maxWidth: CGFloat) -> some Gesture {
+        DragGesture(minimumDistance: 1)
+            .onChanged { value in
+                let start = markdownResizeStart ?? markdownPreviewWidth
+                markdownResizeStart = start
+                let proposed = start - Double(value.translation.width)
+                liveMarkdownPreviewWidth = Double(min(max(CGFloat(proposed), 260), max(300, maxWidth)))
+            }
+            .onEnded { _ in
+                if let live = liveMarkdownPreviewWidth { storedMarkdownPreviewWidth = live }
+                markdownResizeStart = nil
+                liveMarkdownPreviewWidth = nil
+            }
+    }
+
     private func clampedTerminalHeight(maxHeight: CGFloat) -> CGFloat {
         min(max(CGFloat(terminalHeight), 140), max(180, maxHeight))
     }
@@ -151,24 +174,30 @@ struct EditorTabsView: View {
     }
 
     @ViewBuilder
-    private func editorSurface(for tab: EditorTab) -> some View {
+    private func editorSurface(for tab: EditorTab, availableWidth: CGFloat) -> some View {
         if let previewKind = tab.previewKind {
             previewSurface(for: previewKind)
                 .id(tab.id)
-        } else if workspace.showMarkdownPreview && tab.document.language == .markdown {
+        } else if workspace.showMarkdownPreview && tab.document.language == .markdown && availableWidth >= 760 {
             HStack(spacing: 0) {
-                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, onOpenLocation: { url, line, column in
+                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, showHoverTooltips: preferences.showHoverTooltips, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                     .id(tab.id)
                     .frame(minWidth: 360)
                     .layoutPriority(1)
-                Divider()
-                MarkdownPreview(document: tab.document)
-                    .frame(width: 340)
+                PreviewSplitHandle()
+                    .gesture(resizeMarkdownGesture(maxWidth: availableWidth - 360))
+                MarkdownPreview(
+                    document: tab.document,
+                    onClose: { workspace.showMarkdownPreview = false },
+                    onOpenFile: { url in Task { await workspace.openFile(at: url) } }
+                )
+                .frame(width: clampedMarkdownWidth(maxWidth: availableWidth - 360))
+                .layoutPriority(0)
             }
         } else {
-            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, onOpenLocation: { url, line, column in
+            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, showHoverTooltips: preferences.showHoverTooltips, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                 .id(tab.id)
@@ -183,6 +212,8 @@ struct EditorTabsView: View {
             PDFViewerHost(url: url)
         case .quickLook(let url):
             QuickLookPreviewHost(url: url)
+        case .image(let url):
+            ImageViewerHost(url: url)
         }
     }
 }
@@ -249,6 +280,8 @@ private struct SplitPreviewPane: View {
                 Button("Close", systemImage: "xmark") { onClose() }
                     .buttonStyle(.borderless)
                     .labelStyle(.iconOnly)
+                    .help("Close preview")
+                    .accessibilityLabel("Close preview")
             }
             .padding(.horizontal, 10)
             .frame(height: 30)
@@ -265,6 +298,8 @@ private struct SplitPreviewPane: View {
             PDFViewerHost(url: url)
         case .quickLook(let url):
             QuickLookPreviewHost(url: url)
+        case .image(let url):
+            ImageViewerHost(url: url)
         }
     }
 }
@@ -300,7 +335,17 @@ private struct TabStrip: View {
                         tab: tab,
                         isActive: tab.id == workspace.activeTabID,
                         onSelect: { workspace.selectTab(tab.id) },
-                        onClose: { workspace.requestCloseTab(tab.id) }
+                        onClose: { workspace.requestCloseTab(tab.id) },
+                        onCloseOthers: { workspace.requestCloseOtherTabs(keeping: tab.id) },
+                        onCloseRight: { workspace.requestCloseTabsToRight(of: tab.id) },
+                        onCloseAll: { workspace.requestCloseAllTabs() },
+                        onOpenSplitPreview: {
+                            if let previewKind = tab.previewKind {
+                                workspace.splitPreviewKind = previewKind
+                            } else if let url = tab.document.fileURL, let previewKind = PreviewKind.previewKind(for: url) {
+                                workspace.splitPreviewKind = previewKind
+                            }
+                        }
                     )
                     Divider().frame(height: 18)
                 }
@@ -322,29 +367,50 @@ private struct TabChip: View {
     let isActive: Bool
     let onSelect: () -> Void
     let onClose: () -> Void
+    let onCloseOthers: () -> Void
+    let onCloseRight: () -> Void
+    let onCloseAll: () -> Void
+    let onOpenSplitPreview: () -> Void
 
     var body: some View {
         HStack(spacing: 6) {
-            FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
-            Text(tab.document.displayName)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(minWidth: 80, idealWidth: 140, maxWidth: 220, alignment: .leading)
-            if tab.document.isDirty {
-                Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
+            Button(action: onSelect) {
+                HStack(spacing: 6) {
+                    FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
+                    Text(tab.document.displayName)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(minWidth: 80, idealWidth: 140, maxWidth: 220, alignment: .leading)
+                    if tab.document.isDirty {
+                        Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
+                    }
+                }
             }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Select \(tab.document.displayName)")
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .imageScale(.small)
             }
             .buttonStyle(.plain)
             .opacity(0.6)
+            .help("Close \(tab.document.displayName)")
+            .accessibilityLabel("Close \(tab.document.displayName)")
         }
         .padding(.horizontal, 10)
         .frame(height: 32)
         .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
         .contentShape(Rectangle())
-        .onTapGesture(perform: onSelect)
+        .contextMenu {
+            Button("Close") { onClose() }
+            Button("Close Other Tabs") { onCloseOthers() }
+            Button("Close Tabs to the Right") { onCloseRight() }
+            Button("Close All Tabs") { onCloseAll() }
+            if tab.previewKind != nil || tab.document.fileURL.flatMap(PreviewKind.previewKind(for:)) != nil {
+                Divider()
+                Button("Open in Split Preview") { onOpenSplitPreview() }
+            }
+        }
     }
 }
 

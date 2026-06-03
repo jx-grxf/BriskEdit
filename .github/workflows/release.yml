@@ -73,6 +73,7 @@ jobs:
         env:
           BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
           BRISKEDIT_BUILD: ${{ steps.version.outputs.build }}
+          BRISKEDIT_UPDATE_CHANNEL: ${{ steps.version.outputs.channel }}
           BRISKEDIT_SPARKLE_PUBLIC_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PUBLIC_KEY }}
           BRISKEDIT_SIGN_IDENTITY: ${{ secrets.BRISKEDIT_SIGN_IDENTITY }}
         run: ./script/package_dmg.sh
@@ -104,6 +105,7 @@ jobs:
       - name: Notarize DMG
         env:
           BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
+          BRISKEDIT_UPDATE_CHANNEL: ${{ steps.version.outputs.channel }}
           BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
           BRISKEDIT_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.BRISKEDIT_NOTARY_KEYCHAIN_PROFILE }}
           BRISKEDIT_NOTARY_APPLE_ID: ${{ secrets.BRISKEDIT_NOTARY_APPLE_ID }}
@@ -153,8 +155,12 @@ jobs:
               $RELEASE_PRERELEASE
           fi
 
+      # Refresh the moving beta feed for EVERY release, stable or beta. Beta
+      # testers poll this feed; a stable build's appcast rides Sparkle's default
+      # channel (no tag), so publishing it here lets beta users roll forward onto
+      # the new stable automatically instead of being stranded on an older beta.
       - name: Publish beta appcast feed
-        if: steps.version.outputs.channel == 'beta'
+        if: success()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -172,3 +178,28 @@ jobs:
               --notes "Moving Sparkle beta appcast feed. Install beta builds from versioned prereleases." \
               --prerelease
           fi
+
+      # The release is now published with its assets. Trigger a rebuild of the
+      # marketing site (johannesgrof.me) so its build-time GitHub fetch picks up
+      # the new version and download links. Fires for both stable and beta tags.
+      # The release above is created with GITHUB_TOKEN, which by design does not
+      # emit a `release` event another workflow could listen on, so we kick the
+      # site from here instead of a separate `on: release` workflow.
+      - name: Refresh website with new release
+        if: success()
+        env:
+          DEPLOY_HOOK: ${{ secrets.WEBSITE_DEPLOY_HOOK }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -z "${DEPLOY_HOOK:-}" ]; then
+            echo "WEBSITE_DEPLOY_HOOK secret not set — skipping website rebuild." >&2
+            exit 0
+          fi
+          echo "Triggering johannesgrof.me rebuild for ${RELEASE_TAG}…"
+          code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$DEPLOY_HOOK")"
+          echo "Deploy hook responded with HTTP ${code}"
+          case "$code" in
+            2*) echo "Website rebuild queued." ;;
+            *) echo "Deploy hook failed (HTTP ${code})." >&2; exit 1 ;;
+          esac

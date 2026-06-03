@@ -15,6 +15,11 @@ final class WorkspaceModel {
     var showMarkdownPreview: Bool = true
     var showHiddenFiles: Bool = false
     var reloadToken = UUID()
+    /// Per-directory reload tokens. Bumping one reloads just that folder's branch
+    /// in the file tree instead of the whole tree — so creating/deleting/renaming
+    /// a file no longer scrolls the tree back to the top. Full refreshes (hidden
+    /// toggle, manual Refresh, root change) still go through `reloadToken`.
+    var directoryRefreshTokens: [URL: UUID] = [:]
     var selectedSidebarURL: URL?
     var lastError: String?
     /// Which sidebar pane is shown (files / search / source control). Lives here
@@ -25,6 +30,8 @@ final class WorkspaceModel {
     var searchQuery = SearchQuery(text: "")
     var searchReplacement = ""
     var searchResults: [SearchFileResult] = []
+    var searchError: String?
+    var searchReachedLimit = false
     var isSearching = false
     /// Bumped to ask the search sidebar to focus its input field.
     var focusSearchToken = 0
@@ -54,15 +61,17 @@ final class WorkspaceModel {
         WorkspaceRegistry.register(self)
     }
 
-    /// Restores the last opened folder and file tabs. Called only for the
-    /// primary window; also flips on session persistence for this model.
-    func restoreWorkspace() async {
+    /// Starts the primary window session. It always records later folder/tab
+    /// changes, but restore is controlled by the user's startup preference.
+    func startPrimarySession(restoreLastWorkspace: Bool) async {
         persistsSession = true
+        guard restoreLastWorkspace else { return }
         if let path = UserDefaults.standard.string(forKey: Keys.lastWorkspaceRoot) {
             let url = URL(fileURLWithPath: path)
             if FileManager.default.fileExists(atPath: url.path) {
                 rootURL = url
                 expandedDirectories = [url]
+                RecentWorkspacesStore.shared.record(url)
             }
         }
         await restoreSession()
@@ -133,6 +142,8 @@ final class WorkspaceModel {
         searchTask?.cancel()
         guard let root = rootURL, !searchQuery.text.trimmingCharacters(in: .whitespaces).isEmpty else {
             searchResults = []
+            searchError = nil
+            searchReachedLimit = false
             isSearching = false
             return
         }
@@ -142,9 +153,11 @@ final class WorkspaceModel {
         // .gitignore and we exclude .git, so this only adds meaningful hidden
         // files — independent of the file tree's "show hidden" toggle.
         searchTask = Task { [weak self] in
-            let results = await SearchService.search(query, root: root, includeHidden: true)
+            let response = await SearchService.searchWithFeedback(query, root: root, includeHidden: true)
             guard let self, !Task.isCancelled else { return }
-            self.searchResults = results
+            self.searchResults = response.results
+            self.searchError = response.errorMessage
+            self.searchReachedLimit = response.reachedMatchLimit
             self.isSearching = false
         }
     }
@@ -182,7 +195,7 @@ final class WorkspaceModel {
         let language = doc.language
         let uri = url.absoluteString
         let text = doc.text
-        let root = url.deletingLastPathComponent().path
+        let root = rootURL?.path ?? url.deletingLastPathComponent().path
         outlineTask = Task { [weak self] in
             let symbols = await LSPService.shared.documentSymbols(language: language, uri: uri, text: text, root: root)
             guard let self, !Task.isCancelled else { return }
@@ -263,6 +276,25 @@ final class WorkspaceModel {
         }
     }
 
+    func requestCloseOtherTabs(keeping id: EditorTab.ID) {
+        for tab in tabs where tab.id != id {
+            requestCloseTab(tab.id)
+        }
+    }
+
+    func requestCloseTabsToRight(of id: EditorTab.ID) {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        for tab in tabs.dropFirst(index + 1) {
+            requestCloseTab(tab.id)
+        }
+    }
+
+    func requestCloseAllTabs() {
+        for tab in tabs {
+            requestCloseTab(tab.id)
+        }
+    }
+
     func toggleSplitPreview(_ kind: PreviewKind) {
         splitPreviewKind = (splitPreviewKind == kind) ? nil : kind
     }
@@ -301,6 +333,7 @@ final class WorkspaceModel {
 
     func setWorkspaceRoot(_ url: URL) {
         rootURL = url
+        RecentWorkspacesStore.shared.record(url)
         selectedSidebarURL = nil
         expandedDirectories = [url]
         childCache.removeAll(keepingCapacity: true)
@@ -330,6 +363,15 @@ final class WorkspaceModel {
     func refreshFileTree() {
         childCache.removeAll(keepingCapacity: true)
         reloadToken = UUID()
+    }
+
+    /// Reloads a single folder's children in the file tree (after a create /
+    /// delete / rename in that folder) without touching the rest of the tree, so
+    /// the scroll position is kept. Pass the *directory* whose contents changed.
+    func refreshDirectory(_ url: URL) {
+        let dir = url.standardizedFileURL
+        childCache = childCache.filter { $0.key.url.standardizedFileURL != dir }
+        directoryRefreshTokens[dir] = UUID()
     }
 
     func toggleHiddenFiles() {
@@ -365,15 +407,60 @@ final class WorkspaceModel {
     /// for the gutter. No-op for languages without a check driver.
     func checkActiveDocument() async {
         guard let doc = activeTab?.document else { return }
-        if let diagnostics = await DiagnosticsService.check(text: doc.text, language: doc.language, fileURL: doc.fileURL) {
-            doc.diagnostics = diagnostics
-        }
+        doc.diagnostics = await DiagnosticsService.check(text: doc.text, language: doc.language, fileURL: doc.fileURL) ?? []
     }
 
     func runActiveDocument() {
         showTerminal = true
-        ensureTerminal().runActiveDocument(activeTab?.document, workspaceRoot: rootURL)
-        Task { await checkActiveDocument() }
+        Task { [weak self] in
+            guard let self else { return }
+            guard await self.saveBeforeProjectRunIfNeeded() else { return }
+            guard await self.installMissingRunToolsIfNeeded() else { return }
+            await self.ensureTerminal().runActiveDocument(self.activeTab?.document, workspaceRoot: self.rootURL)
+            await self.checkActiveDocument()
+        }
+    }
+
+    private func saveBeforeProjectRunIfNeeded() async -> Bool {
+        guard let tab = activeTab,
+              RunService.requiresSaveBeforeRun(document: tab.document, workspaceRoot: rootURL) else {
+            return true
+        }
+        let alert = NSAlert()
+        alert.messageText = "Save “\(tab.document.displayName)” before running?"
+        alert.informativeText = "Project runs use files on disk. Unsaved edits would be ignored."
+        alert.addButton(withTitle: "Save and Run")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return false }
+        return await save(tab)
+    }
+
+    private func installMissingRunToolsIfNeeded() async -> Bool {
+        guard let doc = activeTab?.document else { return true }
+        let language = doc.language
+        let missingGroups = await ToolHealthService.missingRunRequirements(for: language, workspaceRoot: rootURL)
+        guard let firstGroup = missingGroups.first, let descriptor = firstGroup.first else { return true }
+
+        let names = firstGroup.map(\.name).joined(separator: " or ")
+        let alert = NSAlert()
+        alert.messageText = "\(names) is required to run \(language.rawValue) files."
+        alert.informativeText = "BriskEdit can try to install it now, or you can install it yourself and run again."
+        alert.addButton(withTitle: "Install")
+        alert.addButton(withTitle: "Cancel")
+        alert.addButton(withTitle: "Open Tool Health")
+        let response = alert.runModal()
+        if response == .alertThirdButtonReturn {
+            showToolHealth = true
+            return false
+        }
+        guard response == .alertFirstButtonReturn else { return false }
+        let result = await ToolHealthService.install(descriptor)
+        if !result.ok {
+            lastError = result.output
+            showToolHealth = true
+            return false
+        }
+        return (await ToolHealthService.missingRunRequirements(for: language, workspaceRoot: rootURL)).isEmpty
     }
 
     // MARK: - Terminal sessions
@@ -495,9 +582,14 @@ final class WorkspaceModel {
         panel.nameFieldStringValue = tab.document.displayName
         guard panel.runModal() == .OK, let url = panel.url else { return }
         await formatBeforeSave(tab.document)
+        let oldURL = tab.document.fileURL
+        let oldLanguage = tab.document.language
         do {
             try await tab.document.save(to: url)
+            releaseLSPIfNeeded(uri: oldURL?.absoluteString, language: oldLanguage, replacementURL: url)
+            startWatching(tab)
             persistSession()
+            await checkActiveDocument()
         } catch {
             NSLog("BriskEdit: save-as failed: %@", String(describing: error))
             lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"
@@ -531,6 +623,14 @@ final class WorkspaceModel {
         if tabs.contains(where: { $0.id != tab.id && $0.document.fileURL == url }) { return }
         let uri = url.absoluteString
         let language = tab.document.language
+        LSPDiagnosticsBus.shared.removeHandler(uri: uri)
+        Task { await LSPService.shared.didClose(language: language, uri: uri) }
+    }
+
+    private func releaseLSPIfNeeded(uri: String?, language: SourceLanguage, replacementURL: URL?) {
+        guard let uri,
+              replacementURL?.absoluteString != uri,
+              LSPService.config(for: language) != nil else { return }
         LSPDiagnosticsBus.shared.removeHandler(uri: uri)
         Task { await LSPService.shared.didClose(language: language, uri: uri) }
     }
@@ -608,14 +708,17 @@ final class WorkspaceModel {
             lastError = "“\(name)” already exists."
             return
         }
-        do {
-            try Data().write(to: url)
-            expandedDirectories.insert(dir)
-            refreshFileTree()
-            selectedSidebarURL = url
-            Task { await openFile(at: url) }
-        } catch {
-            lastError = "Could not create \(name): \(error.localizedDescription)"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await writeEmptyFile(at: url)
+                expandedDirectories.insert(dir)
+                refreshDirectory(dir)
+                selectedSidebarURL = url
+                await openFile(at: url)
+            } catch {
+                lastError = "Could not create \(name): \(error.localizedDescription)"
+            }
         }
     }
 
@@ -627,14 +730,17 @@ final class WorkspaceModel {
             lastError = "“\(name)” already exists."
             return
         }
-        do {
-            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
-            expandedDirectories.insert(dir)
-            expandedDirectories.insert(url)
-            refreshFileTree()
-            selectedSidebarURL = url
-        } catch {
-            lastError = "Could not create \(name): \(error.localizedDescription)"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await createDirectory(at: url)
+                expandedDirectories.insert(dir)
+                expandedDirectories.insert(url)
+                refreshFileTree()
+                selectedSidebarURL = url
+            } catch {
+                lastError = "Could not create \(name): \(error.localizedDescription)"
+            }
         }
     }
 
@@ -646,12 +752,15 @@ final class WorkspaceModel {
         alert.addButton(withTitle: "Move to Trash")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
-            closeTabs(referencing: url)
-            refreshFileTree()
-        } catch {
-            lastError = "Could not delete \(url.lastPathComponent): \(error.localizedDescription)"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await trashItem(at: url)
+                closeTabs(referencing: url)
+                refreshDirectory(url.deletingLastPathComponent())
+            } catch {
+                lastError = "Could not delete \(url.lastPathComponent): \(error.localizedDescription)"
+            }
         }
     }
 
@@ -666,11 +775,14 @@ final class WorkspaceModel {
             candidate = dir.appendingPathComponent(ext.isEmpty ? "\(base) copy \(index)" : "\(base) copy \(index).\(ext)")
             index += 1
         }
-        do {
-            try fm.copyItem(at: url, to: candidate)
-            refreshFileTree()
-        } catch {
-            lastError = "Could not duplicate \(url.lastPathComponent): \(error.localizedDescription)"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await copyItem(at: url, to: candidate)
+                refreshDirectory(candidate.deletingLastPathComponent())
+            } catch {
+                lastError = "Could not duplicate \(url.lastPathComponent): \(error.localizedDescription)"
+            }
         }
     }
 
@@ -681,14 +793,17 @@ final class WorkspaceModel {
             lastError = "“\(name)” already exists."
             return
         }
-        do {
-            try FileManager.default.moveItem(at: url, to: destination)
-            retargetTabs(from: url, to: destination)
-            persistSession()
-            refreshFileTree()
-            selectedSidebarURL = destination
-        } catch {
-            lastError = "Could not rename \(url.lastPathComponent): \(error.localizedDescription)"
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await moveItem(at: url, to: destination)
+                retargetTabs(from: url, to: destination)
+                persistSession()
+                refreshDirectory(destination.deletingLastPathComponent())
+                selectedSidebarURL = destination
+            } catch {
+                lastError = "Could not rename \(url.lastPathComponent): \(error.localizedDescription)"
+            }
         }
     }
 
@@ -703,7 +818,8 @@ final class WorkspaceModel {
             let inside = root.map { url.standardizedFileURL.path.hasPrefix($0 + "/") } ?? false
             if inside {
                 if moveFile(url, into: directory) { changed = true }
-            } else if importExternalFile(url, into: directory) != nil {
+            } else {
+                importExternalFile(url, into: directory)
                 changed = true
             }
         }
@@ -711,8 +827,7 @@ final class WorkspaceModel {
     }
 
     /// Copies an external file/folder into `directory`, disambiguating the name.
-    @discardableResult
-    func importExternalFile(_ source: URL, into directory: URL) -> URL? {
+    func importExternalFile(_ source: URL, into directory: URL) {
         let fm = FileManager.default
         var destination = directory.appendingPathComponent(source.lastPathComponent)
         if fm.fileExists(atPath: destination.path) {
@@ -724,14 +839,15 @@ final class WorkspaceModel {
                 index += 1
             } while fm.fileExists(atPath: destination.path)
         }
-        do {
-            try fm.copyItem(at: source, to: destination)
-            expandedDirectories.insert(directory)
-            refreshFileTree()
-            return destination
-        } catch {
-            lastError = "Could not import \(source.lastPathComponent): \(error.localizedDescription)"
-            return nil
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await copyItem(at: source, to: destination)
+                expandedDirectories.insert(directory)
+                refreshDirectory(directory)
+            } catch {
+                lastError = "Could not import \(source.lastPathComponent): \(error.localizedDescription)"
+            }
         }
     }
 
@@ -763,15 +879,18 @@ final class WorkspaceModel {
             lastError = "“\(src.lastPathComponent)” already exists in \(dir.lastPathComponent)."
             return false
         }
-        do {
-            try FileManager.default.moveItem(at: src, to: destination)
-            retargetTabs(from: src, to: destination)
-            refreshFileTree()
-            return true
-        } catch {
-            lastError = "Could not move \(src.lastPathComponent): \(error.localizedDescription)"
-            return false
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await moveItem(at: src, to: destination)
+                retargetTabs(from: src, to: destination)
+                refreshDirectory(src.deletingLastPathComponent())
+                refreshDirectory(dir)
+            } catch {
+                lastError = "Could not move \(src.lastPathComponent): \(error.localizedDescription)"
+            }
         }
+        return true
     }
 
     func revealInFinder(_ url: URL) {
@@ -817,9 +936,40 @@ final class WorkspaceModel {
 
     private func retargetTabs(from oldURL: URL, to newURL: URL) {
         for tab in tabs where tab.document.fileURL?.standardizedFileURL == oldURL.standardizedFileURL {
+            releaseLSP(tab)
             tab.document.retarget(to: newURL)
             startWatching(tab)
         }
+    }
+
+    private func writeEmptyFile(at url: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try Data().write(to: url)
+        }.value
+    }
+
+    private func createDirectory(at url: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
+        }.value
+    }
+
+    private func trashItem(at url: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try FileManager.default.trashItem(at: url, resultingItemURL: nil)
+        }.value
+    }
+
+    private func copyItem(at source: URL, to destination: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try FileManager.default.copyItem(at: source, to: destination)
+        }.value
+    }
+
+    private func moveItem(at source: URL, to destination: URL) async throws {
+        try await Task.detached(priority: .userInitiated) {
+            try FileManager.default.moveItem(at: source, to: destination)
+        }.value
     }
 
     private enum Keys {
@@ -831,5 +981,38 @@ final class WorkspaceModel {
     private struct FileTreeCacheKey: Hashable {
         let url: URL
         let includeHidden: Bool
+    }
+}
+
+/// App-wide list of recently opened workspace folders, persisted in defaults and
+/// surfaced as File ▸ Open Recent. Observable so the menu refreshes live.
+@MainActor
+@Observable
+final class RecentWorkspacesStore {
+    static let shared = RecentWorkspacesStore()
+
+    private static let key = "workspace.recentFolders"
+    private static let limit = 10
+
+    private(set) var folders: [URL]
+
+    private init() {
+        folders = (UserDefaults.standard.stringArray(forKey: Self.key) ?? [])
+            .map { URL(fileURLWithPath: $0) }
+    }
+
+    func record(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        var paths = folders.map(\.path)
+        paths.removeAll { $0 == path }
+        paths.insert(path, at: 0)
+        if paths.count > Self.limit { paths = Array(paths.prefix(Self.limit)) }
+        folders = paths.map { URL(fileURLWithPath: $0) }
+        UserDefaults.standard.set(paths, forKey: Self.key)
+    }
+
+    func clear() {
+        folders = []
+        UserDefaults.standard.removeObject(forKey: Self.key)
     }
 }

@@ -6,6 +6,23 @@ import SwiftUI
 @MainActor
 @Observable
 final class Preferences {
+    enum StartupBehavior: String, CaseIterable, Identifiable {
+        case restoreLastWorkspace
+        case startEmpty
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .restoreLastWorkspace: "Restore Last Workspace"
+            case .startEmpty: "Start Empty"
+            }
+        }
+    }
+
+    var startupBehavior: StartupBehavior {
+        didSet { persist() }
+    }
     var fontSize: CGFloat {
         didSet { persist() }
     }
@@ -18,6 +35,11 @@ final class Preferences {
     var usesSpacesForTabs: Bool {
         didSet { persist() }
     }
+    /// Identifier of the selected color theme (see ColorTheme / ThemeStore).
+    /// Falls back to the appearance-following system theme when unknown.
+    var themeID: String {
+        didSet { persist() }
+    }
     /// Run an installed external formatter (clang-format, swift-format, gofmt,
     /// prettier, …) over the buffer right before each save. Off by default.
     var formatOnSave: Bool {
@@ -28,9 +50,18 @@ final class Preferences {
     var showGitGutter: Bool {
         didSet { persist() }
     }
+    /// Show clickable code-folding chevrons in the editor gutter. On by default.
+    var showCodeFolding: Bool {
+        didSet { persist() }
+    }
     /// Show the VS Code-style minimap (zoomed-out overview) at the right edge of
     /// the editor. On by default.
     var showMinimap: Bool {
+        didSet { persist() }
+    }
+    /// Show LSP hover documentation popovers while the pointer rests on a symbol.
+    /// On by default; can be noisy in dense code, so users can disable it.
+    var showHoverTooltips: Bool {
         didSet { persist() }
     }
     /// Automatically write the buffer to disk ~1 s after the last edit. Off by
@@ -50,13 +81,17 @@ final class Preferences {
 
     init() {
         let defaults = UserDefaults.standard
+        self.startupBehavior = StartupBehavior(rawValue: defaults.string(forKey: Keys.startupBehavior) ?? "") ?? .restoreLastWorkspace
         self.fontSize = CGFloat(defaults.double(forKey: Keys.fontSize).nonZero ?? 13)
         self.fontName = defaults.string(forKey: Keys.fontName) ?? "SF Mono"
         self.tabWidth = defaults.integer(forKey: Keys.tabWidth).nonZero ?? 4
         self.usesSpacesForTabs = defaults.object(forKey: Keys.usesSpacesForTabs) as? Bool ?? true
+        self.themeID = defaults.string(forKey: Keys.themeID) ?? "system"
         self.formatOnSave = defaults.bool(forKey: Keys.formatOnSave)
         self.showGitGutter = defaults.object(forKey: Keys.showGitGutter) as? Bool ?? true
+        self.showCodeFolding = defaults.object(forKey: Keys.showCodeFolding) as? Bool ?? true
         self.showMinimap = defaults.object(forKey: Keys.showMinimap) as? Bool ?? true
+        self.showHoverTooltips = defaults.object(forKey: Keys.showHoverTooltips) as? Bool ?? true
         self.autosave = defaults.bool(forKey: Keys.autosave)
         self.terminalFontName = defaults.string(forKey: Keys.terminalFontName) ?? "MesloLGS Nerd Font"
         self.terminalFontSize = CGFloat(defaults.double(forKey: Keys.terminalFontSize).nonZero ?? 14)
@@ -83,38 +118,59 @@ final class Preferences {
         return .monospacedSystemFont(ofSize: size, weight: .regular)
     }
 
+    /// Adjusts the editor font size, clamped to the same range as the settings
+    /// stepper. Used by the View ▸ Font Size menu commands.
+    func adjustFontSize(by delta: CGFloat) {
+        fontSize = min(28, max(9, fontSize + delta))
+    }
+
+    func resetFontSize() {
+        fontSize = 13
+    }
+
     var editorTheme: EditorTheme {
-        var theme = EditorTheme.default
-        theme.fontSize = fontSize
-        theme.fontName = fontName
-        theme.tabWidth = tabWidth
-        theme.usesSpacesForTabs = usesSpacesForTabs
-        theme.showGitGutter = showGitGutter
-        return theme
+        let palette = ThemeStore.shared.theme(id: themeID) ?? .systemDefault
+        return EditorTheme.make(
+            palette: palette,
+            fontSize: fontSize,
+            fontName: fontName,
+            tabWidth: tabWidth,
+            usesSpacesForTabs: usesSpacesForTabs,
+            showGitGutter: showGitGutter,
+            showCodeFolding: showCodeFolding
+        )
     }
 
     private func persist() {
         let defaults = UserDefaults.standard
+        defaults.set(startupBehavior.rawValue, forKey: Keys.startupBehavior)
         defaults.set(Double(fontSize), forKey: Keys.fontSize)
         defaults.set(fontName, forKey: Keys.fontName)
         defaults.set(tabWidth, forKey: Keys.tabWidth)
         defaults.set(usesSpacesForTabs, forKey: Keys.usesSpacesForTabs)
+        defaults.set(themeID, forKey: Keys.themeID)
         defaults.set(formatOnSave, forKey: Keys.formatOnSave)
         defaults.set(showGitGutter, forKey: Keys.showGitGutter)
+        defaults.set(showCodeFolding, forKey: Keys.showCodeFolding)
         defaults.set(showMinimap, forKey: Keys.showMinimap)
+        defaults.set(showHoverTooltips, forKey: Keys.showHoverTooltips)
         defaults.set(autosave, forKey: Keys.autosave)
         defaults.set(terminalFontName, forKey: Keys.terminalFontName)
         defaults.set(Double(terminalFontSize), forKey: Keys.terminalFontSize)
     }
 
     private enum Keys {
+        static let startupBehavior = "app.startupBehavior"
         static let fontSize = "editor.fontSize"
         static let fontName = "editor.fontName"
         static let tabWidth = "editor.tabWidth"
         static let usesSpacesForTabs = "editor.usesSpacesForTabs"
+        static let themeID = "editor.themeID"
         static let formatOnSave = "editor.formatOnSave"
         static let showGitGutter = "editor.showGitGutter"
+        static let showCodeFolding = "editor.showCodeFolding"
         static let showMinimap = "editor.showMinimap"
+        static let showHoverTooltips = "editor.showHoverTooltips"
         static let autosave = "editor.autosave"
         static let terminalFontName = "terminal.fontName"
         static let terminalFontSize = "terminal.fontSize"

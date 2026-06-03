@@ -1,0 +1,43 @@
+import XCTest
+@testable import BriskEdit
+
+final class FoldingAnalyzerTests: XCTestCase {
+    /// Allman-style brace block: the fold header should be promoted to the
+    /// signature line and the trailing `}` absorbed, so the whole function
+    /// collapses to a single clean header line.
+    func testPromotesHeaderAndAbsorbsClosingBrace() {
+        let source = """
+        void shiftRowLeft(int table[ROWS][COLS], int row)
+        {
+            int temp = table[row][0];
+            table[row][0] = temp;
+        }
+        """ as NSString
+
+        let regions = FoldingAnalyzer.regions(in: source, tabWidth: 4)
+
+        XCTAssertEqual(regions.count, 1)
+        let region = try? XCTUnwrap(regions.first)
+        // Header is the signature line (0-based 0), not the bare `{` on line 1.
+        XCTAssertEqual(region?.headerLine, 0)
+        // Last line is the closing brace (0-based 4), absorbed into the region.
+        XCTAssertEqual(region?.lastLine, 4)
+    }
+
+    /// K&R brace style (`{` on the signature line) folds from the signature line
+    /// and still absorbs the trailing closing brace.
+    func testKAndRStyleAbsorbsClosingBrace() {
+        let source = """
+        int main(void) {
+            int x = 1;
+            return x;
+        }
+        """ as NSString
+
+        let regions = FoldingAnalyzer.regions(in: source, tabWidth: 4)
+
+        XCTAssertEqual(regions.count, 1)
+        XCTAssertEqual(regions.first?.headerLine, 0)
+        XCTAssertEqual(regions.first?.lastLine, 3)
+    }
+}

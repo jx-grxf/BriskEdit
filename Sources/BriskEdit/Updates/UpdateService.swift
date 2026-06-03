@@ -98,15 +98,21 @@ private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
 
     func allowedChannels(for updater: SPUUpdater) -> Set<String> {
         switch channel {
-        case .stable: ["stable"]
-        case .beta: ["stable", "beta"]
+        // Stable releases live on Sparkle's default channel (no tag), which is
+        // always visible — so the stable channel adds no extra channels. Beta
+        // users additionally opt into "beta", and still see default (stable)
+        // items, so they roll forward onto a newer stable build automatically.
+        case .stable: []
+        case .beta: ["beta"]
         }
     }
 
     /// Beta builds must poll a *different* feed than stable ones. The bundle's
     /// `SUFeedURL` points at the `latest` GitHub release (stable only — GitHub's
     /// "latest" never resolves to a prerelease). Betas live behind the moving
-    /// `beta` release, so on the beta channel we swap the path to that feed.
+    /// `beta` release, so on the beta channel we swap the path to that beta-only
+    /// feed. Stable updates stay on the stable channel and are not mixed into the
+    /// moving beta feed.
     /// Returning nil keeps the bundle default (the stable `latest` feed).
     func feedURLString(for updater: SPUUpdater) -> String? {
         guard channel == .beta else { return nil }

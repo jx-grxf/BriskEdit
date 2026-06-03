@@ -24,13 +24,26 @@ struct SearchQuery: Sendable, Equatable {
     var isRegex: Bool = false
 }
 
+struct SearchResponse: Sendable {
+    var results: [SearchFileResult]
+    var errorMessage: String?
+    var reachedMatchLimit: Bool
+}
+
 /// Project-wide text search. Prefers ripgrep (fast, .gitignore-aware) when it's
 /// installed; otherwise falls back to a pure-Swift recursive scan that reuses
 /// the file tree's ignore rules. Both run off the main actor.
 enum SearchService {
     static func search(_ query: SearchQuery, root: URL, includeHidden: Bool, fileLimit: Int = 4000, matchLimit: Int = 5000) async -> [SearchFileResult] {
+        await searchWithFeedback(query, root: root, includeHidden: includeHidden, fileLimit: fileLimit, matchLimit: matchLimit).results
+    }
+
+    static func searchWithFeedback(_ query: SearchQuery, root: URL, includeHidden: Bool, fileLimit: Int = 4000, matchLimit: Int = 5000) async -> SearchResponse {
         let trimmed = query.text
-        guard !trimmed.isEmpty else { return [] }
+        guard !trimmed.isEmpty else { return SearchResponse(results: [], errorMessage: nil, reachedMatchLimit: false) }
+        if query.isRegex, compile(query) == nil {
+            return SearchResponse(results: [], errorMessage: "Invalid regular expression — turn off the .* button to search the text literally.", reachedMatchLimit: false)
+        }
         return await Task.detached(priority: .userInitiated) {
             if let rg = ripgrepPath() {
                 return ripgrepSearch(rg: rg, query: query, root: root, includeHidden: includeHidden, matchLimit: matchLimit)
@@ -69,8 +82,8 @@ enum SearchService {
         return nil
     }
 
-    private static func ripgrepSearch(rg: String, query: SearchQuery, root: URL, includeHidden: Bool, matchLimit: Int) -> [SearchFileResult] {
-        var args = ["--json", "--line-number", "--column"]
+    private static func ripgrepSearch(rg: String, query: SearchQuery, root: URL, includeHidden: Bool, matchLimit: Int) -> SearchResponse {
+        var args = ["--json", "--line-number", "--column", "--max-filesize", "2M"]
         args.append(query.caseSensitive ? "--case-sensitive" : "--ignore-case")
         if query.wholeWord { args.append("--word-regexp") }
         if !query.isRegex { args.append("--fixed-strings") }
@@ -85,38 +98,89 @@ enum SearchService {
         process.arguments = args
         let stdout = Pipe()
         process.standardOutput = stdout
-        process.standardError = Pipe()
-        do { try process.run() } catch { return [] }
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
+        let stderr = Pipe()
+        process.standardError = stderr
+        do {
+            try process.run()
+        } catch {
+            return SearchResponse(results: [], errorMessage: "Could not start ripgrep: \(error.localizedDescription)", reachedMatchLimit: false)
+        }
 
         var byFile: [URL: [SearchMatch]] = [:]
         var order: [URL] = []
         var total = 0
-        guard let text = String(data: data, encoding: .utf8) else { return [] }
-        for rawLine in text.split(separator: "\n", omittingEmptySubsequences: true) {
-            guard total < matchLimit,
-                  let lineData = rawLine.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
-                  obj["type"] as? String == "match",
-                  let payload = obj["data"] as? [String: Any],
-                  let pathText = (payload["path"] as? [String: Any])?["text"] as? String,
-                  let lineNumber = payload["line_number"] as? Int,
-                  let linesText = (payload["lines"] as? [String: Any])?["text"] as? String,
-                  let submatches = payload["submatches"] as? [[String: Any]] else { continue }
-            let url = URL(fileURLWithPath: pathText)
-            let lineBytes = Array(linesText.utf8)
-            for sub in submatches {
-                guard let start = sub["start"] as? Int, let end = sub["end"] as? Int else { continue }
-                let column = utf16Count(of: lineBytes, upTo: start) + 1
-                let length = utf16Count(of: lineBytes, from: start, to: end)
-                let match = SearchMatch(line: lineNumber, column: column, length: length, lineText: trimLine(linesText))
-                if byFile[url] == nil { order.append(url) }
-                byFile[url, default: []].append(match)
-                total += 1
+        var reachedLimit = false
+        var pending = Data()
+        while true {
+            let chunk = stdout.fileHandleForReading.availableData
+            if chunk.isEmpty { break }
+            pending.append(chunk)
+            while let newline = pending.firstIndex(of: 0x0a) {
+                let lineData = pending[..<newline]
+                pending.removeSubrange(...newline)
+                guard let line = String(data: lineData, encoding: .utf8) else { continue }
+                parseRipgrepLine(Substring(line), byFile: &byFile, order: &order, total: &total, matchLimit: matchLimit, reachedLimit: &reachedLimit)
+                if reachedLimit {
+                    process.terminate()
+                    break
+                }
             }
+            if reachedLimit { break }
         }
-        return order.map { SearchFileResult(url: $0, matches: byFile[$0] ?? []) }
+        if !pending.isEmpty, reachedLimit == false, let line = String(data: pending, encoding: .utf8) {
+            parseRipgrepLine(Substring(line), byFile: &byFile, order: &order, total: &total, matchLimit: matchLimit, reachedLimit: &reachedLimit)
+        }
+        process.waitUntilExit()
+
+        let errorText = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let errorMessage: String?
+        if process.terminationStatus > 1, reachedLimit == false {
+            errorMessage = errorText?.isEmpty == false ? errorText : "ripgrep exited with status \(process.terminationStatus)."
+        } else {
+            errorMessage = nil
+        }
+
+        return SearchResponse(
+            results: order.map { SearchFileResult(url: $0, matches: byFile[$0] ?? []) },
+            errorMessage: errorMessage,
+            reachedMatchLimit: reachedLimit
+        )
+    }
+
+    private static func parseRipgrepLine(
+        _ rawLine: Substring,
+        byFile: inout [URL: [SearchMatch]],
+        order: inout [URL],
+        total: inout Int,
+        matchLimit: Int,
+        reachedLimit: inout Bool
+    ) {
+        guard total < matchLimit,
+              let lineData = rawLine.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+              obj["type"] as? String == "match",
+              let payload = obj["data"] as? [String: Any],
+              let pathText = (payload["path"] as? [String: Any])?["text"] as? String,
+              let lineNumber = payload["line_number"] as? Int,
+              let linesText = (payload["lines"] as? [String: Any])?["text"] as? String,
+              let submatches = payload["submatches"] as? [[String: Any]] else { return }
+        let url = URL(fileURLWithPath: pathText)
+        let lineBytes = Array(linesText.utf8)
+        for sub in submatches {
+            guard total < matchLimit else {
+                reachedLimit = true
+                return
+            }
+            guard let start = sub["start"] as? Int, let end = sub["end"] as? Int else { continue }
+            let column = utf16Count(of: lineBytes, upTo: start) + 1
+            let length = utf16Count(of: lineBytes, from: start, to: end)
+            let match = SearchMatch(line: lineNumber, column: column, length: length, lineText: trimLine(linesText))
+            if byFile[url] == nil { order.append(url) }
+            byFile[url, default: []].append(match)
+            total += 1
+        }
+        reachedLimit = total >= matchLimit
     }
 
     private static func utf16Count(of bytes: [UInt8], upTo byteOffset: Int) -> Int {
@@ -132,8 +196,10 @@ enum SearchService {
 
     // MARK: - Pure-Swift fallback
 
-    private static func fallbackSearch(query: SearchQuery, root: URL, includeHidden: Bool, fileLimit: Int, matchLimit: Int) -> [SearchFileResult] {
-        guard let regex = compile(query) else { return [] }
+    private static func fallbackSearch(query: SearchQuery, root: URL, includeHidden: Bool, fileLimit: Int, matchLimit: Int) -> SearchResponse {
+        guard let regex = compile(query) else {
+            return SearchResponse(results: [], errorMessage: "Invalid regular expression — turn off the .* button to search the text literally.", reachedMatchLimit: false)
+        }
         var results: [SearchFileResult] = []
         var total = 0
         for url in FileIndex.files(under: root, includeHidden: includeHidden, limit: fileLimit) {
@@ -159,7 +225,7 @@ enum SearchService {
             }
             if !matches.isEmpty { results.append(SearchFileResult(url: url, matches: matches)) }
         }
-        return results
+        return SearchResponse(results: results, errorMessage: nil, reachedMatchLimit: total >= matchLimit)
     }
 
     private static func compile(_ query: SearchQuery) -> NSRegularExpression? {

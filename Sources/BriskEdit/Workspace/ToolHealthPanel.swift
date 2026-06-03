@@ -1,18 +1,35 @@
 import SwiftUI
 
 struct ToolHealthPanel: View {
+    @Environment(\.dismiss) private var dismiss
     @State private var items: [ToolHealthItem] = []
     @State private var isLoading = true
+    @State private var feedback: String?
+    /// Tool names whose install is currently running, so each row can show its
+    /// own progress bar (instead of one overlay covering the whole list).
+    @State private var installing: Set<String> = []
 
     var body: some View {
         VStack(spacing: 0) {
             header
+            if let feedback {
+                Text(feedback)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(3)
+                    .padding(.horizontal, 14)
+                    .padding(.bottom, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
             Divider()
             List {
                 ForEach(ToolCategory.allCases, id: \.self) { category in
                     Section(category.rawValue) {
                         ForEach(items.filter { $0.descriptor.category == category }) { item in
-                            ToolHealthRow(item: item)
+                            ToolHealthRow(item: item, isInstalling: installing.contains(item.descriptor.name)) { descriptor in
+                                Task { await install(descriptor) }
+                            }
                         }
                     }
                 }
@@ -45,6 +62,15 @@ struct ToolHealthPanel: View {
                 Task { await refresh() }
             }
             .disabled(isLoading)
+            Button {
+                dismiss()
+            } label: {
+                Image(systemName: "xmark")
+            }
+            .buttonStyle(.borderless)
+            .keyboardShortcut(.cancelAction)
+            .help("Close")
+            .accessibilityLabel("Close")
         }
         .padding(14)
     }
@@ -61,10 +87,53 @@ struct ToolHealthPanel: View {
         items = await ToolHealthService.snapshot()
         isLoading = false
     }
+
+    @MainActor
+    private func install(_ descriptor: ToolDescriptor) async {
+        installing.insert(descriptor.name)
+        feedback = "Installing \(descriptor.name)…"
+        let result = await ToolHealthService.install(descriptor)
+        feedback = result.ok ? "\(descriptor.name): install finished." : "\(descriptor.name): \(result.output)"
+        items = await ToolHealthService.snapshot()
+        installing.remove(descriptor.name)
+    }
+}
+
+/// An indeterminate green progress bar — a highlight that sweeps back and forth.
+/// We can't show a real percentage (brew/pip/go report none), but this animates
+/// reliably, unlike an indeterminate `.linear` ProgressView which renders as a
+/// static dark bar on macOS.
+private struct InstallProgressBar: View {
+    @State private var animate = false
+
+    var body: some View {
+        GeometryReader { geo in
+            let trackWidth = geo.size.width
+            let barWidth = trackWidth * 0.4
+            Capsule()
+                .fill(Color.green.opacity(0.2))
+                .overlay(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.green)
+                        .frame(width: barWidth)
+                        .offset(x: animate ? trackWidth - barWidth : 0)
+                }
+        }
+        .frame(width: 120, height: 6)
+        .clipShape(Capsule())
+        .onAppear {
+            withAnimation(.easeInOut(duration: 0.85).repeatForever(autoreverses: true)) {
+                animate = true
+            }
+        }
+        .accessibilityLabel("Installing")
+    }
 }
 
 private struct ToolHealthRow: View {
     let item: ToolHealthItem
+    var isInstalling: Bool = false
+    let onInstall: (ToolDescriptor) -> Void
 
     var body: some View {
         HStack(spacing: 10) {
@@ -87,6 +156,12 @@ private struct ToolHealthRow: View {
                     .truncationMode(.middle)
             }
             Spacer()
+            if isInstalling {
+                InstallProgressBar()
+            } else if !item.isAvailable, item.descriptor.installCommand != nil {
+                Button("Install") { onInstall(item.descriptor) }
+                    .controlSize(.small)
+            }
         }
         .padding(.vertical, 4)
     }

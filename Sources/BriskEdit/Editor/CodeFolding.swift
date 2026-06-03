@@ -21,18 +21,21 @@ enum FoldingAnalyzer {
         guard text.length > 0 else { return [] }
 
         // Collect each line's paragraph range (incl. trailing newline), its indent
-        // width, and whether it's blank.
+        // width, whether it's blank, and its trimmed text (for brace detection).
         var ranges: [NSRange] = []
         var indents: [Int] = []
         var blanks: [Bool] = []
+        var trimmed: [String] = []
         text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: [.byLines]) { line, _, enclosing, _ in
             ranges.append(enclosing)
             let (indent, blank) = Self.indentWidth(of: (line ?? "") as NSString, tabWidth: tabWidth)
             indents.append(indent)
             blanks.append(blank)
+            trimmed.append((line ?? "").trimmingCharacters(in: .whitespaces))
         }
 
         var regions: [FoldRegion] = []
+        var claimedHeaders = Set<Int>()
         for i in 0..<ranges.count where !blanks[i] {
             let base = indents[i]
             var last = i
@@ -42,11 +45,45 @@ enum FoldingAnalyzer {
                 if indents[k] > base { last = k; k += 1 } else { break }
             }
             guard last > i else { continue }
-            let start = ranges[i + 1].location
+
+            // Absorb a trailing lone closing delimiter (`}`, `};`, `)`, `]`…) that
+            // sits at the header's indent — pure-indentation folding excludes it,
+            // which left the closing brace dangling on its own line after a fold.
+            if last + 1 < ranges.count, !blanks[last + 1],
+               indents[last + 1] <= base, Self.isLoneCloser(trimmed[last + 1]) {
+                last += 1
+            }
+
+            // If the fold header is a bare opening brace (Allman style), promote it
+            // to the preceding signature/control line so the whole block collapses
+            // to one clean header line instead of leaving `{` stranded above the
+            // hidden body. Guard against stealing a line already used as a header.
+            var header = i
+            if Self.isLoneOpener(trimmed[i]), i - 1 >= 0, !blanks[i - 1],
+               indents[i - 1] <= base, !claimedHeaders.contains(i - 1),
+               !regions.contains(where: { $0.lastLine >= i - 1 && $0.headerLine < i - 1 }) {
+                header = i - 1
+            }
+
+            claimedHeaders.insert(header)
+            let start = ranges[header + 1].location
             let end = NSMaxRange(ranges[last])
-            regions.append(FoldRegion(headerLine: i, lastLine: last, hiddenRange: NSRange(location: start, length: end - start)))
+            regions.append(FoldRegion(headerLine: header, lastLine: last, hiddenRange: NSRange(location: start, length: end - start)))
         }
         return regions
+    }
+
+    /// A line that is nothing but a closing delimiter (optionally with a trailing
+    /// `;` or `,`), e.g. `}`, `};`, `)`, `},`, `]`.
+    private static func isLoneCloser(_ line: String) -> Bool {
+        guard let first = line.first, "}])".contains(first) else { return false }
+        let rest = line.dropFirst().filter { !$0.isWhitespace }
+        return rest.allSatisfy { "}]);,".contains($0) }
+    }
+
+    /// A line that ends an opening construct with just a brace, e.g. `{`.
+    private static func isLoneOpener(_ line: String) -> Bool {
+        line == "{"
     }
 
     /// Leading-whitespace width (tabs counted as `tabWidth`); `blank` is true for
