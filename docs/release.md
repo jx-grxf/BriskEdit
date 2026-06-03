@@ -14,8 +14,10 @@ The Sparkle controller filters channels via `allowedChannels(for:)` in `UpdateSe
 1. **Sparkle keys.** Generate once with the Sparkle `generate_keys` tool. Store:
    - Public key → repo secret `BRISKEDIT_SPARKLE_PUBLIC_KEY` and committed reference in `project.yml`'s Info.plist key `SUPublicEDKey`.
    - Private key → repo secret `BRISKEDIT_SPARKLE_PRIVATE_KEY`. Never committed, never logged.
-2. **(later) Developer ID Application certificate** installed in the CI keychain.
-3. **(later) Notarization credentials** stored as repo secrets `BRISKEDIT_NOTARY_APPLE_ID`, `BRISKEDIT_NOTARY_TEAM_ID`, `BRISKEDIT_NOTARY_PASSWORD`, `BRISKEDIT_NOTARY_ENABLED=true`.
+2. **Developer preview signing.** Current releases are ad-hoc signed previews.
+   Users must right-click the app and choose Open on first launch.
+3. **(later) Developer ID Application certificate** installed in the CI keychain.
+4. **(later) Notarization credentials** stored as repo secrets `BRISKEDIT_NOTARY_APPLE_ID`, `BRISKEDIT_NOTARY_TEAM_ID`, `BRISKEDIT_NOTARY_PASSWORD`, `BRISKEDIT_NOTARY_ENABLED=true`.
 
 ## Per-release checklist
 
@@ -40,7 +42,9 @@ The Sparkle controller filters channels via `allowedChannels(for:)` in `UpdateSe
    - packages a DMG (`script/package_dmg.sh`)
    - produces a signed Sparkle ZIP + appcast (`script/create_sparkle_assets.sh`)
    - verifies the appcast points at the right release URL
-  - notarizes the DMG and staples the ticket for stable releases; beta releases may skip notarization when CI secrets are absent
+   - notarizes the DMG and staples the ticket only when
+     `BRISKEDIT_NOTARY_ENABLED=true`; otherwise the release remains an ad-hoc
+     signed developer preview
    - attaches everything to the GitHub Release
    Manual `workflow_dispatch` accepts an optional `build` input when a specific
    Sparkle build number is needed; otherwise it uses the GitHub run number.

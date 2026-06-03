@@ -50,6 +50,7 @@ final class MinimapView: NSView {
     }
 
     override var isFlipped: Bool { true }
+    override var isOpaque: Bool { true }
 
     // MARK: - Content model
 

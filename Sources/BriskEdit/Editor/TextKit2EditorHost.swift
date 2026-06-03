@@ -15,6 +15,8 @@ final class BriskCodeTextView: NSTextView {
     var onHoverExit: (() -> Void)?
     private var hoverTrackingArea: NSTrackingArea?
 
+    override var isOpaque: Bool { true }
+
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
@@ -71,6 +73,33 @@ final class BriskCodeTextView: NSTextView {
     }
 }
 
+private final class EditorBackingView: NSView {
+    var fillColor: NSColor {
+        didSet {
+            layer?.backgroundColor = fillColor.cgColor
+            needsDisplay = true
+        }
+    }
+
+    init(fillColor: NSColor) {
+        self.fillColor = fillColor
+        super.init(frame: .zero)
+        wantsLayer = true
+        layer?.backgroundColor = fillColor.cgColor
+        layerContentsRedrawPolicy = .onSetNeedsDisplay
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError() }
+
+    override var isOpaque: Bool { true }
+
+    override func draw(_ dirtyRect: NSRect) {
+        fillColor.setFill()
+        dirtyRect.fill()
+    }
+}
+
 struct TextKit2EditorHost: NSViewRepresentable {
     @Bindable var document: TextDocument
     let theme: EditorTheme
@@ -118,6 +147,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         scrollView.borderType = .noBorder
         scrollView.drawsBackground = true
         scrollView.backgroundColor = theme.background
+        scrollView.contentView.drawsBackground = true
+        scrollView.contentView.backgroundColor = theme.background
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
         scrollView.autohidesScrollers = true
@@ -166,7 +197,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         minimap.scrollView = scrollView
         context.coordinator.minimap = minimap
 
-        let container = NSView()
+        let container = EditorBackingView(fillColor: theme.background)
         // Let SwiftUI own the container's frame (TAMIC = true, the AppKit
         // default — same as the PDF/QuickLook preview hosts). Keeping this
         // `false` left the container's *own* size undefined: its subviews are
@@ -236,8 +267,10 @@ struct TextKit2EditorHost: NSViewRepresentable {
         if themeChanged {
             configure(textView, theme: theme)
             coordinator.scrollView?.backgroundColor = theme.background
+            coordinator.scrollView?.contentView.backgroundColor = theme.background
             coordinator.gutter?.setTheme(theme)
             coordinator.minimap?.setTheme(theme)
+            (container as? EditorBackingView)?.fillColor = theme.background
         }
 
         // Toggle the minimap without rebuilding the editor.

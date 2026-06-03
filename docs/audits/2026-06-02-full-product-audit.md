@@ -62,14 +62,13 @@ stable without the fixes below.
 1. Cut `0.3.0-beta.3` from `feat/syntax-themes-visual-polish` after opening and
    merging a PR.
 2. Use `0.3.x` beta releases to fix the P1/P2 issues in this audit.
-3. Promote to stable only after the save/autosave race, LSP lifecycle/rooting,
-   language-change diagnostics, search limits, Markdown preview jank, and
-   signing/notarization policy are handled.
+3. Promote to `0.3.0` stable preview only after the save/autosave race, LSP
+   lifecycle/rooting, language-change diagnostics, search limits, Markdown
+   preview jank, and release-signing policy are handled.
 
-Stable is not yet a polished public stable. The app still defaults to ad-hoc
-preview signing in `project.yml`, and notarization is optional in the release
-script. A true public stable should require Developer ID signing, notarization,
-stapling, and Gatekeeper verification.
+Stable remains an ad-hoc signed developer preview until Apple Developer ID
+signing is available. A true public paid stable should require Developer ID
+signing, notarization, stapling, and Gatekeeper verification.
 
 ## P1 - Fix Before Stable
 
@@ -252,8 +251,10 @@ Status in PR #8:
   import, move, rename, and trash paths.
 - Done: tab, terminal, and git rows use explicit controls with accessibility
   labels where practical; narrow Markdown preview auto-hides.
-- Done: beta feed semantics are beta-only and stable release gates require
-  Developer ID signing, notarization, stapling, and Gatekeeper checks.
+- Done: beta feed semantics are beta-only, and the `0.3.0` stable release path
+  is explicitly an ad-hoc signed developer preview. Developer ID signing,
+  notarization, stapling, and Gatekeeper checks remain the later public-release
+  gate.
 
 1. `fix/save-revision-race`: save/autosave revision correctness and tests.
 2. `fix/lsp-lifecycle-rooting`: LSP root keys, request ordering, failed-start

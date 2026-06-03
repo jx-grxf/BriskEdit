@@ -6,7 +6,7 @@
 #
 # Inputs (env):
 #   BRISKEDIT_VERSION                    required
-#   BRISKEDIT_UPDATE_CHANNEL             stable or beta; stable requires notarization
+#   BRISKEDIT_UPDATE_CHANNEL             stable or beta
 #   BRISKEDIT_NOTARY_ENABLED             "true" to actually submit, anything else skips
 #   BRISKEDIT_NOTARY_APPLE_ID            Apple ID email
 #   BRISKEDIT_NOTARY_TEAM_ID             Developer Team ID (10-char)
@@ -20,11 +20,7 @@ cd "$(dirname "$0")/.."
 CHANNEL="${BRISKEDIT_UPDATE_CHANNEL:-stable}"
 
 if [[ "${BRISKEDIT_NOTARY_ENABLED:-}" != "true" ]]; then
-  if [[ "$CHANNEL" == "stable" ]]; then
-    echo "error: stable releases require notarization (set BRISKEDIT_NOTARY_ENABLED=true)" >&2
-    exit 1
-  fi
-  echo "Notarization skipped (BRISKEDIT_NOTARY_ENABLED != true)"
+  echo "Notarization skipped (BRISKEDIT_NOTARY_ENABLED != true; ad-hoc developer preview)"
   exit 0
 fi
 

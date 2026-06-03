@@ -28,12 +28,14 @@ final class TextKit2GutterView: NSView {
         self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
+        layer?.backgroundColor = theme.gutterBackground.cgColor
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
+    override var isOpaque: Bool { true }
 
     /// Repaint whenever Auto Layout (re)positions the gutter. The scroll view
     /// reaches its real size a layout pass *after* the editor first appears
@@ -48,6 +50,7 @@ final class TextKit2GutterView: NSView {
 
     func setTheme(_ theme: EditorTheme) {
         self.theme = theme
+        layer?.backgroundColor = theme.gutterBackground.cgColor
         needsDisplay = true
     }
 
