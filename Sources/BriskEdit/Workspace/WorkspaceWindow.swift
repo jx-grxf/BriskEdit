@@ -257,20 +257,44 @@ private struct WindowConfigurator: NSViewRepresentable {
             }
             if !didApplyInitialFrame {
                 didApplyInitialFrame = true
-                // Apply now and again over the next couple of runloop turns:
-                // SwiftUI sizes the window to its content's ideal size *after* this
-                // first pass, which is what kept shrinking the window back down. A
-                // few re-applies let our full-size frame win without an animation.
-                applyFullSizeFrame(to: window)
-                DispatchQueue.main.async { [weak self] in self?.applyFullSizeFrame(to: window) }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in self?.applyFullSizeFrame(to: window) }
+                enforceFullSizeFrame(on: window)
             }
             installTitleClickHook(on: window)
         }
 
+        /// SwiftUI resizes the window to its content's ideal size *after* our first
+        /// pass, and the exact moment varies — a single re-apply (or even two)
+        /// loses that race and the window opens small. Re-apply across a ~1.2s
+        /// settling window so we win regardless of when SwiftUI settles;
+        /// `applyFullSizeFrame` is a no-op once the frame already matches, so this
+        /// stops touching the window the instant it's correct.
+        private func enforceFullSizeFrame(on window: NSWindow) {
+            let delays: [Double] = [0, 0.05, 0.12, 0.25, 0.4, 0.6, 0.85, 1.2]
+            for delay in delays {
+                if delay == 0 {
+                    applyFullSizeFrame(to: window)
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak window] in
+                        guard let self, let window else { return }
+                        self.applyFullSizeFrame(to: window)
+                    }
+                }
+            }
+        }
+
         private func applyFullSizeFrame(to window: NSWindow) {
             guard let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
-            window.setFrame(screen.visibleFrame.insetBy(dx: 18, dy: 18), display: true, animate: false)
+            let target = screen.visibleFrame
+            // Already flush full-size — don't fight a settled (or user-resized)
+            // window. Compare *origin too*: `defaultSize` can match the size while
+            // SwiftUI centers the window, so a size-only check skipped the
+            // reposition and left uneven margins.
+            let frame = window.frame
+            if abs(frame.width - target.width) < 2, abs(frame.height - target.height) < 2,
+               abs(frame.origin.x - target.origin.x) < 2, abs(frame.origin.y - target.origin.y) < 2 {
+                return
+            }
+            window.setFrame(target, display: true, animate: false)
         }
 
         // MARK: - Title click hook
