@@ -1,68 +1,40 @@
 # Release Notes
 
-## 0.3.0-beta.3 — themes & release automation
+## 0.3.0 — themes, search, code intelligence & polish
 
-A beta build. Still an unsigned developer preview — on first launch, right-click
-`BriskEdit.app` → **Open** → confirm. To receive further beta updates, set the
-update channel to **Beta** in Settings.
-
-### New
-
-- **Color themes.** Choose from built-in palettes including System (VS Code),
-  One Dark, Dracula, Nord, Solarized Dark, Monokai, and GitHub Light.
-- **VS Code theme import.** Import `.json` color themes, persist them in
-  Application Support, preview them in Settings, and remove imported themes
-  again when they are no longer needed.
-- **Appearance settings.** Editor font, minimap visibility, and git gutter bars
-  now live in a dedicated Appearance tab.
-- **Font-size commands.** Increase, decrease, and reset editor font size from the
-  View menu with standard keyboard shortcuts.
-
-### Improved
-
-- Release builds can now trigger a johannesgrof.me rebuild after publishing so
-  the website picks up new stable and beta downloads without a separate manual
-  refresh.
-
-### Compatibility
-
-Requires macOS 26 or newer. Xcode 26+ to build from source.
-
-## 0.3.0-beta.2 — search, code intelligence & folding
-
-A beta build. Still an unsigned developer preview — on first launch, right-click
-`BriskEdit.app` → **Open** → confirm. To receive further beta updates, set the
-update channel to **Beta** in Settings — the beta channel now polls its own
-update feed, so in-app updates work for beta testers.
+The first stable 0.3.0 build. Still an unsigned developer preview — on first
+launch, right-click `BriskEdit.app` → **Open** → confirm.
 
 ### New
 
+- **Color themes.** Built-in palettes including System (VS Code), One Dark,
+  Dracula, Nord, Solarized Dark, Monokai, and GitHub Light, switchable from the
+  View menu.
+- **VS Code theme import.** Import `.json` color themes, preview them in
+  Settings, persist them, and remove them again when no longer needed.
 - **Find in Files.** Project-wide search and replace with case / whole-word /
-  regex toggles, results grouped by file. Uses ripgrep when installed (gitignore
-  aware), with a pure-Swift fallback; searches dotfiles too (`.env`, `.gitignore`).
-- **Code folding.** Expand/collapse blocks via chevrons in the gutter, with
-  indentation-based fold regions.
-- **Symbol outline.** A sidebar of the file's symbols from the language server;
-  click to jump to a definition.
-- **Go to Definition.** ⌘-click or F12 on a symbol.
-- **Hover tooltips.** Rest the pointer on a symbol to see its type/docs from the
-  language server.
-- **Minimap.** A zoomed-out overview at the right edge; click or drag to scroll.
-  Toggle from View ▸ Show Minimap or Settings.
-- **Multi-cursor.** ⌘D selects the next occurrence as an additional cursor.
-- **More languages & a language picker.** Dart, Java, Kotlin, Ruby, Lua, SQL,
-  Perl, SCSS/Less, TOML, INI and more, plus a clickable language selector in the
-  status bar (with auto-detect).
+  regular-expression options.
+- **Markdown preview.** Live split-screen preview with working in-page and
+  relative links; toggle it from the View menu or close it inline.
+- **Image viewing.** Open PNG, JPEG, GIF, and other common image formats,
+  inline or in a split preview.
+- **Open Recent.** The File menu lists recently opened folders for quick reopen.
+- **Terminal font picker.** Choose any installed monospaced font for the
+  integrated terminal from Settings.
+- **Tool Health.** Inspect and install missing language tools with live install
+  progress.
+- **Appearance & font-size commands.** Editor font, minimap, and git gutter
+  bars live in a dedicated Appearance tab; increase/decrease/reset font size
+  from the View menu.
 
 ### Improved
 
-- **Flicker-free highlighting.** Syntax colors are applied as TextKit 2 rendering
-  attributes instead of text-storage edits, so the visible text no longer
-  flashes or jumps while typing, and the whole document is colored correctly.
-- **Snappier editor.** The minimap rebuilds on a debounce instead of rescanning
-  the document on every keystroke; project-search numbers lines in a single pass.
-- Accessibility labels for the sidebar section picker, terminal toggle, and the
-  search controls.
+- Code folding collapses a block to a single clean header line and keeps gutter
+  line numbers consistent.
+- Windows open at the full visible size, and a cold start restores exactly one
+  window.
+- Running C and C++ files resolves system headers through the installed SDK.
+- Folding controls only appear for languages where folding makes sense.
 
 ### Compatibility
 
