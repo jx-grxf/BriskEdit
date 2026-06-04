@@ -38,7 +38,11 @@ final class UpdateService: NSObject {
         get { controller.updater.automaticallyChecksForUpdates }
         set { controller.updater.automaticallyChecksForUpdates = newValue }
     }
-    var lastCheckDate: Date? { controller.updater.lastUpdateCheckDate }
+    /// Mirror of Sparkle's `lastUpdateCheckDate`. Sparkle exposes that only as a
+    /// plain (non-`@Observable`) property, so a computed pass-through never
+    /// triggered a SwiftUI refresh — the "Last check" row stayed stale after a
+    /// check. We snapshot it here and refresh on every finished update cycle.
+    private(set) var lastCheckDate: Date?
 
     override init() {
         let storedChannel = UserDefaults.standard.string(forKey: Keys.channel)
@@ -46,12 +50,17 @@ final class UpdateService: NSObject {
         let delegate = UpdaterDelegate(channel: storedChannel)
         self.updaterDelegate = delegate
         self.channel = storedChannel
+        self.lastCheckDate = nil
         self.controller = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: delegate,
             userDriverDelegate: nil
         )
         super.init()
+        self.lastCheckDate = controller.updater.lastUpdateCheckDate
+        delegate.onCheckCompleted = { [weak self] date in
+            Task { @MainActor in self?.lastCheckDate = date }
+        }
         delegate.onFoundUpdate = { [weak self] version in
             Task { @MainActor in self?.availableUpdateVersion = version }
         }
@@ -91,6 +100,9 @@ private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
     var onUserChoice: ((Bool) -> Void)?
     /// Called when Sparkle reports no usable update or aborts the cycle.
     var onNoPendingUpdate: (() -> Void)?
+    /// Called at the end of every update cycle with Sparkle's latest check date,
+    /// so the service can keep its observable `lastCheckDate` in sync.
+    var onCheckCompleted: ((Date?) -> Void)?
 
     init(channel: UpdateService.Channel) {
         self.channel = channel
@@ -142,5 +154,9 @@ private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
 
     func updater(_ updater: SPUUpdater, didAbortWithError error: Error) {
         onNoPendingUpdate?()
+    }
+
+    func updater(_ updater: SPUUpdater, didFinishUpdateCycleFor updateCheck: SPUUpdateCheck, error: Error?) {
+        onCheckCompleted?(updater.lastUpdateCheckDate)
     }
 }
