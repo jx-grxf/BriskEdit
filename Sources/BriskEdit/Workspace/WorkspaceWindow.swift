@@ -441,6 +441,7 @@ private extension View {
         opacity(isVisible ? 1 : 0)
             .allowsHitTesting(isVisible)
             .accessibilityHidden(!isVisible)
+            .animation(.easeInOut(duration: 0.12), value: isVisible)
     }
 }
 

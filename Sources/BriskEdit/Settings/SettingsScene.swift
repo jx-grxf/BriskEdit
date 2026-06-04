@@ -15,7 +15,7 @@ struct SettingsScene: View {
             UpdatePreferencesView()
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
         }
-        .frame(width: 520, height: 440)
+        .frame(width: 520, height: 480)
     }
 }
 
@@ -40,6 +40,7 @@ private struct GeneralPreferencesView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .padding()
     }
 }
@@ -104,6 +105,7 @@ private struct AppearancePreferencesView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .padding()
         .task { fontFamilies = monospacedFamilies(including: preferences.fontName) }
         .alert("Couldn't import theme", isPresented: Binding(
@@ -209,6 +211,7 @@ private struct EditorPreferencesView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .padding()
     }
 }
@@ -238,6 +241,7 @@ private struct TerminalPreferencesView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .padding()
         .task { families = monospacedFamilies(including: prefs.terminalFontName) }
     }
@@ -300,6 +304,7 @@ private struct UpdatePreferencesView: View {
             }
         }
         .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
         .padding()
     }
 
