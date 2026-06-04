@@ -36,7 +36,7 @@ The point is the absence of bloat. No telemetry, no account, no LSP extension ma
 ## Showcase
 
 <p align="center">
-  <video src="https://github.com/jx-grxf/BriskEdit/raw/main/.github/assets/briskedit-promo.mp4" controls muted playsinline width="900" poster="https://github.com/jx-grxf/BriskEdit/raw/main/.github/assets/showcase.png"></video>
+  <a href="https://github.com/jx-grxf/BriskEdit/raw/main/.github/assets/briskedit-promo.mp4"><img src=".github/assets/briskedit-demo.gif" width="900" alt="Animated BriskEdit demo showing editing, navigation, and the integrated terminal" /></a>
 </p>
 <p align="center">
   <a href="https://github.com/jx-grxf/BriskEdit/raw/main/.github/assets/briskedit-promo.mp4"><b>▶ Watch the 30-second demo</b></a>
