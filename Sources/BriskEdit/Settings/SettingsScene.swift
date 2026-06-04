@@ -50,6 +50,7 @@ private struct AppearancePreferencesView: View {
     @Environment(Preferences.self) private var preferences
     @Environment(ThemeStore.self) private var themeStore
     @State private var importError: String?
+    @State private var fontFamilies: [String] = []
 
     var body: some View {
         @Bindable var prefs = preferences
@@ -79,16 +80,17 @@ private struct AppearancePreferencesView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Font") {
+                Picker("Font", selection: $prefs.fontName) {
+                    ForEach(fontFamilies, id: \.self) { family in
+                        Text(family).font(.custom(family, size: 13)).tag(family)
+                    }
+                }
                 Stepper(value: $prefs.fontSize, in: 9...28, step: 1) {
                     Text("Size: \(Int(prefs.fontSize)) pt")
                 }
-                TextField("Font name", text: $prefs.fontName)
-                let installed = NSFont(name: prefs.fontName, size: prefs.fontSize) != nil
-                if !installed {
-                    Text("“\(prefs.fontName)” isn't installed — falling back to the system monospaced font.")
-                        .font(.caption)
-                        .foregroundStyle(.orange)
-                }
+                Text("Monospaced fonts installed on this Mac. Pick the face you want the editor to render code in.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("Editor Chrome") {
                 Toggle("Show minimap", isOn: $prefs.showMinimap)
@@ -103,6 +105,7 @@ private struct AppearancePreferencesView: View {
         }
         .formStyle(.grouped)
         .padding()
+        .task { fontFamilies = monospacedFamilies(including: preferences.fontName) }
         .alert("Couldn't import theme", isPresented: Binding(
             get: { importError != nil },
             set: { if !$0 { importError = nil } }
@@ -238,20 +241,22 @@ private struct TerminalPreferencesView: View {
         .padding()
         .task { families = monospacedFamilies(including: prefs.terminalFontName) }
     }
+}
 
-    /// Fixed-pitch font *family* names, sorted. Always includes the current
-    /// selection so a previously-saved font that isn't fixed-pitch still appears.
-    private func monospacedFamilies(including current: String) -> [String] {
-        let manager = NSFontManager.shared
-        var names = Set<String>()
-        for fontName in manager.availableFontNames(with: .fixedPitchFontMask) ?? [] {
-            if let family = NSFont(name: fontName, size: 12)?.familyName {
-                names.insert(family)
-            }
+/// Fixed-pitch font *family* names, sorted. Always includes the current
+/// selection so a previously-saved font that isn't fixed-pitch still appears.
+/// Shared by the editor (Appearance) and terminal font pickers.
+@MainActor
+private func monospacedFamilies(including current: String) -> [String] {
+    let manager = NSFontManager.shared
+    var names = Set<String>()
+    for fontName in manager.availableFontNames(with: .fixedPitchFontMask) ?? [] {
+        if let family = NSFont(name: fontName, size: 12)?.familyName {
+            names.insert(family)
         }
-        names.insert(current)
-        return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
     }
+    names.insert(current)
+    return names.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
 }
 
 // MARK: - Updates
@@ -262,6 +267,17 @@ private struct UpdatePreferencesView: View {
     var body: some View {
         @Bindable var updates = updates
         Form {
+            Section("Version") {
+                LabeledContent("Installed", value: Self.versionString)
+                if updates.isUpdateAvailable, let available = updates.availableUpdateVersion {
+                    LabeledContent("Available") {
+                        HStack(spacing: 6) {
+                            Image(systemName: "arrow.down.circle.fill").foregroundStyle(.tint)
+                            Text(available)
+                        }
+                    }
+                }
+            }
             Section("Channel") {
                 Picker("Update channel", selection: $updates.channel) {
                     ForEach(UpdateService.Channel.allCases) { channel in
@@ -285,5 +301,13 @@ private struct UpdatePreferencesView: View {
         }
         .formStyle(.grouped)
         .padding()
+    }
+
+    /// "0.3.0 (1)" from the bundle's marketing version and build number.
+    private static var versionString: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "—"
+        let build = info?["CFBundleVersion"] as? String ?? "—"
+        return "\(short) (\(build))"
     }
 }
