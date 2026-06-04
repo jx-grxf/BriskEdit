@@ -73,6 +73,7 @@ struct WorkspaceWindow: View {
                         Image(systemName: "arrow.down.circle.fill")
                     }
                     .tint(.blue)
+                    .accessibilityLabel("Install update")
                     .help("Update available: BriskEdit \(updates.availableUpdateVersion ?? ""). Click to install.")
                 }
             }

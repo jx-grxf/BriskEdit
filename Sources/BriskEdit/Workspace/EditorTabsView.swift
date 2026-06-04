@@ -356,7 +356,7 @@ private struct TabStrip: View {
         // sidebar when scrolled. `.clipped()` backs it up so nothing renders past
         // the leading (sidebar) edge.
         .scrollEdgeEffectStyle(.hard, for: .horizontal)
-        .frame(height: 32)
+        .frame(height: DesignTokens.Chrome.tabStripHeight)
         .background(.thinMaterial)
         .clipped()
     }
@@ -398,7 +398,7 @@ private struct TabChip: View {
             .accessibilityLabel("Close \(tab.document.displayName)")
         }
         .padding(.horizontal, 10)
-        .frame(height: 32)
+        .frame(height: DesignTokens.Chrome.tabStripHeight)
         .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
         .contentShape(Rectangle())
         .contextMenu {
@@ -432,7 +432,7 @@ private struct DiagnosticSummary: View {
                         .foregroundStyle(.orange)
                 }
             }
-            .font(.caption.monospaced())
+            .font(DesignTokens.Typography.statusNumeric)
             .labelStyle(.titleAndIcon)
         }
     }
@@ -448,7 +448,7 @@ private struct LanguagePicker: View {
             LanguageMenuItems(document: document)
         } label: {
             Text(document.language.rawValue)
-                .font(.caption.monospaced())
+                .font(DesignTokens.Typography.statusLabel)
                 .foregroundStyle(.secondary)
         }
         .menuStyle(.borderlessButton)
@@ -462,20 +462,21 @@ private struct StatusBar: View {
     let workspace: WorkspaceModel
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DesignTokens.Spacing.large) {
             if let doc = workspace.activeTab?.document {
-                Text(doc.displayName).font(.caption.monospaced())
+                Text(doc.displayName).font(DesignTokens.Typography.statusLabel)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(maxWidth: 220, alignment: .leading)
-                Text(encodingLabel(doc.encoding)).font(.caption.monospaced())
+                    .frame(maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
+                Text(encodingLabel(doc.encoding)).font(DesignTokens.Typography.statusLabel)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                 LanguagePicker(document: doc)
-                Text("Ln \(doc.cursorLine), Col \(doc.cursorColumn)").font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text("Ln \(doc.cursorLine), Col \(doc.cursorColumn)").font(DesignTokens.Typography.statusNumeric).foregroundStyle(.secondary)
                     .lineLimit(1)
-                Text(doc.fileSizeLabel).font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text(doc.fileSizeLabel).font(DesignTokens.Typography.statusNumeric).foregroundStyle(.secondary)
                     .lineLimit(1)
-                Text(doc.isDirty ? "Modified" : "Saved").font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text(doc.isDirty ? "Modified" : "Saved").font(DesignTokens.Typography.statusLabel).foregroundStyle(.secondary)
                     .lineLimit(1)
                 DiagnosticSummary(diagnostics: doc.diagnostics)
             }
@@ -485,8 +486,8 @@ private struct StatusBar: View {
                 IntelliSenseStatusView(language: doc.language)
             }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 22)
+        .padding(.horizontal, DesignTokens.Spacing.large)
+        .frame(height: DesignTokens.Chrome.statusBarHeight)
         .background(.thinMaterial)
     }
 
@@ -528,7 +529,7 @@ private struct GitStatusBarView: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                .font(.caption.monospaced())
+                .font(DesignTokens.Typography.statusLabel)
                 .foregroundStyle(.secondary)
                 .labelStyle(.titleAndIcon)
             }
@@ -564,7 +565,7 @@ private struct IntelliSenseStatusView: View {
                 .fill(indicatorColor)
                 .frame(width: 7, height: 7)
             Text("IntelliSense: \(status.serverName)")
-                .font(.caption.monospaced())
+                .font(DesignTokens.Typography.statusLabel)
                 .lineLimit(1)
         }
         .foregroundStyle(foregroundStyle)
