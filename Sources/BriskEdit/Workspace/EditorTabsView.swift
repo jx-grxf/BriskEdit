@@ -427,17 +427,28 @@ private struct TabChip: View {
 private struct DiagnosticSummary: View {
     let diagnostics: [Diagnostic]
 
+    /// Error and warning tallies in a single pass, instead of filtering the
+    /// array twice on every status-bar render.
+    private var counts: (errors: Int, warnings: Int) {
+        diagnostics.reduce(into: (0, 0)) { acc, diagnostic in
+            switch diagnostic.severity {
+            case .error: acc.0 += 1
+            case .warning: acc.1 += 1
+            default: break
+            }
+        }
+    }
+
     var body: some View {
-        let errors = diagnostics.filter { $0.severity == .error }.count
-        let warnings = diagnostics.filter { $0.severity == .warning }.count
-        if errors > 0 || warnings > 0 {
-            HStack(spacing: 8) {
-                if errors > 0 {
-                    Label("\(errors)", systemImage: "xmark.octagon.fill")
+        let counts = counts
+        if counts.errors > 0 || counts.warnings > 0 {
+            HStack(spacing: DesignTokens.Spacing.medium) {
+                if counts.errors > 0 {
+                    Label("\(counts.errors)", systemImage: "xmark.octagon.fill")
                         .foregroundStyle(.red)
                 }
-                if warnings > 0 {
-                    Label("\(warnings)", systemImage: "exclamationmark.triangle.fill")
+                if counts.warnings > 0 {
+                    Label("\(counts.warnings)", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
             }

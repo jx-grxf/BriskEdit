@@ -13,10 +13,10 @@ struct WorkspaceWindow: View {
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
-            sidebar
+            WorkspaceSidebar(workspace: workspace, openFolder: openFolder)
                 .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 420)
         } detail: {
-            detail
+            WorkspaceDetail(workspace: workspace, onOpenFile: openFile)
         }
         .navigationSplitViewStyle(.balanced)
         .task {
@@ -107,61 +107,6 @@ struct WorkspaceWindow: View {
         }
     }
 
-    @ViewBuilder
-    private var sidebar: some View {
-        if let root = workspace.rootURL {
-            VStack(spacing: 0) {
-                Picker("Sidebar section", selection: Bindable(workspace).sidebarTab) {
-                    Image(systemName: "folder").accessibilityLabel("Files").tag(SidebarTab.files)
-                    Image(systemName: "magnifyingglass").accessibilityLabel("Search").tag(SidebarTab.search)
-                    Image(systemName: "list.bullet.indent").accessibilityLabel("Outline").tag(SidebarTab.outline)
-                    Image(systemName: "arrow.triangle.branch").accessibilityLabel("Source Control").tag(SidebarTab.sourceControl)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                Divider()
-                sidebarPanes(root: root)
-            }
-            // Pin to the top and fill the column — otherwise a short pane (empty
-            // search, "No symbols" outline) lets the whole stack center itself and
-            // leaves a gap above the tab picker.
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
-            .navigationTitle(root.lastPathComponent)
-        } else {
-            ContentUnavailableView {
-                Label("No Folder Open", systemImage: "folder.badge.questionmark")
-            } description: {
-                Text("Open a folder to browse files.")
-            } actions: {
-                Button("Open Folder…") { openFolder() }
-            }
-        }
-    }
-
-    private func sidebarPanes(root: URL) -> some View {
-        ZStack {
-            FileTreeView(root: root, workspace: workspace)
-                .visibleSidebarPane(workspace.sidebarTab == .files)
-            SearchSidebarView(workspace: workspace)
-                .visibleSidebarPane(workspace.sidebarTab == .search)
-            OutlineSidebarView(workspace: workspace)
-                .visibleSidebarPane(workspace.sidebarTab == .outline)
-            GitSidebarView(workspace: workspace, root: root)
-                .visibleSidebarPane(workspace.sidebarTab == .sourceControl)
-        }
-    }
-
-    private var detail: some View {
-        EditorTabsView(workspace: workspace, onOpenFile: { openFile() })
-            .environment(preferences)
-            .dropDestination(for: URL.self) { urls, _ in
-                workspace.openDropped(urls)
-                return true
-            }
-    }
-
     private func showSecretBanner(_ message: String) {
         withAnimation { secretBanner = message }
     }
@@ -185,6 +130,81 @@ struct WorkspaceWindow: View {
         panel.canChooseDirectories = true
         guard panel.runModal() == .OK, let url = panel.url else { return }
         workspace.setWorkspaceRoot(url)
+    }
+}
+
+/// The navigation column: the segmented section picker over the four sidebar
+/// panes, or an empty state inviting the user to open a folder.
+private struct WorkspaceSidebar: View {
+    @Bindable var workspace: WorkspaceModel
+    let openFolder: () -> Void
+
+    var body: some View {
+        if let root = workspace.rootURL {
+            VStack(spacing: 0) {
+                Picker("Sidebar section", selection: $workspace.sidebarTab) {
+                    Image(systemName: "folder").accessibilityLabel("Files").tag(SidebarTab.files)
+                    Image(systemName: "magnifyingglass").accessibilityLabel("Search").tag(SidebarTab.search)
+                    Image(systemName: "list.bullet.indent").accessibilityLabel("Outline").tag(SidebarTab.outline)
+                    Image(systemName: "arrow.triangle.branch").accessibilityLabel("Source Control").tag(SidebarTab.sourceControl)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 10)
+                .padding(.vertical, DesignTokens.Spacing.small)
+                Divider()
+                WorkspaceSidebarPanes(workspace: workspace, root: root)
+            }
+            // Pin to the top and fill the column — otherwise a short pane (empty
+            // search, "No symbols" outline) lets the whole stack center itself and
+            // leaves a gap above the tab picker.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .navigationTitle(root.lastPathComponent)
+        } else {
+            ContentUnavailableView {
+                Label("No Folder Open", systemImage: "folder.badge.questionmark")
+            } description: {
+                Text("Open a folder to browse files.")
+            } actions: {
+                Button("Open Folder…", action: openFolder)
+            }
+        }
+    }
+}
+
+/// The four sidebar panes overlaid in a `ZStack`; only the selected one is
+/// visible/hittable so each keeps its own scroll position across switches.
+private struct WorkspaceSidebarPanes: View {
+    @Bindable var workspace: WorkspaceModel
+    let root: URL
+
+    var body: some View {
+        ZStack {
+            FileTreeView(root: root, workspace: workspace)
+                .visibleSidebarPane(workspace.sidebarTab == .files)
+            SearchSidebarView(workspace: workspace)
+                .visibleSidebarPane(workspace.sidebarTab == .search)
+            OutlineSidebarView(workspace: workspace)
+                .visibleSidebarPane(workspace.sidebarTab == .outline)
+            GitSidebarView(workspace: workspace, root: root)
+                .visibleSidebarPane(workspace.sidebarTab == .sourceControl)
+        }
+    }
+}
+
+/// The detail column: the editor/tabs surface, with folder drops opening files.
+private struct WorkspaceDetail: View {
+    @Bindable var workspace: WorkspaceModel
+    let onOpenFile: () -> Void
+    @Environment(Preferences.self) private var preferences
+
+    var body: some View {
+        EditorTabsView(workspace: workspace, onOpenFile: onOpenFile)
+            .environment(preferences)
+            .dropDestination(for: URL.self) { urls, _ in
+                workspace.openDropped(urls)
+                return true
+            }
     }
 }
 
