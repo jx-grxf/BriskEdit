@@ -378,9 +378,10 @@ private struct TabChip: View {
                 HStack(spacing: 6) {
                     FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
                     Text(tab.document.displayName)
+                        .foregroundStyle(isActive ? .primary : .secondary)
                         .lineLimit(1)
                         .truncationMode(.middle)
-                        .frame(minWidth: 80, idealWidth: 140, maxWidth: 220, alignment: .leading)
+                        .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
                     if tab.document.isDirty {
                         Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
                     }
@@ -399,7 +400,15 @@ private struct TabChip: View {
         }
         .padding(.horizontal, 10)
         .frame(height: DesignTokens.Chrome.tabStripHeight)
-        .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
+        // Native "front tab" look: the active tab reads as a raised surface
+        // (matching the editor area) instead of an accent wash, with a thin
+        // accent hairline along its top edge — the Xcode/Safari idiom.
+        .background {
+            Color(nsColor: .controlBackgroundColor).opacity(isActive ? 1 : 0)
+        }
+        .overlay(alignment: .top) {
+            Rectangle().fill(.tint).frame(height: 2).opacity(isActive ? 1 : 0)
+        }
         .contentShape(Rectangle())
         .contextMenu {
             Button("Close") { onClose() }

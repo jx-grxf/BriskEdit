@@ -438,11 +438,10 @@ private struct RunButton: View {
             workspace.runActiveDocument()
         } label: {
             Label("Run", systemImage: "play.fill")
-                .font(.body.weight(.semibold))
         }
         .buttonStyle(.borderedProminent)
         .tint(.green)
-        .controlSize(.large)
+        .controlSize(.regular)
         .disabled(!isRunnable)
         .keyboardShortcut("r", modifiers: .command)
         .help(isRunnable ? "Compile & run in terminal" : "Open a runnable file to enable Run")
