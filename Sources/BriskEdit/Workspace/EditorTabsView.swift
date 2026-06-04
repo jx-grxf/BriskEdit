@@ -373,33 +373,31 @@ private struct TabChip: View {
     let onOpenSplitPreview: () -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
-            Button(action: onSelect) {
-                HStack(spacing: 6) {
-                    FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
-                    Text(tab.document.displayName)
-                        .foregroundStyle(isActive ? .primary : .secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
-                    if tab.document.isDirty {
-                        Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
-                    }
+        // The whole chip selects the tab: the button wraps the full content
+        // (incl. padding and the trailing reserve), and `contentShape` makes that
+        // entire area hittable — clicking anywhere on the tab, not just the file
+        // name, now switches to it. The close button overlays the trailing reserve
+        // on top so it still gets its own clicks.
+        Button(action: onSelect) {
+            HStack(spacing: 6) {
+                FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
+                Text(tab.document.displayName)
+                    .foregroundStyle(isActive ? .primary : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
+                if tab.document.isDirty {
+                    Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
                 }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Select \(tab.document.displayName)")
-            Button(action: onClose) {
-                Image(systemName: "xmark")
-                    .imageScale(.small)
-            }
-            .buttonStyle(.plain)
-            .opacity(0.6)
-            .help("Close \(tab.document.displayName)")
-            .accessibilityLabel("Close \(tab.document.displayName)")
+            .padding(.leading, 10)
+            .padding(.trailing, 28)
+            .frame(height: DesignTokens.Chrome.tabStripHeight)
+            .contentShape(Rectangle())
         }
-        .padding(.horizontal, 10)
-        .frame(height: DesignTokens.Chrome.tabStripHeight)
+        .buttonStyle(.plain)
+        .accessibilityLabel("Select \(tab.document.displayName)")
+        .animation(.easeInOut(duration: 0.15), value: isActive)
         // Native "front tab" look: the active tab reads as a raised surface
         // (matching the editor area) instead of an accent wash, with a thin
         // accent hairline along its top edge — the Xcode/Safari idiom.
@@ -409,7 +407,17 @@ private struct TabChip: View {
         .overlay(alignment: .top) {
             Rectangle().fill(.tint).frame(height: 2).opacity(isActive ? 1 : 0)
         }
-        .contentShape(Rectangle())
+        .overlay(alignment: .trailing) {
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .imageScale(.small)
+            }
+            .buttonStyle(.plain)
+            .opacity(0.6)
+            .padding(.trailing, 10)
+            .help("Close \(tab.document.displayName)")
+            .accessibilityLabel("Close \(tab.document.displayName)")
+        }
         .contextMenu {
             Button("Close") { onClose() }
             Button("Close Other Tabs") { onCloseOthers() }
