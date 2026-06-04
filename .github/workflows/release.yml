@@ -18,6 +18,14 @@ on:
 permissions:
   contents: write
 
+# Serialize releases. The "Publish beta appcast feed" step edits a single shared
+# "beta" GitHub release, so two release runs at once (e.g. a stable and a beta
+# tag pushed close together, or a re-run) would race on its appcast and clobber
+# each other. Never cancel an in-flight release — a half-published one is worse.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
   build-release:
     runs-on: macos-26
@@ -68,6 +76,28 @@ jobs:
           echo "build=$build" >>"$GITHUB_OUTPUT"
           echo "channel=$channel" >>"$GITHUB_OUTPUT"
           echo "prerelease=$prerelease" >>"$GITHUB_OUTPUT"
+
+      # Fail fast before the long build if the notes weren't trimmed to this
+      # release. Sparkle's in-app update dialog ships the TOPMOST "## " section
+      # of RELEASE_NOTES.md, and the GitHub release uses the whole file — so a
+      # stale top section silently ships the wrong notes to every updater.
+      - name: Verify release notes
+        env:
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! -f RELEASE_NOTES.md ]]; then
+            echo "error: RELEASE_NOTES.md is missing — GitHub and Sparkle notes both read from it." >&2
+            exit 1
+          fi
+          top="$(grep -m1 '^## ' RELEASE_NOTES.md | sed 's/^## //' | awk '{print $1}')"
+          if [[ "$top" != "$RELEASE_VERSION" ]]; then
+            echo "error: top RELEASE_NOTES.md section is '${top:-<none>}', expected '${RELEASE_VERSION}'." >&2
+            echo "Sparkle ships the topmost '## ' section as the in-app release notes." >&2
+            echo "Trim/reorder RELEASE_NOTES.md so ${RELEASE_VERSION} is the first section before tagging." >&2
+            exit 1
+          fi
+          echo "release notes ok: top section is ${RELEASE_VERSION}"
 
       - name: Build DMG
         env:
