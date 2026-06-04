@@ -356,7 +356,7 @@ private struct TabStrip: View {
         // sidebar when scrolled. `.clipped()` backs it up so nothing renders past
         // the leading (sidebar) edge.
         .scrollEdgeEffectStyle(.hard, for: .horizontal)
-        .frame(height: 32)
+        .frame(height: DesignTokens.Chrome.tabStripHeight)
         .background(.thinMaterial)
         .clipped()
     }
@@ -373,34 +373,51 @@ private struct TabChip: View {
     let onOpenSplitPreview: () -> Void
 
     var body: some View {
-        HStack(spacing: 6) {
-            Button(action: onSelect) {
-                HStack(spacing: 6) {
-                    FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
-                    Text(tab.document.displayName)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .frame(minWidth: 80, idealWidth: 140, maxWidth: 220, alignment: .leading)
-                    if tab.document.isDirty {
-                        Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
-                    }
+        // The whole chip selects the tab: the button wraps the full content
+        // (incl. padding and the trailing reserve), and `contentShape` makes that
+        // entire area hittable — clicking anywhere on the tab, not just the file
+        // name, now switches to it. The close button overlays the trailing reserve
+        // on top so it still gets its own clicks.
+        Button(action: onSelect) {
+            HStack(spacing: 6) {
+                FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
+                Text(tab.document.displayName)
+                    .foregroundStyle(isActive ? .primary : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
+                if tab.document.isDirty {
+                    Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
                 }
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Select \(tab.document.displayName)")
+            .padding(.leading, 10)
+            .padding(.trailing, 28)
+            .frame(height: DesignTokens.Chrome.tabStripHeight)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Select \(tab.document.displayName)")
+        .animation(.easeInOut(duration: 0.15), value: isActive)
+        // Native "front tab" look: the active tab reads as a raised surface
+        // (matching the editor area) instead of an accent wash, with a thin
+        // accent hairline along its top edge — the Xcode/Safari idiom.
+        .background {
+            Color(nsColor: .controlBackgroundColor).opacity(isActive ? 1 : 0)
+        }
+        .overlay(alignment: .top) {
+            Rectangle().fill(.tint).frame(height: 2).opacity(isActive ? 1 : 0)
+        }
+        .overlay(alignment: .trailing) {
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .imageScale(.small)
             }
             .buttonStyle(.plain)
             .opacity(0.6)
+            .padding(.trailing, 10)
             .help("Close \(tab.document.displayName)")
             .accessibilityLabel("Close \(tab.document.displayName)")
         }
-        .padding(.horizontal, 10)
-        .frame(height: 32)
-        .background(isActive ? Color.accentColor.opacity(0.18) : Color.clear)
-        .contentShape(Rectangle())
         .contextMenu {
             Button("Close") { onClose() }
             Button("Close Other Tabs") { onCloseOthers() }
@@ -418,21 +435,32 @@ private struct TabChip: View {
 private struct DiagnosticSummary: View {
     let diagnostics: [Diagnostic]
 
+    /// Error and warning tallies in a single pass, instead of filtering the
+    /// array twice on every status-bar render.
+    private var counts: (errors: Int, warnings: Int) {
+        diagnostics.reduce(into: (0, 0)) { acc, diagnostic in
+            switch diagnostic.severity {
+            case .error: acc.0 += 1
+            case .warning: acc.1 += 1
+            default: break
+            }
+        }
+    }
+
     var body: some View {
-        let errors = diagnostics.filter { $0.severity == .error }.count
-        let warnings = diagnostics.filter { $0.severity == .warning }.count
-        if errors > 0 || warnings > 0 {
-            HStack(spacing: 8) {
-                if errors > 0 {
-                    Label("\(errors)", systemImage: "xmark.octagon.fill")
+        let counts = counts
+        if counts.errors > 0 || counts.warnings > 0 {
+            HStack(spacing: DesignTokens.Spacing.medium) {
+                if counts.errors > 0 {
+                    Label("\(counts.errors)", systemImage: "xmark.octagon.fill")
                         .foregroundStyle(.red)
                 }
-                if warnings > 0 {
-                    Label("\(warnings)", systemImage: "exclamationmark.triangle.fill")
+                if counts.warnings > 0 {
+                    Label("\(counts.warnings)", systemImage: "exclamationmark.triangle.fill")
                         .foregroundStyle(.orange)
                 }
             }
-            .font(.caption.monospaced())
+            .font(DesignTokens.Typography.statusNumeric)
             .labelStyle(.titleAndIcon)
         }
     }
@@ -448,7 +476,7 @@ private struct LanguagePicker: View {
             LanguageMenuItems(document: document)
         } label: {
             Text(document.language.rawValue)
-                .font(.caption.monospaced())
+                .font(DesignTokens.Typography.statusLabel)
                 .foregroundStyle(.secondary)
         }
         .menuStyle(.borderlessButton)
@@ -462,20 +490,21 @@ private struct StatusBar: View {
     let workspace: WorkspaceModel
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: DesignTokens.Spacing.large) {
             if let doc = workspace.activeTab?.document {
-                Text(doc.displayName).font(.caption.monospaced())
+                Text(doc.displayName).font(DesignTokens.Typography.statusLabel)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                    .frame(maxWidth: 220, alignment: .leading)
-                Text(encodingLabel(doc.encoding)).font(.caption.monospaced())
+                    .frame(maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
+                Text(encodingLabel(doc.encoding)).font(DesignTokens.Typography.statusLabel)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                 LanguagePicker(document: doc)
-                Text("Ln \(doc.cursorLine), Col \(doc.cursorColumn)").font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text("Ln \(doc.cursorLine), Col \(doc.cursorColumn)").font(DesignTokens.Typography.statusNumeric).foregroundStyle(.secondary)
                     .lineLimit(1)
-                Text(doc.fileSizeLabel).font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text(doc.fileSizeLabel).font(DesignTokens.Typography.statusNumeric).foregroundStyle(.secondary)
                     .lineLimit(1)
-                Text(doc.isDirty ? "Modified" : "Saved").font(.caption.monospaced()).foregroundStyle(.secondary)
+                Text(doc.isDirty ? "Modified" : "Saved").font(DesignTokens.Typography.statusLabel).foregroundStyle(.secondary)
                     .lineLimit(1)
                 DiagnosticSummary(diagnostics: doc.diagnostics)
             }
@@ -485,8 +514,8 @@ private struct StatusBar: View {
                 IntelliSenseStatusView(language: doc.language)
             }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 22)
+        .padding(.horizontal, DesignTokens.Spacing.large)
+        .frame(height: DesignTokens.Chrome.statusBarHeight)
         .background(.thinMaterial)
     }
 
@@ -528,7 +557,7 @@ private struct GitStatusBarView: View {
                             .foregroundStyle(.orange)
                     }
                 }
-                .font(.caption.monospaced())
+                .font(DesignTokens.Typography.statusLabel)
                 .foregroundStyle(.secondary)
                 .labelStyle(.titleAndIcon)
             }
@@ -564,7 +593,7 @@ private struct IntelliSenseStatusView: View {
                 .fill(indicatorColor)
                 .frame(width: 7, height: 7)
             Text("IntelliSense: \(status.serverName)")
-                .font(.caption.monospaced())
+                .font(DesignTokens.Typography.statusLabel)
                 .lineLimit(1)
         }
         .foregroundStyle(foregroundStyle)

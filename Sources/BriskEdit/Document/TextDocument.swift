@@ -391,7 +391,7 @@ enum SourceLanguage: String, Sendable, CaseIterable, Identifiable {
     var completionWords: [String] {
         switch self {
         case .c:
-            ["#include", "#define", "printDih", "printf", "scanf", "malloc", "free", "sizeof", "int", "char", "double", "float", "void", "struct", "return", "for", "while", "if", "else"]
+            ["#include", "#define", "printf", "scanf", "malloc", "free", "sizeof", "int", "char", "double", "float", "void", "struct", "return", "for", "while", "if", "else"]
         case .cpp:
             ["#include", "std::cout", "std::cin", "std::vector", "std::string", "namespace", "class", "template", "typename", "auto", "const", "return", "for", "while", "if", "else"]
         case .swift:
