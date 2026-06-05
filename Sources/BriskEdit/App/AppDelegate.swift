@@ -24,6 +24,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         LSPProcessRegistry.shared.terminateAll()
     }
 
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        ExternalFileOpenCoordinator.shared.open([URL(fileURLWithPath: filename)])
+        return true
+    }
+
+    func application(_ sender: NSApplication, openFiles filenames: [String]) {
+        ExternalFileOpenCoordinator.shared.open(filenames.map { URL(fileURLWithPath: $0) })
+        sender.reply(toOpenOrPrint: .success)
+    }
+
     /// Right-click the Dock icon → "New Window". Routes through the SwiftUI
     /// `openWindow` action captured by a live window.
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
@@ -113,5 +123,36 @@ enum KeyEventGuard {
         if responder.responds(to: NSSelectorFromString("insertText:")) { return true }
         let className = String(describing: type(of: responder))
         return className.contains("Terminal") || className.contains("TextView") || className.contains("OutlineView")
+    }
+}
+
+/// Receives files opened through Finder / Launch Services and routes them into
+/// the first live workspace once SwiftUI has created one.
+@MainActor
+final class ExternalFileOpenCoordinator {
+    static let shared = ExternalFileOpenCoordinator()
+    private var pendingURLs: [URL] = []
+
+    private init() {}
+
+    func open(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        if let workspace = WorkspaceRegistry.models.first {
+            for url in urls {
+                Task { await workspace.openFile(at: url) }
+            }
+        } else {
+            pendingURLs.append(contentsOf: urls)
+            NewWindowCoordinator.shared.openNewWindow()
+        }
+    }
+
+    func drainPending(into workspace: WorkspaceModel) {
+        guard !pendingURLs.isEmpty else { return }
+        let urls = pendingURLs
+        pendingURLs.removeAll()
+        for url in urls {
+            Task { await workspace.openFile(at: url) }
+        }
     }
 }

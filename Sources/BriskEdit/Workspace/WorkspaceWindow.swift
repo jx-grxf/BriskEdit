@@ -25,6 +25,7 @@ struct WorkspaceWindow: View {
             if kind.restoresSession {
                 await workspace.startPrimarySession(restoreLastWorkspace: preferences.startupBehavior == .restoreLastWorkspace)
             }
+            ExternalFileOpenCoordinator.shared.drainPending(into: workspace)
         }
         .onAppear {
             NewWindowCoordinator.shared.open = { openWindow(value: WindowKind.secondary(UUID())) }
