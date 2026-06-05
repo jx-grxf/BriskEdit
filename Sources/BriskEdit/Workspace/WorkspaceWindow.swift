@@ -30,6 +30,9 @@ struct WorkspaceWindow: View {
         .onAppear {
             NewWindowCoordinator.shared.open = { openWindow(value: WindowKind.secondary(UUID())) }
         }
+        .onOpenURL { url in
+            Task { await workspace.openFile(at: url) }
+        }
         .background(WindowConfigurator(
             isPrimaryWindow: kind.restoresSession,
             isDocumentEdited: workspace.hasUnsavedChanges,
