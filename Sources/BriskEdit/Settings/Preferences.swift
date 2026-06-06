@@ -78,6 +78,27 @@ final class Preferences {
     var terminalFontSize: CGFloat {
         didSet { persist() }
     }
+    /// Experimental: mirror the active file, language and workspace to Discord
+    /// as Rich Presence (vscord-style). Off by default; opt-in per machine.
+    var discordRichPresence: Bool {
+        didSet {
+            persist()
+            DiscordPresenceController.shared.configure(enabled: discordRichPresence)
+        }
+    }
+    /// Show the file name on the Discord card. When off, only the language is
+    /// shown ("Editing a Swift file") — for private repos.
+    var discordShowFileName: Bool {
+        didSet { persist() }
+    }
+    /// Show the workspace/folder name on the Discord card.
+    var discordShowWorkspace: Bool {
+        didSet { persist() }
+    }
+    /// Show the live "elapsed" timer on the Discord card.
+    var discordShowElapsed: Bool {
+        didSet { persist() }
+    }
 
     init() {
         let defaults = UserDefaults.standard
@@ -95,6 +116,11 @@ final class Preferences {
         self.autosave = defaults.bool(forKey: Keys.autosave)
         self.terminalFontName = defaults.string(forKey: Keys.terminalFontName) ?? "MesloLGS Nerd Font"
         self.terminalFontSize = CGFloat(defaults.double(forKey: Keys.terminalFontSize).nonZero ?? 14)
+        self.discordRichPresence = defaults.bool(forKey: Keys.discordRichPresence)
+        self.discordShowFileName = defaults.object(forKey: Keys.discordShowFileName) as? Bool ?? true
+        self.discordShowWorkspace = defaults.object(forKey: Keys.discordShowWorkspace) as? Bool ?? true
+        self.discordShowElapsed = defaults.object(forKey: Keys.discordShowElapsed) as? Bool ?? true
+        DiscordPresenceController.shared.configure(enabled: discordRichPresence)
     }
 
     /// Resolves the configured terminal font, falling back to the system
@@ -157,6 +183,10 @@ final class Preferences {
         defaults.set(autosave, forKey: Keys.autosave)
         defaults.set(terminalFontName, forKey: Keys.terminalFontName)
         defaults.set(Double(terminalFontSize), forKey: Keys.terminalFontSize)
+        defaults.set(discordRichPresence, forKey: Keys.discordRichPresence)
+        defaults.set(discordShowFileName, forKey: Keys.discordShowFileName)
+        defaults.set(discordShowWorkspace, forKey: Keys.discordShowWorkspace)
+        defaults.set(discordShowElapsed, forKey: Keys.discordShowElapsed)
     }
 
     private enum Keys {
@@ -174,6 +204,10 @@ final class Preferences {
         static let autosave = "editor.autosave"
         static let terminalFontName = "terminal.fontName"
         static let terminalFontSize = "terminal.fontSize"
+        static let discordRichPresence = "experimental.discordRichPresence"
+        static let discordShowFileName = "experimental.discordShowFileName"
+        static let discordShowWorkspace = "experimental.discordShowWorkspace"
+        static let discordShowElapsed = "experimental.discordShowElapsed"
     }
 }
 

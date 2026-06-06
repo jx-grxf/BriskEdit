@@ -22,6 +22,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         // Kill any language servers we spawned so they don't outlive the app.
         LSPProcessRegistry.shared.terminateAll()
+        // Clear our Discord Rich Presence so a stale card doesn't linger.
+        DiscordPresenceController.shared.shutdown()
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
