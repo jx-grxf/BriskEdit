@@ -13,6 +13,10 @@ final class BriskCodeTextView: NSTextView {
     /// Mouse paused over a point (hover) / left the view.
     var onHover: ((NSPoint) -> Void)?
     var onHoverExit: (() -> Void)?
+    /// Reformats the whole buffer with the language's external formatter
+    /// (context menu / ⇧⌥F). Only offered when `canFormatDocument` is true.
+    var onFormatDocument: (() -> Void)?
+    var canFormatDocument: () -> Bool = { false }
     private var hoverTrackingArea: NSTrackingArea?
 
     override var isOpaque: Bool { true }
@@ -36,12 +40,34 @@ final class BriskCodeTextView: NSTextView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        if event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .command,
-           event.charactersIgnoringModifiers == "d" {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command, event.charactersIgnoringModifiers == "d" {
             onSelectNextOccurrence?()
             return true
         }
+        // ⇧⌥F — Format Document (matches VS Code's shortcut).
+        if flags == [.shift, .option], event.charactersIgnoringModifiers?.lowercased() == "f",
+           canFormatDocument() {
+            onFormatDocument?()
+            return true
+        }
         return super.performKeyEquivalent(with: event)
+    }
+
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let menu = super.menu(for: event) ?? NSMenu()
+        if canFormatDocument() {
+            let item = NSMenuItem(title: "Format Document", action: #selector(formatDocumentAction), keyEquivalent: "f")
+            item.keyEquivalentModifierMask = [.shift, .option]
+            item.target = self
+            menu.insertItem(item, at: 0)
+            menu.insertItem(.separator(), at: 1)
+        }
+        return menu
+    }
+
+    @objc private func formatDocumentAction() {
+        onFormatDocument?()
     }
 
     override func keyDown(with event: NSEvent) {
@@ -140,6 +166,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
         textView.onHoverExit = { [weak coordinator = context.coordinator] in
             coordinator?.hideHover()
         }
+        textView.canFormatDocument = { [weak coordinator = context.coordinator] in
+            coordinator?.document.language.supportsFormatting ?? false
+        }
+        textView.onFormatDocument = { [weak coordinator = context.coordinator] in
+            coordinator?.formatDocument()
+        }
         context.coordinator.openLocation = onOpenLocation
         context.coordinator.configurePopup()
 
@@ -183,6 +215,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         // chevrons; toggling drops rendering attributes, so re-highlight after.
         let folding = context.coordinator.folding
         folding.contentStorage = textView.textContentStorage
+        folding.textView = textView
         textView.textContentStorage?.delegate = folding
         gutter.folding = folding
         gutter.onFoldToggled = { [weak coordinator = context.coordinator] in
@@ -653,6 +686,34 @@ struct TextKit2EditorHost: NSViewRepresentable {
         func applyHighlight() {
             guard let textView else { return }
             TextKit2SyntaxHighlighter.apply(to: textView, language: document.language, theme: theme)
+        }
+
+        /// Reformats the whole buffer with the language's external formatter.
+        /// Applies the result through the text view's editing path
+        /// (`shouldChangeText`/`didChangeText`) rather than re-seeding the
+        /// document, so AppKit records it as a single undoable step (⌘Z reverts
+        /// the format) and `textDidChange` updates the document like normal
+        /// typing. Silent no-op when the tool is missing or formatting fails,
+        /// matching format-on-save.
+        func formatDocument() {
+            let doc = document
+            let text = doc.text
+            let language = doc.language
+            let url = doc.fileURL
+            guard language.supportsFormatting else { return }
+            let indentWidth = theme.tabWidth
+            Task { @MainActor in
+                guard let formatted = await FormatterService.format(text: text, language: language, fileURL: url, indentWidth: indentWidth),
+                      let textView = self.textView,
+                      formatted != textView.string else { return }
+                let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
+                guard textView.shouldChangeText(in: fullRange, replacementString: formatted) else { return }
+                let selection = textView.selectedRange()
+                textView.textStorage?.replaceCharacters(in: fullRange, with: formatted)
+                textView.didChangeText()
+                let newLength = (textView.string as NSString).length
+                textView.setSelectedRange(NSRange(location: min(selection.location, newLength), length: 0))
+            }
         }
 
         /// Scrolls to and selects a navigation target (Find in Files, outline,

@@ -355,6 +355,19 @@ enum SourceLanguage: String, Sendable, CaseIterable, Identifiable {
         }
     }
 
+    /// Whether a built-in external formatter is wired up for this language (the
+    /// same set `FormatterService` knows how to drive). Gates the editor's
+    /// "Format Document" context-menu item and ⇧⌥F shortcut.
+    var supportsFormatting: Bool {
+        switch self {
+        case .c, .cpp, .swift, .go, .rust, .python,
+             .javascript, .typescript, .css, .json, .html, .markdown, .yaml:
+            true
+        default:
+            false
+        }
+    }
+
     var preferredExtension: String {
         switch self {
         case .c: "c"
