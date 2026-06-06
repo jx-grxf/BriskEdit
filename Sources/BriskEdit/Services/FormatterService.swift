@@ -12,13 +12,14 @@ enum FormatterService {
     /// for formatters that take an explicit width when no project config file is
     /// present (so the result matches the editor instead of the tool's default).
     static func format(text: String, language: SourceLanguage, fileURL: URL?, indentWidth: Int = 4) async -> String? {
-        guard let command = command(for: language, fileURL: fileURL, indentWidth: indentWidth) else { return nil }
-        // Run in the file's own directory so the tools discover project config
-        // (.clang-format, .prettierrc, rustfmt.toml, pyproject.toml, …) by walking
-        // up from there — exactly how the same tools behave on the command line.
-        let workingDirectory = fileURL?.deletingLastPathComponent()
         return await Task.detached(priority: .userInitiated) { () -> String? in
-            run(command: command, executable: executable(for: language)!, input: text, workingDirectory: workingDirectory)
+            guard let executable = executable(for: language),
+                  let command = command(for: language, fileURL: fileURL, indentWidth: indentWidth) else { return nil }
+            // Run in the file's own directory so tools discover project config
+            // exactly as they do from the command line. Command construction may
+            // walk the file hierarchy, so it belongs off the main actor too.
+            let workingDirectory = fileURL?.deletingLastPathComponent()
+            return run(command: command, executable: executable, input: text, workingDirectory: workingDirectory)
         }.value
     }
 

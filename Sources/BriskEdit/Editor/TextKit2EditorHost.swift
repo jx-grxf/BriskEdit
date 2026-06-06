@@ -46,7 +46,8 @@ final class BriskCodeTextView: NSTextView {
             return true
         }
         // ⇧⌥F — Format Document (matches VS Code's shortcut).
-        if flags == [.shift, .option], event.charactersIgnoringModifiers?.lowercased() == "f",
+        if !event.isARepeat,
+           flags == [.shift, .option], event.charactersIgnoringModifiers?.lowercased() == "f",
            canFormatDocument() {
             onFormatDocument?()
             return true
@@ -414,6 +415,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         let folding = FoldingController()
         private let hoverPanel = HoverPanel()
         private var hoverWork: DispatchWorkItem?
+        private var formatTask: Task<Void, Never>?
         private var hoverIndex = -1
         var showHoverTooltips = true
         private var completionRange: NSRange?
@@ -428,6 +430,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         deinit {
+            formatTask?.cancel()
             NotificationCenter.default.removeObserver(self)
         }
 
@@ -696,16 +699,27 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// typing. Silent no-op when the tool is missing or formatting fails,
         /// matching format-on-save.
         func formatDocument() {
+            guard formatTask == nil else { return }
             let doc = document
             let text = doc.text
             let language = doc.language
             let url = doc.fileURL
             guard language.supportsFormatting else { return }
             let indentWidth = theme.tabWidth
-            Task { @MainActor in
-                guard let formatted = await FormatterService.format(text: text, language: language, fileURL: url, indentWidth: indentWidth),
+            formatTask = Task { @MainActor [weak self] in
+                let formatted = await FormatterService.format(
+                    text: text,
+                    language: language,
+                    fileURL: url,
+                    indentWidth: indentWidth
+                )
+                guard let self else { return }
+                defer { self.formatTask = nil }
+                guard !Task.isCancelled,
+                      let formatted,
                       let textView = self.textView,
-                      formatted != textView.string else { return }
+                      textView.string == text,
+                      formatted != text else { return }
                 let fullRange = NSRange(location: 0, length: (textView.string as NSString).length)
                 guard textView.shouldChangeText(in: fullRange, replacementString: formatted) else { return }
                 let selection = textView.selectedRange()
