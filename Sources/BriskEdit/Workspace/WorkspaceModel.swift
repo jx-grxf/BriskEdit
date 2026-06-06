@@ -555,7 +555,9 @@ final class WorkspaceModel {
     /// from UserDefaults so the model stays decoupled from the Preferences view.
     private func formatBeforeSave(_ document: TextDocument) async {
         guard UserDefaults.standard.bool(forKey: "editor.formatOnSave") else { return }
-        if let formatted = await FormatterService.format(text: document.text, language: document.language, fileURL: document.fileURL) {
+        let storedTabWidth = UserDefaults.standard.integer(forKey: "editor.tabWidth")
+        let indentWidth = storedTabWidth == 0 ? 4 : storedTabWidth
+        if let formatted = await FormatterService.format(text: document.text, language: document.language, fileURL: document.fileURL, indentWidth: indentWidth) {
             document.applyFormatted(formatted)
         }
     }
@@ -884,6 +886,9 @@ final class WorkspaceModel {
             do {
                 try await moveItem(at: src, to: destination)
                 retargetTabs(from: src, to: destination)
+                // Surface the moved item: open the target folder so the drop
+                // result is immediately visible (matches `importExternalFile`).
+                expandedDirectories.insert(dir)
                 refreshDirectory(src.deletingLastPathComponent())
                 refreshDirectory(dir)
             } catch {
