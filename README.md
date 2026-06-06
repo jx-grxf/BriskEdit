@@ -36,7 +36,7 @@ The point is the absence of bloat. No telemetry, no account, no LSP extension ma
 ## Showcase
 
 <p align="center">
-  <video src="https://github.com/user-attachments/assets/ec27f180-da73-4818-a0b4-ac6480d4a073" width="900" controls autoplay muted loop playsinline></video>
+  <video src="https://github.com/user-attachments/assets/f99a059e-b621-41fd-88f9-8073c551e313" width="900" controls autoplay muted loop playsinline></video>
 </p>
 <p align="center">
   <a href="https://github.com/jx-grxf/BriskEdit/raw/main/.github/assets/briskedit-promo.mp4"><b>▶ Watch the demo</b></a>
