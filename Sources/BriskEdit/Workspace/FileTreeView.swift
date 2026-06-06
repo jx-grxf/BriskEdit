@@ -7,6 +7,7 @@ struct FileTreeView: View {
     @State private var codeOnly: Bool = false
     @State private var searchResults: [FileNode] = []
     @State private var isSearching: Bool = false
+    @State private var isRootDropTargeted: Bool = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -22,7 +23,15 @@ struct FileTreeView: View {
                 .listStyle(.sidebar)
                 .dropDestination(for: URL.self) { urls, _ in
                     workspace.handleTreeDrop(urls, into: root)
+                } isTargeted: { targeted in
+                    withAnimation(.easeOut(duration: 0.12)) { isRootDropTargeted = targeted }
                 }
+                .overlay(
+                    RoundedRectangle(cornerRadius: 6, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(isRootDropTargeted ? 0.7 : 0), lineWidth: 2)
+                        .padding(2)
+                        .allowsHitTesting(false)
+                )
             }
         }
         .onChange(of: workspace.selectedSidebarURL) { _, url in
@@ -186,6 +195,8 @@ private struct FileTreeBranch: View {
     @Environment(WorkspaceModel.self) private var workspace
     @State private var children: [FileNode] = []
     @State private var didLoad: Bool = false
+    @State private var isDropTargeted: Bool = false
+    @State private var springLoadTask: Task<Void, Never>?
 
     init(node: FileNode, depth: Int) {
         self.node = node
@@ -223,17 +234,23 @@ private struct FileTreeBranch: View {
                         .environment(workspace)
                 }
             } label: {
-                FileTreeRow(node: node, isExpanded: isExpanded.wrappedValue)
+                FileTreeRow(node: node, isExpanded: isExpanded.wrappedValue, isDropTarget: isDropTargeted)
                     .contextMenu { FileContextMenu(node: node, workspace: workspace) }
-                    .draggable(node.url)
+                    .draggable(node.url) { FileDragPreview(node: node) }
                     .dropDestination(for: URL.self) { urls, _ in
                         workspace.handleTreeDrop(urls, into: node.url)
+                    } isTargeted: { targeted in
+                        handleDropTargetChange(targeted)
                     }
             }
             .tag(node.url)
             .task(id: branchReloadKey) {
                 if isExpanded.wrappedValue {
                     await loadChildren(force: true)
+                } else {
+                    // A refresh token bumped while collapsed: invalidate so the
+                    // next expand reloads fresh instead of showing stale children.
+                    didLoad = false
                 }
             }
             .onChange(of: isExpanded.wrappedValue) { _, expanded in
@@ -241,10 +258,23 @@ private struct FileTreeBranch: View {
                 Task { await loadChildren(force: false) }
             }
         } else {
-            FileTreeRow(node: node, isExpanded: false)
+            FileTreeRow(node: node, isExpanded: false, isDropTarget: false)
             .tag(node.url)
             .contextMenu { FileContextMenu(node: node, workspace: workspace) }
-            .draggable(node.url)
+            .draggable(node.url) { FileDragPreview(node: node) }
+        }
+    }
+
+    /// Highlights the folder while a drag hovers it and arms a "spring-loaded"
+    /// auto-expand so the user can drill into a collapsed folder mid-drag.
+    private func handleDropTargetChange(_ targeted: Bool) {
+        withAnimation(.easeOut(duration: 0.12)) { isDropTargeted = targeted }
+        springLoadTask?.cancel()
+        guard targeted, !isExpanded.wrappedValue else { return }
+        springLoadTask = Task {
+            try? await Task.sleep(for: .milliseconds(550))
+            guard !Task.isCancelled, isDropTargeted else { return }
+            withAnimation { isExpanded.wrappedValue = true }
         }
     }
 
@@ -260,6 +290,7 @@ private struct FileTreeBranch: View {
 private struct FileTreeRow: View {
     let node: FileNode
     let isExpanded: Bool
+    var isDropTarget: Bool = false
 
     var body: some View {
         HStack(spacing: 8) {
@@ -269,8 +300,38 @@ private struct FileTreeRow: View {
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
+            Spacer(minLength: 0)
         }
+        .padding(.vertical, 2)
+        .padding(.horizontal, 4)
+        .contentShape(Rectangle())
+        .background(
+            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                .fill(Color.accentColor.opacity(isDropTarget ? 0.18 : 0))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .strokeBorder(Color.accentColor.opacity(isDropTarget ? 0.7 : 0), lineWidth: 1)
+                )
+        )
         .help(node.url.path)
+    }
+}
+
+/// Compact drag preview shown under the cursor while dragging a tree entry,
+/// using the same icon as the row for visual continuity.
+private struct FileDragPreview: View {
+    let node: FileNode
+
+    var body: some View {
+        HStack(spacing: 6) {
+            FileTypeIcon(url: node.url, isDirectory: node.isDirectory, language: node.language)
+                .frame(width: 16)
+            Text(node.name.isEmpty ? node.url.path : node.name)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6, style: .continuous))
     }
 }
 

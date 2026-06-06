@@ -123,6 +123,10 @@ final class FoldingController: NSObject, NSTextContentStorageDelegate, @unchecke
     private var hiddenRanges: [NSRange] = []
 
     weak var contentStorage: NSTextContentStorage?
+    /// The text view that renders this content, so a relayout can force the
+    /// viewport to re-lay-out and repaint — TextKit 2 otherwise leaves stale or
+    /// black fragments behind until a scroll/resize nudges it.
+    weak var textView: NSTextView?
 
     var hasRegions: Bool { !regions.isEmpty }
 
@@ -148,33 +152,50 @@ final class FoldingController: NSObject, NSTextContentStorageDelegate, @unchecke
     func updateRegions(_ newRegions: [FoldRegion]) {
         regions = newRegions
         let validHeaders = Set(newRegions.map(\.headerLine))
-        let before = foldedHeaderLines
         foldedHeaderLines.formIntersection(validHeaders)
+        let previous = hiddenRanges
         recomputeHidden()
-        // Only disturb the layout when folds are (or were) active. With nothing
-        // folded the delegate is a no-op, so plain typing never triggers a relayout.
-        if !foldedHeaderLines.isEmpty || before != foldedHeaderLines {
-            relayout()
-        }
+        // Only disturb the layout when the *hidden* set actually changed. With a
+        // fold active but unaffected by the edit (e.g. typing below it) the ranges
+        // are identical, so plain typing never triggers a (full-document) relayout
+        // — the source of the black-line / jumping artifacts.
+        guard hiddenRanges != previous else { return }
+        relayout(invalidatingFrom: Self.earliestDivergence(previous, hiddenRanges))
     }
 
     /// Toggles a region's folded state and re-lays out the affected text.
     func toggle(headerLine: Int) {
-        guard region(forHeaderLine: headerLine) != nil else { return }
+        guard let region = region(forHeaderLine: headerLine) else { return }
         if foldedHeaderLines.contains(headerLine) {
             foldedHeaderLines.remove(headerLine)
         } else {
             foldedHeaderLines.insert(headerLine)
         }
         recomputeHidden()
-        relayout()
+        // Everything from the toggled region's header downward shifts; nothing
+        // above it moves, so the relayout can start there.
+        relayout(invalidatingFrom: region.hiddenRange.location)
     }
 
     func unfoldAll() {
         guard !foldedHeaderLines.isEmpty else { return }
+        let from = hiddenRanges.first?.location ?? 0
         foldedHeaderLines.removeAll()
         recomputeHidden()
-        relayout()
+        relayout(invalidatingFrom: from)
+    }
+
+    /// The first character location where two sorted hidden-range lists diverge;
+    /// everything below it may shift, everything above is untouched.
+    private static func earliestDivergence(_ a: [NSRange], _ b: [NSRange]) -> Int {
+        for i in 0..<max(a.count, b.count) {
+            let lhs = i < a.count ? a[i] : nil
+            let rhs = i < b.count ? b[i] : nil
+            if lhs?.location != rhs?.location || lhs?.length != rhs?.length {
+                return min(lhs?.location ?? .max, rhs?.location ?? .max)
+            }
+        }
+        return 0
     }
 
     private func recomputeHidden() {
@@ -186,11 +207,20 @@ final class FoldingController: NSObject, NSTextContentStorageDelegate, @unchecke
     /// Forces the content storage to rebuild its paragraphs so the delegate runs
     /// again with the new hidden set. An attribute-only edit (no length change)
     /// invalidates the cached text elements without altering the stored text.
-    private func relayout() {
+    ///
+    /// The invalidation starts at `start` (not always 0): only text from the
+    /// first changed fold downward can shift, so re-laying out the whole document
+    /// on every toggle/recompute is what produced the visible black/jumping
+    /// fragments. After the edit we explicitly drive a viewport layout + repaint,
+    /// because TextKit 2 otherwise leaves stale fragments until a scroll nudge.
+    private func relayout(invalidatingFrom start: Int) {
         guard let contentStorage, let storage = contentStorage.textStorage, storage.length > 0 else { return }
+        let location = max(0, min(start, storage.length))
         contentStorage.performEditingTransaction {
-            storage.edited(.editedAttributes, range: NSRange(location: 0, length: storage.length), changeInLength: 0)
+            storage.edited(.editedAttributes, range: NSRange(location: location, length: storage.length - location), changeInLength: 0)
         }
+        contentStorage.primaryTextLayoutManager?.textViewportLayoutController.layoutViewport()
+        textView?.needsDisplay = true
     }
 
     // MARK: - NSTextContentStorageDelegate

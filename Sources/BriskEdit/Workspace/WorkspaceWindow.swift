@@ -25,9 +25,13 @@ struct WorkspaceWindow: View {
             if kind.restoresSession {
                 await workspace.startPrimarySession(restoreLastWorkspace: preferences.startupBehavior == .restoreLastWorkspace)
             }
+            ExternalFileOpenCoordinator.shared.drainPending(into: workspace)
         }
         .onAppear {
             NewWindowCoordinator.shared.open = { openWindow(value: WindowKind.secondary(UUID())) }
+        }
+        .onOpenURL { url in
+            Task { await workspace.openFile(at: url) }
         }
         .background(WindowConfigurator(
             isPrimaryWindow: kind.restoresSession,
@@ -87,6 +91,9 @@ struct WorkspaceWindow: View {
                 RunButton(workspace: workspace)
             }
         }
+        .task(id: discordActivity) {
+            DiscordPresenceController.shared.update(discordActivity)
+        }
         .focusedSceneValue(\.workspace, workspace)
         .sheet(isPresented: Bindable(workspace).showCommandPalette) {
             CommandPaletteView(workspace: workspace)
@@ -105,6 +112,13 @@ struct WorkspaceWindow: View {
         } message: {
             Text(workspace.lastError ?? "")
         }
+    }
+
+    /// Current Discord Rich Presence snapshot for this window. Computed in the
+    /// view body so SwiftUI tracks the active tab / language / root and re-runs
+    /// the `.task(id:)` whenever any of them changes.
+    private var discordActivity: DiscordActivity {
+        DiscordActivity.make(workspace: workspace, preferences: preferences)
     }
 
     private func showSecretBanner(_ message: String) {

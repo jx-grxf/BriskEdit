@@ -14,6 +14,8 @@ struct SettingsScene: View {
                 .tabItem { Label("Terminal", systemImage: "terminal") }
             UpdatePreferencesView()
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
+            ExperimentalPreferencesView()
+                .tabItem { Label("Experimental", systemImage: "flask") }
         }
         .frame(width: 520, height: 480)
     }
@@ -314,5 +316,84 @@ private struct UpdatePreferencesView: View {
         let short = info?["CFBundleShortVersionString"] as? String ?? "—"
         let build = info?["CFBundleVersion"] as? String ?? "—"
         return "\(short) (\(build))"
+    }
+}
+
+// MARK: - Experimental
+
+/// Opt-in features that aren't part of the core editor experience yet. Each is
+/// presented as a self-contained card the user explicitly switches on.
+private struct ExperimentalPreferencesView: View {
+    @Environment(Preferences.self) private var preferences
+
+    var body: some View {
+        @Bindable var prefs = preferences
+        Form {
+            Section {
+                ExperimentalCard(
+                    title: "Discord Rich Presence",
+                    systemImage: "gamecontroller",
+                    summary: "Show what you're working on — the file, its language and the workspace — on your Discord profile, just like the VS Code integration.",
+                    isOn: $prefs.discordRichPresence
+                ) {
+                    Toggle("Show file name", isOn: $prefs.discordShowFileName)
+                    Text("Off hides the file name and shows only the language (\u{201C}Editing a Swift file\u{201D}) — handy for private repositories.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Toggle("Show workspace name", isOn: $prefs.discordShowWorkspace)
+                    Toggle("Show elapsed time", isOn: $prefs.discordShowElapsed)
+                }
+            } footer: {
+                Text("Requires the desktop Discord app to be running. Nothing leaves your Mac except the file/language/workspace names you choose to show.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .padding()
+    }
+}
+
+/// A framed experimental feature: a header with an enable toggle, plus options
+/// that reveal only once the feature is switched on.
+private struct ExperimentalCard<Options: View>: View {
+    let title: String
+    let systemImage: String
+    let summary: String
+    @Binding var isOn: Bool
+    @ViewBuilder let options: () -> Options
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Toggle(isOn: $isOn) {
+                HStack(spacing: 8) {
+                    Image(systemName: systemImage)
+                        .foregroundStyle(.tint)
+                    Text(title).font(.headline)
+                    Text("Experimental")
+                        .font(.caption2.weight(.semibold))
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(.orange.opacity(0.18), in: Capsule())
+                        .foregroundStyle(.orange)
+                }
+            }
+            .toggleStyle(.switch)
+
+            Text(summary)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+
+            if isOn {
+                Divider()
+                VStack(alignment: .leading, spacing: 6) {
+                    options()
+                }
+                .transition(.opacity)
+            }
+        }
+        .padding(4)
+        .animation(.easeInOut(duration: 0.15), value: isOn)
     }
 }
