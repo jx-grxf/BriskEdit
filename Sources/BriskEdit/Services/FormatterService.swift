@@ -1,4 +1,25 @@
 import Foundation
+import OSLog
+
+actor FormatterRequestGate {
+    private var isActive = false
+    private var suppressedRequests = 0
+
+    func begin() -> Bool {
+        guard !isActive else {
+            suppressedRequests += 1
+            return false
+        }
+        isActive = true
+        return true
+    }
+
+    func finish() -> Int {
+        isActive = false
+        defer { suppressedRequests = 0 }
+        return suppressedRequests
+    }
+}
 
 /// Runs an external code formatter over a buffer *only if the tool is already
 /// installed* — in the spirit of "use the tools you already have". It never
@@ -8,11 +29,31 @@ import Foundation
 /// Formatters are invoked through a login shell (`zsh -lc`) so a GUI launch
 /// still sees Homebrew/`PATH` entries, mirroring how `Run` resolves toolchains.
 enum FormatterService {
+    private static let requestGate = FormatterRequestGate()
+    private static let maximumConfigSearchDepth = 128
+    private static let formatterTimeout: TimeInterval = 15
+    private static let maximumInputBytes = 16 * 1024 * 1024
+    private static let maximumOutputBytes = 32 * 1024 * 1024
+    private static let logger = Logger(
+        subsystem: Bundle.main.bundleIdentifier ?? "com.johannesgrof.briskedit",
+        category: "Formatter"
+    )
+
     /// `indentWidth` is the editor's configured indentation, used as a fallback
     /// for formatters that take an explicit width when no project config file is
     /// present (so the result matches the editor instead of the tool's default).
     static func format(text: String, language: SourceLanguage, fileURL: URL?, indentWidth: Int = 4) async -> String? {
-        return await Task.detached(priority: .userInitiated) { () -> String? in
+        guard await requestGate.begin() else { return nil }
+        let startedAt = Date()
+        let inputBytes = text.utf8.count
+        guard inputBytes <= maximumInputBytes else {
+            _ = await requestGate.finish()
+            logger.error("Formatter rejected \(inputBytes, privacy: .public)-byte input")
+            return nil
+        }
+        logger.info("Formatter started for \(language.rawValue, privacy: .public), input bytes: \(inputBytes, privacy: .public)")
+
+        let result = await Task.detached(priority: .userInitiated) { () -> String? in
             guard let executable = executable(for: language),
                   let command = command(for: language, fileURL: fileURL, indentWidth: indentWidth) else { return nil }
             // Run in the file's own directory so tools discover project config
@@ -21,22 +62,33 @@ enum FormatterService {
             let workingDirectory = fileURL?.deletingLastPathComponent()
             return run(command: command, executable: executable, input: text, workingDirectory: workingDirectory)
         }.value
+
+        let suppressedRequests = await requestGate.finish()
+        let duration = Date().timeIntervalSince(startedAt)
+        logger.info("Formatter finished for \(language.rawValue, privacy: .public), duration: \(duration, privacy: .public), suppressed requests: \(suppressedRequests)")
+        return result
     }
 
     /// Whether a `.clang-format` (or `_clang-format`) exists at `dir` or any
     /// ancestor — i.e. clang-format's `-style=file` would find a real config.
-    private static func hasClangFormatConfig(startingFrom dir: URL) -> Bool {
+    static func hasClangFormatConfig(startingFrom dir: URL) -> Bool {
+        guard dir.isFileURL else { return false }
         let fm = FileManager.default
-        var current = dir.standardizedFileURL
-        while true {
-            if fm.fileExists(atPath: current.appendingPathComponent(".clang-format").path) ||
-               fm.fileExists(atPath: current.appendingPathComponent("_clang-format").path) {
+        var currentPath = dir.standardizedFileURL.path
+        var visitedPaths = Set<String>()
+
+        for _ in 0..<maximumConfigSearchDepth {
+            guard !currentPath.isEmpty, visitedPaths.insert(currentPath).inserted else { return false }
+            let path = currentPath as NSString
+            if fm.fileExists(atPath: path.appendingPathComponent(".clang-format")) ||
+               fm.fileExists(atPath: path.appendingPathComponent("_clang-format")) {
                 return true
             }
-            let parent = current.deletingLastPathComponent()
-            if parent.path == current.path { return false }
-            current = parent
+            let parentPath = path.deletingLastPathComponent
+            guard !parentPath.isEmpty, parentPath != currentPath else { return false }
+            currentPath = parentPath
         }
+        return false
     }
 
     /// The bare executable name, used for an `command -v` availability probe.
@@ -92,32 +144,29 @@ enum FormatterService {
     /// Runs `zsh -lc`, feeding `input` on stdin (written off-thread to avoid a
     /// pipe-buffer deadlock) and returning stdout only on a clean exit.
     private static func run(command: String, executable: String, input: String, workingDirectory: URL? = nil) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", "command -v \(executable) >/dev/null 2>&1 || exit 127\n\(command)"]
-        if let workingDirectory, FileManager.default.fileExists(atPath: workingDirectory.path) {
-            process.currentDirectoryURL = workingDirectory
-        }
-
-        let stdin = Pipe()
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardInput = stdin
-        process.standardOutput = stdout
-        process.standardError = stderr
-
-        do { try process.run() } catch { return nil }
-
         let data = Data(input.utf8)
-        DispatchQueue.global(qos: .userInitiated).async {
-            stdin.fileHandleForWriting.write(data)
-            try? stdin.fileHandleForWriting.close()
+        let directory = workingDirectory.flatMap {
+            FileManager.default.fileExists(atPath: $0.path) ? $0 : nil
         }
-        let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-
-        guard process.terminationStatus == 0,
-              let formatted = String(data: outData, encoding: .utf8),
+        guard let result = BoundedProcessRunner.run(
+            executableURL: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: ["-lc", "command -v \(executable) >/dev/null 2>&1 || exit 127\nexec \(command)"],
+            currentDirectoryURL: directory,
+            input: data,
+            timeout: formatterTimeout,
+            maximumStandardOutputBytes: maximumOutputBytes,
+            maximumStandardErrorBytes: 256 * 1024
+        ) else { return nil }
+        if result.timedOut {
+            logger.error("Formatter exceeded \(formatterTimeout, privacy: .public) seconds and was terminated")
+        }
+        if result.outputLimitExceeded {
+            logger.error("Formatter exceeded its output limit and was discarded")
+        }
+        guard !result.timedOut,
+              !result.outputLimitExceeded,
+              result.terminationStatus == 0,
+              let formatted = String(data: result.stdout, encoding: .utf8),
               !formatted.isEmpty else { return nil }
         return formatted
     }

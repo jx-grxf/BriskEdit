@@ -557,7 +557,10 @@ final class WorkspaceModel {
         guard UserDefaults.standard.bool(forKey: "editor.formatOnSave") else { return }
         let storedTabWidth = UserDefaults.standard.integer(forKey: "editor.tabWidth")
         let indentWidth = storedTabWidth == 0 ? 4 : storedTabWidth
-        if let formatted = await FormatterService.format(text: document.text, language: document.language, fileURL: document.fileURL, indentWidth: indentWidth) {
+        let revision = document.revision
+        let text = document.text
+        if let formatted = await FormatterService.format(text: text, language: document.language, fileURL: document.fileURL, indentWidth: indentWidth),
+           document.revision == revision {
             document.applyFormatted(formatted)
         }
     }

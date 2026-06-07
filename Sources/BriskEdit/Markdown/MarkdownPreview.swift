@@ -43,6 +43,10 @@ struct MarkdownPreview: View {
                 try? await Task.sleep(for: .milliseconds(180))
             }
             guard !Task.isCancelled else { return }
+            guard markdown.utf8.count <= 4 * 1024 * 1024 else {
+                html = "<p>Preview disabled for Markdown files larger than 4 MB.</p>"
+                return
+            }
             let rendered = await Task.detached(priority: .utility) {
                 MarkdownRenderer.html(for: markdown)
             }.value

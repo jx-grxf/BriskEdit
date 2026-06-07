@@ -213,6 +213,7 @@ private actor DiscordIPCConnection {
         guard fd >= 0, let header = readExactly(8) else { return nil }
         let opcode = header.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 0, as: UInt32.self).littleEndian }
         let length = header.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self).littleEndian }
+        guard length <= 1024 * 1024 else { return nil }
         guard let payload = readExactly(Int(length)) else { return nil }
         return (opcode, payload)
     }

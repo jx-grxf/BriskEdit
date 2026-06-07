@@ -4,6 +4,7 @@ import Observation
 @MainActor
 @Observable
 final class TextDocument {
+    nonisolated static let maximumEditableFileBytes: Int64 = 64 * 1024 * 1024
     private(set) var fileURL: URL?
     private(set) var encoding: String.Encoding
     var text: String
@@ -62,6 +63,10 @@ final class TextDocument {
 
     static func load(from url: URL) async throws -> TextDocument {
         let loaded = try await Task.detached(priority: .userInitiated) { () -> (String, String.Encoding) in
+            let values = try url.resourceValues(forKeys: [.fileSizeKey])
+            if let size = values.fileSize, Int64(size) > maximumEditableFileBytes {
+                throw TextDocumentError.fileTooLarge(maximumBytes: maximumEditableFileBytes)
+            }
             var used: String.Encoding = .utf8
             let str = try String(contentsOf: url, usedEncoding: &used)
             return (str, used)
@@ -219,6 +224,18 @@ final class TextDocument {
             }
         }
         lineStartOffsets = starts
+    }
+}
+
+enum TextDocumentError: LocalizedError {
+    case fileTooLarge(maximumBytes: Int64)
+
+    var errorDescription: String? {
+        switch self {
+        case .fileTooLarge(let maximumBytes):
+            let limit = ByteCountFormatter.string(fromByteCount: maximumBytes, countStyle: .file)
+            return "The file is larger than BriskEdit's \(limit) editing safety limit."
+        }
     }
 }
 

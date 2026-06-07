@@ -98,23 +98,33 @@ enum SearchService {
         process.arguments = args
         let stdout = Pipe()
         process.standardOutput = stdout
-        let stderr = Pipe()
-        process.standardError = stderr
+        process.standardError = FileHandle.nullDevice
         do {
             try process.run()
         } catch {
             return SearchResponse(results: [], errorMessage: "Could not start ripgrep: \(error.localizedDescription)", reachedMatchLimit: false)
         }
+        let timeout = DispatchWorkItem { [weak process] in
+            guard let process, process.isRunning else { return }
+            process.terminate()
+        }
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30, execute: timeout)
 
         var byFile: [URL: [SearchMatch]] = [:]
         var order: [URL] = []
         var total = 0
         var reachedLimit = false
+        var reachedResourceLimit = false
         var pending = Data()
         while true {
             let chunk = stdout.fileHandleForReading.availableData
             if chunk.isEmpty { break }
             pending.append(chunk)
+            if pending.count > 8 * 1024 * 1024 {
+                reachedResourceLimit = true
+                process.terminate()
+                break
+            }
             while let newline = pending.firstIndex(of: 0x0a) {
                 let lineData = pending[..<newline]
                 pending.removeSubrange(...newline)
@@ -131,12 +141,13 @@ enum SearchService {
             parseRipgrepLine(Substring(line), byFile: &byFile, order: &order, total: &total, matchLimit: matchLimit, reachedLimit: &reachedLimit)
         }
         process.waitUntilExit()
+        timeout.cancel()
 
-        let errorText = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
         let errorMessage: String?
-        if process.terminationStatus > 1, reachedLimit == false {
-            errorMessage = errorText?.isEmpty == false ? errorText : "ripgrep exited with status \(process.terminationStatus)."
+        if reachedResourceLimit {
+            errorMessage = "Search output exceeded the safety limit."
+        } else if process.terminationStatus > 1, reachedLimit == false {
+            errorMessage = "ripgrep exited with status \(process.terminationStatus)."
         } else {
             errorMessage = nil
         }
