@@ -123,19 +123,23 @@ enum RunService {
     }
 
     private static func ancestor(containing filename: String, from start: URL, stopAt: URL?) -> URL? {
-        var current = start
+        guard start.isFileURL else { return nil }
         let fm = FileManager.default
-        while true {
-            if fm.fileExists(atPath: current.appendingPathComponent(filename).path) {
-                return current
+        var currentPath = start.standardizedFileURL.path
+        let stopPath = stopAt?.standardizedFileURL.path
+        var visitedPaths = Set<String>()
+        for _ in 0..<128 {
+            guard !currentPath.isEmpty, visitedPaths.insert(currentPath).inserted else { return nil }
+            let path = currentPath as NSString
+            if fm.fileExists(atPath: path.appendingPathComponent(filename)) {
+                return URL(fileURLWithPath: currentPath, isDirectory: true)
             }
-            if let stopAt, current.standardizedFileURL == stopAt.standardizedFileURL {
-                return nil
-            }
-            let parent = current.deletingLastPathComponent()
-            if parent.path == current.path { return nil }
-            current = parent
+            if currentPath == stopPath { return nil }
+            let parentPath = path.deletingLastPathComponent
+            guard !parentPath.isEmpty, parentPath != currentPath else { return nil }
+            currentPath = parentPath
         }
+        return nil
     }
 
     private static func tempBinaryPath() -> String {

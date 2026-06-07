@@ -168,21 +168,20 @@ enum GitService {
     /// whose failure the UI should surface (push/pull/checkout).
     private static func runResult(_ args: [String]) async -> GitResult {
         await Task.detached(priority: .utility) { () -> GitResult in
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            process.arguments = ["git"] + args
-            let out = Pipe(), err = Pipe()
-            process.standardOutput = out
-            process.standardError = err
-            do { try process.run() } catch {
-                return GitResult(ok: false, output: error.localizedDescription)
+            guard let result = BoundedProcessRunner.run(
+                executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+                arguments: ["git"] + args,
+                timeout: 5 * 60,
+                maximumStandardOutputBytes: 8 * 1024 * 1024,
+                maximumStandardErrorBytes: 8 * 1024 * 1024
+            ) else {
+                return GitResult(ok: false, output: "Could not start git.")
             }
-            let outData = out.fileHandleForReading.readDataToEndOfFile()
-            let errData = err.fileHandleForReading.readDataToEndOfFile()
-            process.waitUntilExit()
-            let combined = ((String(data: outData, encoding: .utf8) ?? "") + (String(data: errData, encoding: .utf8) ?? ""))
+            let combined = ((String(data: result.stdout, encoding: .utf8) ?? "") + (String(data: result.stderr, encoding: .utf8) ?? ""))
                 .trimmingCharacters(in: .whitespacesAndNewlines)
-            return GitResult(ok: process.terminationStatus == 0, output: combined)
+            let suffix = result.timedOut ? "Git operation timed out." : (result.outputLimitExceeded ? "Git output exceeded the safety limit." : "")
+            let output = [combined, suffix].filter { !$0.isEmpty }.joined(separator: "\n")
+            return GitResult(ok: result.terminationStatus == 0 && !result.timedOut && !result.outputLimitExceeded, output: output)
         }.value
     }
 
@@ -268,17 +267,14 @@ enum GitService {
     /// Runs `git` with the given args and returns stdout, or nil on failure
     /// (unless `allowFailure`, where stdout is returned regardless of exit code).
     private static func run(_ args: [String], allowFailure: Bool = false) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-        process.arguments = ["git"] + args
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        do { try process.run() } catch { return nil }
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard allowFailure || process.terminationStatus == 0 else { return nil }
-        return String(data: data, encoding: .utf8)
+        guard let result = BoundedProcessRunner.run(
+            executableURL: URL(fileURLWithPath: "/usr/bin/env"),
+            arguments: ["git"] + args,
+            timeout: 30,
+            maximumStandardOutputBytes: 64 * 1024 * 1024,
+            maximumStandardErrorBytes: 2 * 1024 * 1024
+        ), !result.timedOut, !result.outputLimitExceeded,
+           allowFailure || result.terminationStatus == 0 else { return nil }
+        return String(data: result.stdout, encoding: .utf8)
     }
 }
