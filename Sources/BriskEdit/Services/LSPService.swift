@@ -195,6 +195,12 @@ actor LSPService {
     }
 
     private var servers: [ServerKey: Server] = [:]
+    /// In-flight cold starts, keyed like `servers`. When a file opens, the
+    /// outline, diagnostics, and completion all call `ensureServer` at once; the
+    /// loser of that race used to get a not-yet-initialized server back as `nil`
+    /// (empty outline until a manual refresh). Concurrent callers now await the
+    /// same start task instead.
+    private var startTasks: [ServerKey: Task<Server?, Never>] = [:]
 
     /// Returns semantic completions for the position, syncing the buffer first.
     func completions(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> [LSPCompletion] {
@@ -215,9 +221,24 @@ actor LSPService {
     func documentSymbols(language: SourceLanguage, uri: String, text: String, root: String?) async -> [LSPSymbol] {
         guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return [] }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
-        guard let data = await server.request(method: "textDocument/documentSymbol", params: ["textDocument": ["uri": uri]]),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-        return Self.parseSymbols(json["result"])
+        // A freshly-started server builds the file's AST (and its system-header
+        // preamble) asynchronously, so the first documentSymbol request can time
+        // out or come back empty before parsing finishes. Retry a few times with
+        // a short backoff so the outline fills in on open instead of needing a
+        // manual refresh; a genuinely symbol-less file just exhausts the retries.
+        for attempt in 0..<4 {
+            if let data = await server.request(method: "textDocument/documentSymbol", params: ["textDocument": ["uri": uri]]),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let symbols = Self.parseSymbols(json["result"])
+                if !symbols.isEmpty { return symbols }
+            }
+            if Task.isCancelled { return [] }
+            if attempt < 3 {
+                do { try await Task.sleep(for: .milliseconds(250 * (attempt + 1))) }
+                catch { return [] }   // tab switched away — outlineTask cancelled
+            }
+        }
+        return []
     }
 
     /// Resolves the definition of the symbol at a position (`textDocument/definition`).
@@ -281,15 +302,26 @@ actor LSPService {
     private func ensureServer(_ config: ServerConfig, root: String?) async -> Server? {
         let key = ServerKey(id: config.id, rootURI: Self.rootURI(for: root))
         if let existing = servers[key] {
-            return await existing.initialized ? existing : nil
-        }
-        let server = Server(config: config)
-        servers[key] = server
-        guard await server.start(root: root) else {
-            await server.shutdown()
+            if await existing.isUsable { return existing }
+            await existing.shutdown()
             servers[key] = nil
-            return nil
         }
+        if let inFlight = startTasks[key] { return await inFlight.value }
+
+        let task = Task<Server?, Never> {
+            let server = Server(config: config)
+            guard await server.start(root: root) else {
+                await server.shutdown()
+                return nil
+            }
+            return server
+        }
+        startTasks[key] = task
+        // No suspension between awaiting the task and recording its result, so no
+        // other call can observe a half-cleared state.
+        let server = await task.value
+        startTasks[key] = nil
+        if let server { servers[key] = server }
         return server
     }
 
@@ -474,6 +506,10 @@ private actor Server {
     private var inboxContinuation: AsyncStream<Data>.Continuation?
     private var readerTask: Task<Void, Never>?
 
+    var isUsable: Bool {
+        initialized && !failed && process?.isRunning == true
+    }
+
     init(config: LSPService.ServerConfig) {
         self.config = config
     }
@@ -627,15 +663,31 @@ private actor Server {
 
     @discardableResult
     private func send(message: [String: Any]) -> Bool {
-        guard let stdin, let body = try? JSONSerialization.data(withJSONObject: message) else { return false }
+        guard process?.isRunning == true,
+              let stdin,
+              let body = try? JSONSerialization.data(withJSONObject: message) else {
+            markFailed()
+            return false
+        }
         var frame = Data("Content-Length: \(body.count)\r\n\r\n".utf8)
         frame.append(body)
         do {
             try stdin.write(contentsOf: frame)
             return true
         } catch {
+            markFailed()
             return false
         }
+    }
+
+    private func markFailed() {
+        guard !failed else { return }
+        failed = true
+        initialized = false
+        if let stdin { try? stdin.close() }
+        self.stdin = nil
+        for (_, continuation) in pending { continuation.resume(returning: nil) }
+        pending.removeAll()
     }
 
     private func ingest(_ data: Data) {
