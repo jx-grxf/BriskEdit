@@ -124,6 +124,7 @@ struct LSPToolStatus: Sendable, Equatable {
 /// falls back to keyword/buffer completion.
 actor LSPService {
     static let shared = LSPService()
+    private static let maximumDocumentBytes = 8 * 1024 * 1024
 
     struct ServerConfig {
         let id: String
@@ -204,6 +205,7 @@ actor LSPService {
 
     /// Returns semantic completions for the position, syncing the buffer first.
     func completions(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> [LSPCompletion] {
+        guard text.utf8.count <= Self.maximumDocumentBytes else { return [] }
         guard let config = Self.config(for: language) else { return [] }
         guard let server = await ensureServer(config, root: root) else { return [] }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
@@ -219,6 +221,7 @@ actor LSPService {
 
     /// Symbol tree for the outline (`textDocument/documentSymbol`).
     func documentSymbols(language: SourceLanguage, uri: String, text: String, root: String?) async -> [LSPSymbol] {
+        guard text.utf8.count <= Self.maximumDocumentBytes else { return [] }
         guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return [] }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
         // A freshly-started server builds the file's AST (and its system-header
@@ -243,6 +246,7 @@ actor LSPService {
 
     /// Resolves the definition of the symbol at a position (`textDocument/definition`).
     func definition(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> LSPLocation? {
+        guard text.utf8.count <= Self.maximumDocumentBytes else { return nil }
         guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return nil }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
         let params: [String: Any] = ["textDocument": ["uri": uri], "position": ["line": line, "character": character]]
@@ -253,6 +257,7 @@ actor LSPService {
 
     /// Hover documentation/type for the symbol at a position (`textDocument/hover`).
     func hover(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> String? {
+        guard text.utf8.count <= Self.maximumDocumentBytes else { return nil }
         guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return nil }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
         let params: [String: Any] = ["textDocument": ["uri": uri], "position": ["line": line, "character": character]]
@@ -275,6 +280,7 @@ actor LSPService {
     /// Opens (or refreshes) a document so the server starts emitting diagnostics
     /// without waiting for a completion request.
     func openDocument(language: SourceLanguage, uri: String, text: String, root: String?) async {
+        guard text.utf8.count <= Self.maximumDocumentBytes else { return }
         guard let config = Self.config(for: language) else { return }
         guard let server = await ensureServer(config, root: root) else { return }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
@@ -468,17 +474,14 @@ actor LSPService {
             command = "command -v \(config.executable)"
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", command]
-        let stdout = Pipe()
-        process.standardOutput = stdout
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return nil }
-        let data = stdout.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        guard process.terminationStatus == 0 else { return nil }
-        let output = String(data: data, encoding: .utf8)?
+        guard let result = BoundedProcessRunner.run(
+            executableURL: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: ["-lc", command],
+            timeout: 5,
+            maximumStandardOutputBytes: 64 * 1024,
+            maximumStandardErrorBytes: 64 * 1024
+        ), result.terminationStatus == 0, !result.timedOut, !result.outputLimitExceeded else { return nil }
+        let output = String(data: result.stdout, encoding: .utf8)?
             .trimmingCharacters(in: .whitespacesAndNewlines)
         return output?.isEmpty == false ? output : nil
     }
@@ -487,6 +490,9 @@ actor LSPService {
 /// One language-server process and its JSON-RPC plumbing. An actor so its
 /// mutable buffer/continuation state stays serialized.
 private actor Server {
+    private static let maximumHeaderBytes = 8 * 1024
+    private static let maximumMessageBytes = 8 * 1024 * 1024
+    private static let maximumInboxBytes = maximumHeaderBytes + maximumMessageBytes
     private let config: LSPService.ServerConfig
     private var process: Process?
     private var stdin: FileHandle?
@@ -691,6 +697,10 @@ private actor Server {
     }
 
     private func ingest(_ data: Data) {
+        guard inbox.count + data.count <= Self.maximumInboxBytes else {
+            failProtocol()
+            return
+        }
         inbox.append(data)
         while let body = extractMessage() {
             guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { continue }
@@ -733,28 +743,50 @@ private actor Server {
 
     private func extractMessage() -> Data? {
         let separator = Data("\r\n\r\n".utf8)
-        guard let headerEnd = inbox.range(of: separator) else { return nil }
+        guard let headerEnd = inbox.range(of: separator) else {
+            if inbox.count > Self.maximumHeaderBytes { failProtocol() }
+            return nil
+        }
+        guard headerEnd.lowerBound <= Self.maximumHeaderBytes else {
+            failProtocol()
+            return nil
+        }
         let header = String(decoding: inbox[inbox.startIndex..<headerEnd.lowerBound], as: UTF8.self)
         var length = 0
         for line in header.split(separator: "\r\n") where line.lowercased().hasPrefix("content-length:") {
             length = Int(line.dropFirst("content-length:".count).trimmingCharacters(in: .whitespaces)) ?? 0
         }
         let bodyStart = headerEnd.upperBound
-        guard length > 0, inbox.distance(from: bodyStart, to: inbox.endIndex) >= length else { return nil }
+        guard length > 0, length <= Self.maximumMessageBytes else {
+            failProtocol()
+            return nil
+        }
+        guard inbox.distance(from: bodyStart, to: inbox.endIndex) >= length else { return nil }
         let bodyEnd = inbox.index(bodyStart, offsetBy: length)
         let body = inbox[bodyStart..<bodyEnd]
         inbox.removeSubrange(inbox.startIndex..<bodyEnd)
         return Data(body)
     }
 
+    private func failProtocol() {
+        failed = true
+        inbox.removeAll(keepingCapacity: false)
+        process?.terminate()
+        let continuations = Array(pending.values)
+        pending.removeAll()
+        for continuation in continuations {
+            continuation.resume(returning: nil)
+        }
+    }
+
     private static func isAvailable(_ executable: String) -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", "command -v \(executable)"]
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        do { try process.run() } catch { return false }
-        process.waitUntilExit()
-        return process.terminationStatus == 0
+        guard let result = BoundedProcessRunner.run(
+            executableURL: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: ["-lc", "command -v \(executable)"],
+            timeout: 5,
+            maximumStandardOutputBytes: 64 * 1024,
+            maximumStandardErrorBytes: 64 * 1024
+        ) else { return false }
+        return result.terminationStatus == 0 && !result.timedOut && !result.outputLimitExceeded
     }
 }

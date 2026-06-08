@@ -33,6 +33,7 @@ struct Diagnostic: Sendable, Hashable, Identifiable {
 /// the zero-config fallback that always works on a stock dev box.
 enum DiagnosticsService {
     static func check(text: String, language: SourceLanguage, fileURL: URL?) async -> [Diagnostic]? {
+        guard text.utf8.count <= 8 * 1024 * 1024 else { return nil }
         guard let spec = spec(for: language) else { return nil }
         return await Task.detached(priority: .utility) { () -> [Diagnostic]? in
             // Stage the (possibly unsaved) buffer in a sibling temp file so the
@@ -104,17 +105,13 @@ enum DiagnosticsService {
     }
 
     private static func runCapturingStderr(_ command: String) -> String? {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        process.arguments = ["-lc", command]
-        let stdout = Pipe()
-        let stderr = Pipe()
-        process.standardOutput = stdout
-        process.standardError = stderr
-        do { try process.run() } catch { return nil }
-        let errData = stderr.fileHandleForReading.readDataToEndOfFile()
-        _ = stdout.fileHandleForReading.readDataToEndOfFile()
-        process.waitUntilExit()
-        return String(data: errData, encoding: .utf8)
+        guard let result = BoundedProcessRunner.run(
+            executableURL: URL(fileURLWithPath: "/bin/zsh"),
+            arguments: ["-lc", "exec \(command)"],
+            timeout: 20,
+            maximumStandardOutputBytes: 256 * 1024,
+            maximumStandardErrorBytes: 4 * 1024 * 1024
+        ), !result.timedOut, !result.outputLimitExceeded else { return nil }
+        return String(data: result.stderr, encoding: .utf8)
     }
 }
