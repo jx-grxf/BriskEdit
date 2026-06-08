@@ -1120,6 +1120,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
             case #selector(NSResponder.insertNewline(_:)):
                 insertSmartNewline(in: textView)
                 return true
+            case #selector(NSResponder.deleteBackward(_:)):
+                return smartOutdent(in: textView)
             case #selector(NSResponder.complete(_:)):
                 updateCompletionPopup(in: textView, minimumPrefix: 0)
                 return true
@@ -1502,10 +1504,36 @@ struct TextKit2EditorHost: NSViewRepresentable {
             "TODO:", "MARK:", "FIXME:", "main", "printf", "scanf", "return", "true", "false", "NULL", "nil"
         ]
 
+        /// Backspace inside a line's leading whitespace removes a whole indent
+        /// level (back to the previous tab stop) in one keystroke instead of one
+        /// space at a time. Engages only in spaces mode, with a single empty
+        /// caret sitting in pure leading whitespace; every other case returns
+        /// false so AppKit's default delete (selection delete, line-join,
+        /// tab-mode) runs unchanged.
+        private func smartOutdent(in textView: NSTextView) -> Bool {
+            guard theme.usesSpacesForTabs,
+                  textView.selectedRanges.count == 1 else { return false }
+            let selection = textView.selectedRange()
+            guard selection.length == 0, selection.location > 0 else { return false }
+            let nsString = textView.string as NSString
+            let lineStart = nsString.lineRange(for: NSRange(location: selection.location, length: 0)).location
+            let width = selection.location - lineStart
+            guard width > 0 else { return false }            // caret at line start -> default join
+            for offset in lineStart..<selection.location {   // only when caret is in leading whitespace
+                let c = nsString.character(at: offset)
+                guard c == 0x20 || c == 0x09 else { return false }
+            }
+            let tab = max(theme.tabWidth, 1)
+            let removal = width - ((width - 1) / tab) * tab  // distance to previous tab stop (e.g. 15->3, 12->4)
+            textView.insertText("", replacementRange: NSRange(location: selection.location - removal, length: removal))
+            return true
+        }
+
         private func insertSmartNewline(in textView: NSTextView) {
             let nsString = textView.string as NSString
             let selection = textView.selectedRange()
-            let lineStart = nsString.lineRange(for: NSRange(location: selection.location, length: 0)).location
+            let lineRange = nsString.lineRange(for: NSRange(location: selection.location, length: 0))
+            let lineStart = lineRange.location
             var offset = lineStart
             var indent = ""
             while offset < selection.location {
@@ -1530,11 +1558,36 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 return
             }
 
+            // If the line being left holds only whitespace (auto-indent the user
+            // never typed into), drop that phantom indent as part of this edit so
+            // the abandoned line stays empty instead of accumulating trailing
+            // spaces. The new line still gets `indent`, so the caret column is
+            // unchanged.
+            var replacement = selection
+            if offset == selection.location, selection.length == 0,
+               isTrailingWhitespaceOnly(nsString, from: selection.location, lineEnd: NSMaxRange(lineRange)) {
+                replacement = NSRange(location: lineStart, length: selection.location - lineStart)
+            }
+
             var insertion = "\n" + indent
             if let prev = previous, bracketPairs[prev] != nil || prev == ":" {
                 insertion += indentUnit
             }
-            textView.insertText(insertion, replacementRange: selection)
+            textView.insertText(insertion, replacementRange: replacement)
+        }
+
+        /// True when everything from `location` to the line's end (excluding the
+        /// terminating newline) is whitespace — i.e. there is no real code after
+        /// the caret on this line.
+        private func isTrailingWhitespaceOnly(_ nsString: NSString, from location: Int, lineEnd: Int) -> Bool {
+            var i = location
+            while i < lineEnd {
+                let c = nsString.character(at: i)
+                if c == 0x0A || c == 0x0D { break }
+                if c != 0x20 && c != 0x09 { return false }
+                i += 1
+            }
+            return true
         }
     }
 }
