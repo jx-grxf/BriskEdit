@@ -1,4 +1,13 @@
 import AppKit
+import Darwin
+
+enum AppRuntimeSafety {
+    static func install() {
+        // Process/FileHandle writes otherwise terminate the entire app when an
+        // LSP, formatter, terminal, or IPC peer closes its pipe first.
+        _ = signal(SIGPIPE, SIG_IGN)
+    }
+}
 
 /// Installs a key-event guard that silences the macOS "funk" alert sound which
 /// AppKit emits when a printable key is pressed while focus sits on a view that
@@ -8,6 +17,10 @@ import AppKit
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var keyMonitor: Any?
+
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        AppRuntimeSafety.install()
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in

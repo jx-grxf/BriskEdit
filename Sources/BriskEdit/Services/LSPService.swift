@@ -60,6 +60,25 @@ struct LSPCompletion: Sendable, Equatable {
     let kind: Int
 }
 
+/// Signature-help results returned by a language server or synthesized from the
+/// current buffer. Parameter ranges index UTF-16 offsets inside each label so
+/// the editor can bold the active argument the way VS Code does.
+struct LSPSignatureHelp: Sendable, Equatable {
+    struct Parameter: Sendable, Equatable {
+        let start: Int
+        let length: Int
+    }
+
+    struct Signature: Sendable, Equatable {
+        let label: String
+        let parameters: [Parameter]
+    }
+
+    let signatures: [Signature]
+    let activeSignature: Int
+    let activeParameter: Int
+}
+
 /// A symbol from `textDocument/documentSymbol` for the outline. 1-based
 /// line/column; children mirror the LSP hierarchy.
 struct LSPSymbol: Sendable, Hashable, Identifiable {
@@ -177,6 +196,12 @@ actor LSPService {
     }
 
     private var servers: [ServerKey: Server] = [:]
+    /// In-flight cold starts, keyed like `servers`. When a file opens, the
+    /// outline, diagnostics, and completion all call `ensureServer` at once; the
+    /// loser of that race used to get a not-yet-initialized server back as `nil`
+    /// (empty outline until a manual refresh). Concurrent callers now await the
+    /// same start task instead.
+    private var startTasks: [ServerKey: Task<Server?, Never>] = [:]
 
     /// Returns semantic completions for the position, syncing the buffer first.
     func completions(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> [LSPCompletion] {
@@ -199,9 +224,24 @@ actor LSPService {
         guard text.utf8.count <= Self.maximumDocumentBytes else { return [] }
         guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return [] }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
-        guard let data = await server.request(method: "textDocument/documentSymbol", params: ["textDocument": ["uri": uri]]),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return [] }
-        return Self.parseSymbols(json["result"])
+        // A freshly-started server builds the file's AST (and its system-header
+        // preamble) asynchronously, so the first documentSymbol request can time
+        // out or come back empty before parsing finishes. Retry a few times with
+        // a short backoff so the outline fills in on open instead of needing a
+        // manual refresh; a genuinely symbol-less file just exhausts the retries.
+        for attempt in 0..<4 {
+            if let data = await server.request(method: "textDocument/documentSymbol", params: ["textDocument": ["uri": uri]]),
+               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                let symbols = Self.parseSymbols(json["result"])
+                if !symbols.isEmpty { return symbols }
+            }
+            if Task.isCancelled { return [] }
+            if attempt < 3 {
+                do { try await Task.sleep(for: .milliseconds(250 * (attempt + 1))) }
+                catch { return [] }   // tab switched away — outlineTask cancelled
+            }
+        }
+        return []
     }
 
     /// Resolves the definition of the symbol at a position (`textDocument/definition`).
@@ -224,6 +264,17 @@ actor LSPService {
         guard let data = await server.request(method: "textDocument/hover", params: params),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
         return Self.parseHover(json["result"])
+    }
+
+    /// Returns the signature(s) of the call being typed at the position
+    /// (`textDocument/signatureHelp`), with the active parameter resolved.
+    func signatureHelp(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> LSPSignatureHelp? {
+        guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return nil }
+        await server.sync(uri: uri, languageId: config.languageId, text: text)
+        let params: [String: Any] = ["textDocument": ["uri": uri], "position": ["line": line, "character": character]]
+        guard let data = await server.request(method: "textDocument/signatureHelp", params: params),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return nil }
+        return Self.parseSignatureHelp(json["result"])
     }
 
     /// Opens (or refreshes) a document so the server starts emitting diagnostics
@@ -257,15 +308,26 @@ actor LSPService {
     private func ensureServer(_ config: ServerConfig, root: String?) async -> Server? {
         let key = ServerKey(id: config.id, rootURI: Self.rootURI(for: root))
         if let existing = servers[key] {
-            return await existing.initialized ? existing : nil
-        }
-        let server = Server(config: config)
-        servers[key] = server
-        guard await server.start(root: root) else {
-            await server.shutdown()
+            if await existing.isUsable { return existing }
+            await existing.shutdown()
             servers[key] = nil
-            return nil
         }
+        if let inFlight = startTasks[key] { return await inFlight.value }
+
+        let task = Task<Server?, Never> {
+            let server = Server(config: config)
+            guard await server.start(root: root) else {
+                await server.shutdown()
+                return nil
+            }
+            return server
+        }
+        startTasks[key] = task
+        // No suspension between awaiting the task and recording its result, so no
+        // other call can observe a half-cleared state.
+        let server = await task.value
+        startTasks[key] = nil
+        if let server { servers[key] = server }
         return server
     }
 
@@ -360,6 +422,48 @@ actor LSPService {
         return trimmed?.isEmpty == false ? trimmed : nil
     }
 
+    private static func parseSignatureHelp(_ result: Any?) -> LSPSignatureHelp? {
+        guard let dict = result as? [String: Any] else { return nil }
+        let rawSignatures = dict["signatures"] as? [[String: Any]] ?? []
+        let signatures = rawSignatures.compactMap { sig -> LSPSignatureHelp.Signature? in
+            guard let label = sig["label"] as? String, !label.isEmpty else { return nil }
+            let ns = label as NSString
+            var searchStart = 0
+            let parameters = (sig["parameters"] as? [[String: Any]] ?? []).map { entry in
+                if let offsets = entry["label"] as? [Int], offsets.count == 2 {
+                    let start = max(0, min(offsets[0], ns.length))
+                    let end = max(start, min(offsets[1], ns.length))
+                    return LSPSignatureHelp.Parameter(start: start, length: end - start)
+                }
+                if let text = entry["label"] as? String {
+                    let remaining = NSRange(location: searchStart, length: ns.length - searchStart)
+                    var range = ns.range(of: text, options: [], range: remaining)
+                    if range.location == NSNotFound {
+                        range = ns.range(of: text)
+                    }
+                    if range.location != NSNotFound {
+                        searchStart = NSMaxRange(range)
+                        return LSPSignatureHelp.Parameter(start: range.location, length: range.length)
+                    }
+                }
+                return LSPSignatureHelp.Parameter(start: 0, length: 0)
+            }
+            return .init(label: label, parameters: parameters)
+        }
+        guard !signatures.isEmpty else {
+            return LSPSignatureHelp(signatures: [], activeSignature: 0, activeParameter: -1)
+        }
+        let activeSignature = min(max(dict["activeSignature"] as? Int ?? 0, 0), signatures.count - 1)
+        let activeParameter = (rawSignatures[activeSignature]["activeParameter"] as? Int)
+            ?? (dict["activeParameter"] as? Int)
+            ?? -1
+        return LSPSignatureHelp(
+            signatures: signatures,
+            activeSignature: activeSignature,
+            activeParameter: activeParameter
+        )
+    }
+
     private static func resolveExecutablePath(for config: ServerConfig) -> String? {
         let command: String
         if let probe = config.probe {
@@ -401,6 +505,16 @@ private actor Server {
     private var openVersions: [String: Int] = [:]
     private var lastText: [String: String] = [:]
     private var inbox = Data()
+    // Serializes stdout chunks into `ingest` in arrival order. A per-chunk
+    // `Task { ingest }` does NOT preserve order, which corrupts the JSON-RPC
+    // framing under a burst (e.g. response + large publishDiagnostics) and
+    // permanently desyncs the stream — every later request then times out.
+    private var inboxContinuation: AsyncStream<Data>.Continuation?
+    private var readerTask: Task<Void, Never>?
+
+    var isUsable: Bool {
+        initialized && !failed && process?.isRunning == true
+    }
 
     init(config: LSPService.ServerConfig) {
         self.config = config
@@ -423,10 +537,19 @@ private actor Server {
         proc.standardOutput = outPipe
         proc.standardError = FileHandle.nullDevice
 
-        outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+        // Feed stdout through an ordered AsyncStream so chunks reach `ingest` in
+        // exactly the order they arrived — see note on `inboxContinuation`.
+        let (stream, continuation) = AsyncStream<Data>.makeStream()
+        inboxContinuation = continuation
+        readerTask = Task { [weak self] in
+            for await chunk in stream {
+                await self?.ingest(chunk)
+            }
+        }
+        outPipe.fileHandleForReading.readabilityHandler = { handle in
             let data = handle.availableData
             guard !data.isEmpty else { return }
-            Task { await self?.ingest(data) }
+            continuation.yield(data)
         }
 
         do { try proc.run() } catch {
@@ -445,6 +568,7 @@ private actor Server {
             "capabilities": [
                 "textDocument": [
                     "completion": ["completionItem": ["snippetSupport": false]],
+                    "signatureHelp": ["signatureInformation": ["parameterInformation": ["labelOffsetSupport": true]]],
                     "publishDiagnostics": ["relatedInformation": false]
                 ]
             ]
@@ -497,6 +621,10 @@ private actor Server {
             notify(method: "exit", params: [:])
         }
         outHandle?.readabilityHandler = nil
+        inboxContinuation?.finish()
+        inboxContinuation = nil
+        readerTask?.cancel()
+        readerTask = nil
         if process.isRunning { process.terminate() }
         LSPProcessRegistry.shared.unregister(process)
         self.process = nil
@@ -541,15 +669,31 @@ private actor Server {
 
     @discardableResult
     private func send(message: [String: Any]) -> Bool {
-        guard let stdin, let body = try? JSONSerialization.data(withJSONObject: message) else { return false }
+        guard process?.isRunning == true,
+              let stdin,
+              let body = try? JSONSerialization.data(withJSONObject: message) else {
+            markFailed()
+            return false
+        }
         var frame = Data("Content-Length: \(body.count)\r\n\r\n".utf8)
         frame.append(body)
         do {
             try stdin.write(contentsOf: frame)
             return true
         } catch {
+            markFailed()
             return false
         }
+    }
+
+    private func markFailed() {
+        guard !failed else { return }
+        failed = true
+        initialized = false
+        if let stdin { try? stdin.close() }
+        self.stdin = nil
+        for (_, continuation) in pending { continuation.resume(returning: nil) }
+        pending.removeAll()
     }
 
     private func ingest(_ data: Data) {
@@ -590,7 +734,11 @@ private actor Server {
         default: .note
         }
         let message = (raw["message"] as? String) ?? ""
-        return Diagnostic(line: line + 1, column: character + 1, severity: severity, message: message)
+        let end = range["end"] as? [String: Any]
+        let endLine = (end?["line"] as? Int).map { $0 + 1 }
+        let endColumn = (end?["character"] as? Int).map { $0 + 1 }
+        let source = (raw["source"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        return Diagnostic(line: line + 1, column: character + 1, endLine: endLine, endColumn: endColumn, severity: severity, message: message, source: source)
     }
 
     private func extractMessage() -> Data? {

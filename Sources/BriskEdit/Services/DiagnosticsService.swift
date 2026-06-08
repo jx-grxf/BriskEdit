@@ -10,8 +10,16 @@ struct Diagnostic: Sendable, Hashable, Identifiable {
 
     let line: Int
     let column: Int
+    /// End of the finding's range (1-based, exclusive column), when the source
+    /// provides one — LSP carries a real range, the single-file clang/swiftc
+    /// fallback only a point. `nil` means "underline the token at the start".
+    var endLine: Int? = nil
+    var endColumn: Int? = nil
     let severity: Severity
     let message: String
+    /// Server/tool that produced the finding (e.g. "clang", "swiftc"), shown in
+    /// the hover like VS Code's `C/C++(165)` source tag. Optional.
+    var source: String? = nil
 
     var id: String { "\(line):\(column):\(severity):\(message)" }
 }
@@ -39,29 +47,30 @@ enum DiagnosticsService {
 
             let command = spec.command(staged.path, directory.path)
             guard let output = runCapturingStderr(command) else { return nil }
-            return parse(output, filename: staged.lastPathComponent)
+            return parse(output, filename: staged.lastPathComponent, source: spec.source)
         }.value
     }
 
     private struct Spec {
         let command: (_ file: String, _ dir: String) -> String
+        let source: String
     }
 
     private static func spec(for language: SourceLanguage) -> Spec? {
         let q = RunService.shellQuote
         switch language {
         case .c:
-            return Spec { file, dir in
+            return Spec(command: { file, dir in
                 "xcrun clang -fsyntax-only -fno-color-diagnostics -Wall -DprintDih=printf -I \(q(dir)) \(q(file))"
-            }
+            }, source: "clang")
         case .cpp:
-            return Spec { file, dir in
+            return Spec(command: { file, dir in
                 "xcrun clang++ -std=c++20 -fsyntax-only -fno-color-diagnostics -Wall -I \(q(dir)) \(q(file))"
-            }
+            }, source: "clang")
         case .swift:
-            return Spec { file, _ in
+            return Spec(command: { file, _ in
                 "xcrun swiftc -typecheck -no-color-diagnostics \(q(file))"
-            }
+            }, source: "swiftc")
         default:
             return nil
         }
@@ -73,7 +82,7 @@ enum DiagnosticsService {
         options: [.anchorsMatchLines]
     )
 
-    private static func parse(_ output: String, filename: String) -> [Diagnostic] {
+    private static func parse(_ output: String, filename: String, source: String) -> [Diagnostic] {
         guard let regex = lineRegex else { return [] }
         var diagnostics: [Diagnostic] = []
         regex.enumerateMatches(in: output, range: NSRange(output.startIndex..., in: output)) { match, _, _ in
@@ -90,7 +99,7 @@ enum DiagnosticsService {
             case "warning": .warning
             default: .note
             }
-            diagnostics.append(Diagnostic(line: line, column: col, severity: severity, message: group(5)))
+            diagnostics.append(Diagnostic(line: line, column: col, severity: severity, message: group(5), source: source))
         }
         return diagnostics
     }

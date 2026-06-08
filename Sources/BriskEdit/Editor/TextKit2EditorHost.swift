@@ -19,6 +19,17 @@ final class BriskCodeTextView: NSTextView {
     var canFormatDocument: () -> Bool = { false }
     private var hoverTrackingArea: NSTrackingArea?
 
+    /// Resolved diagnostic spans (character ranges) with severity, drawn as wavy
+    /// underlines under the offending text — the VS Code red/yellow squiggle.
+    private var diagnosticUnderlines: [(range: NSRange, severity: Diagnostic.Severity)] = []
+    var diagnosticErrorColor: NSColor = .systemRed
+    var diagnosticWarningColor: NSColor = .systemYellow
+
+    func setDiagnosticUnderlines(_ underlines: [(range: NSRange, severity: Diagnostic.Severity)]) {
+        diagnosticUnderlines = underlines
+        needsDisplay = true
+    }
+
     override var isOpaque: Bool { true }
 
     override func updateTrackingAreas() {
@@ -97,6 +108,65 @@ final class BriskCodeTextView: NSTextView {
         let became = super.becomeFirstResponder()
         if became { onBecomeFirstResponder?() }
         return became
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        drawDiagnosticUnderlines(in: dirtyRect)
+    }
+
+    /// Paints a wavy underline beneath every diagnostic span that intersects the
+    /// dirty rect. Uses TextKit 2 segment enumeration so multi-line spans and
+    /// wrapped lines each get their own squiggle, in the text's own coordinates
+    /// (scrolls correctly, read-only — never touches layout).
+    private func drawDiagnosticUnderlines(in dirtyRect: NSRect) {
+        guard !diagnosticUnderlines.isEmpty,
+              let layoutManager = textLayoutManager,
+              let contentManager = layoutManager.textContentManager else { return }
+        let documentStart = contentManager.documentRange.location
+        let origin = textContainerOrigin
+        let length = (string as NSString).length
+
+        for underline in diagnosticUnderlines {
+            let range = underline.range
+            guard range.location >= 0, range.length > 0, NSMaxRange(range) <= length,
+                  let start = contentManager.location(documentStart, offsetBy: range.location),
+                  let end = contentManager.location(start, offsetBy: range.length),
+                  let textRange = NSTextRange(location: start, end: end) else { continue }
+            let color = underline.severity == .warning ? diagnosticWarningColor : diagnosticErrorColor
+            layoutManager.enumerateTextSegments(in: textRange, type: .standard, options: []) { _, frame, _, _ in
+                var rect = frame
+                rect.origin.x += origin.x
+                rect.origin.y += origin.y
+                guard rect.width > 0, rect.intersects(dirtyRect) else { return true }
+                Self.drawSquiggle(under: rect, color: color)
+                return true
+            }
+        }
+    }
+
+    /// Draws a 2px-amplitude sine-ish squiggle along the bottom edge of `rect`.
+    private static func drawSquiggle(under rect: NSRect, color: NSColor) {
+        let amplitude: CGFloat = 1.4
+        let wavelength: CGFloat = 4
+        let baseline = rect.maxY - amplitude
+        let path = NSBezierPath()
+        path.lineWidth = 1
+        path.move(to: NSPoint(x: rect.minX, y: baseline))
+        var x = rect.minX
+        var up = true
+        while x < rect.maxX {
+            let nextX = min(x + wavelength / 2, rect.maxX)
+            let midX = (x + nextX) / 2
+            let controlY = baseline + (up ? amplitude : -amplitude)
+            path.curve(to: NSPoint(x: nextX, y: baseline),
+                       controlPoint1: NSPoint(x: midX, y: controlY),
+                       controlPoint2: NSPoint(x: midX, y: controlY))
+            x = nextX
+            up.toggle()
+        }
+        color.setStroke()
+        path.stroke()
     }
 }
 
@@ -343,6 +413,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             coordinator.minimap?.invalidateContent()
         }
         coordinator.gutter?.setDiagnostics(document.diagnostics)
+        coordinator.refreshDiagnosticUnderlines()
         coordinator.applyPendingReveal()
     }
 
@@ -415,6 +486,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         let folding = FoldingController()
         private let hoverPanel = HoverPanel()
         private var hoverWork: DispatchWorkItem?
+        private let signaturePanel = SignatureHelpPanel()
+        private var signatureWork: DispatchWorkItem?
         private var formatTask: Task<Void, Never>?
         private var hoverIndex = -1
         var showHoverTooltips = true
@@ -449,6 +522,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             gutter?.refresh()
             minimap?.refresh()
             hideHover()
+            hideSignatureHelp()
         }
 
         @objc private func gitMaybeChanged() {
@@ -476,7 +550,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
             scheduleGitDiff()
             scheduleLSP(in: textView)
             updateCompletionPopup(in: textView)
+            scheduleSignatureHelp(in: textView)
             gutter?.refresh()
+            refreshDiagnosticUnderlines()
             scheduleMinimapRebuild()
             hideHover()
         }
@@ -491,6 +567,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
             } else {
                 popup.hide()
             }
+            // Moving the caret between arguments should refresh the active
+            // parameter; leaving the call dismisses the hint.
+            scheduleSignatureHelp(in: textView)
         }
 
         func dismissCompletions() {
@@ -532,8 +611,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// type/docs in a floating panel. Cancelled by movement, edits and scroll.
         func scheduleHover(at point: NSPoint) {
             hoverWork?.cancel()
-            guard showHoverTooltips else { hoverPanel.hide(); return }
-            guard let textView, document.fileURL != nil, LSPService.config(for: document.language) != nil else { return }
+            guard showHoverTooltips, let textView else { hoverPanel.hide(); return }
+            // Hover works for diagnostics (squiggles) even without a language
+            // server, so don't gate scheduling on the LSP config here.
             let work = DispatchWorkItem { [weak self] in self?.performHover(at: point, in: textView) }
             hoverWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.45, execute: work)
@@ -546,10 +626,22 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         private func performHover(at point: NSPoint, in textView: NSTextView) {
-            guard let url = document.fileURL else { return }
             let ns = textView.string as NSString
             let index = textView.characterIndexForInsertion(at: point)
             guard index >= 0, index < ns.length, index != hoverIndex else { return }
+
+            // Diagnostics win: hovering an underlined error/warning shows its
+            // message right away (the VS Code error popover), no server needed.
+            let diags = diagnostics(at: index)
+            if !diags.isEmpty {
+                let rect = textView.firstRect(forCharacterRange: NSRange(location: index, length: 1), actualRange: nil)
+                hoverIndex = index
+                hoverPanel.show(text: Self.formatDiagnostics(diags), at: rect, theme: theme)
+                return
+            }
+
+            // Otherwise show LSP hover (type/docs) when a server is configured.
+            guard let url = document.fileURL, LSPService.config(for: document.language) != nil else { hoverPanel.hide(); return }
             let (line, character) = Self.lspPosition(in: ns, location: index)
             let language = document.language
             let uri = url.absoluteString
@@ -563,6 +655,364 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 self.hoverIndex = index
                 self.hoverPanel.show(text: info, at: rect, theme: self.theme)
             }
+        }
+
+        /// Formats one or more diagnostics for the hover popover, e.g.
+        /// "Error: too few arguments  (clang)".
+        private static func formatDiagnostics(_ diags: [Diagnostic]) -> String {
+            diags.map { d in
+                let label = switch d.severity {
+                case .error: "Error"
+                case .warning: "Warning"
+                case .note: "Note"
+                }
+                let tag = d.source.map { "  (\($0))" } ?? ""
+                return "\(label): \(d.message)\(tag)"
+            }.joined(separator: "\n")
+        }
+
+        func hideSignatureHelp() {
+            signatureWork?.cancel()
+            signaturePanel.hide()
+        }
+
+        /// Debounced LSP signature help: while the caret sits inside a call's
+        /// argument list, show the function signature with the active parameter
+        /// bolded (VS Code-style). Cheap local paren scan gates the request so we
+        /// only hit the server when actually inside a call.
+        private func scheduleSignatureHelp(in textView: NSTextView) {
+            signatureWork?.cancel()
+            guard document.fileURL != nil, LSPService.config(for: document.language) != nil else { signaturePanel.hide(); return }
+            let selection = textView.selectedRange()
+            guard selection.length == 0,
+                  Self.isInsideCall(textView.string as NSString, caret: selection.location) != nil else {
+                signaturePanel.hide(); return
+            }
+            let work = DispatchWorkItem { [weak self] in self?.requestSignatureHelp(in: textView) }
+            signatureWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+        }
+
+        private func requestSignatureHelp(in textView: NSTextView) {
+            guard let url = document.fileURL else { return }
+            let ns = textView.string as NSString
+            let location = min(max(textView.selectedRange().location, 0), ns.length)
+            let (line, character) = Self.lspPosition(in: ns, location: location)
+            let language = document.language
+            let uri = url.absoluteString
+            let text = textView.string
+            let root = lspRootPath(for: url)
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                let signature = await LSPService.shared.signatureHelp(language: language, uri: uri, text: text, line: line, character: character, root: root)
+                guard let tv = self.textView,
+                      let call = Self.isInsideCall(tv.string as NSString, caret: tv.selectedRange().location) else {
+                    self.signaturePanel.hide(); return
+                }
+                // clangd returns empty `signatures` while the surrounding code is
+                // too broken to resolve the call. Recover declarations from the
+                // live buffer before falling back to the last sticky result.
+                let resolved: LSPSignatureHelp?
+                if let signature, !signature.signatures.isEmpty {
+                    resolved = signature
+                } else {
+                    resolved = Self.localSignatureHelp(in: tv.string, call: call)
+                }
+                guard let resolved, !resolved.signatures.isEmpty else { return }
+                let caretRect = tv.firstRect(forCharacterRange: NSRange(location: tv.selectedRange().location, length: 0), actualRange: nil)
+                self.signaturePanel.show(signature: resolved, at: caretRect, theme: self.theme)
+            }
+        }
+
+        private struct CallContext {
+            let identifier: String
+            let openParen: Int
+            let activeParameter: Int
+        }
+
+        /// Returns the innermost call containing the caret, including the callee
+        /// name and active argument derived entirely from the current buffer.
+        private static func isInsideCall(_ ns: NSString, caret: Int) -> CallContext? {
+            let open = UInt16(UnicodeScalar("(").value)
+            let close = UInt16(UnicodeScalar(")").value)
+            let semicolon = UInt16(UnicodeScalar(";").value)
+            let braceOpen = UInt16(UnicodeScalar("{").value)
+            let braceClose = UInt16(UnicodeScalar("}").value)
+            var depth = 0
+            var i = min(caret, ns.length) - 1
+            let limit = max(0, caret - 4000)
+            while i >= limit {
+                switch ns.character(at: i) {
+                case close: depth += 1
+                case open:
+                    if depth == 0 {
+                        guard let identifier = identifier(before: i, in: ns) else { return nil }
+                        return CallContext(
+                            identifier: identifier,
+                            openParen: i,
+                            activeParameter: activeParameter(in: ns, after: i, caret: caret)
+                        )
+                    }
+                    depth -= 1
+                case semicolon, braceOpen, braceClose: return nil
+                default: break
+                }
+                i -= 1
+            }
+            return nil
+        }
+
+        private static func identifier(before openParen: Int, in ns: NSString) -> String? {
+            var end = openParen
+            while end > 0, isWhitespace(ns.character(at: end - 1)) { end -= 1 }
+            var start = end
+            while start > 0, isIdentifierCharacter(ns.character(at: start - 1)) { start -= 1 }
+            guard start < end, !isASCIIDigit(ns.character(at: start)) else { return nil }
+            return ns.substring(with: NSRange(location: start, length: end - start))
+        }
+
+        private static func activeParameter(in ns: NSString, after openParen: Int, caret: Int) -> Int {
+            let end = min(max(caret, openParen + 1), ns.length)
+            var parenDepth = 0
+            var bracketDepth = 0
+            var braceDepth = 0
+            var angleDepth = 0
+            var quote: unichar?
+            var escaped = false
+            var active = 0
+            var i = openParen + 1
+            while i < end {
+                let character = ns.character(at: i)
+                if quote != nil {
+                    if escaped {
+                        escaped = false
+                    } else if character == 92 {
+                        escaped = true
+                    } else if character == quote {
+                        quote = nil
+                    }
+                } else {
+                    switch character {
+                    case 34, 39: quote = character
+                    case 40: parenDepth += 1
+                    case 41: parenDepth = max(0, parenDepth - 1)
+                    case 91: bracketDepth += 1
+                    case 93: bracketDepth = max(0, bracketDepth - 1)
+                    case 123: braceDepth += 1
+                    case 125: braceDepth = max(0, braceDepth - 1)
+                    case 60: angleDepth += 1
+                    case 62: angleDepth = max(0, angleDepth - 1)
+                    case 44 where parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 && angleDepth == 0: active += 1
+                    default: break
+                    }
+                }
+                i += 1
+            }
+            return active
+        }
+
+        /// Builds signature help from prototypes and definition headers in the
+        /// live buffer. This is intentionally conservative so ordinary calls are
+        /// not mistaken for declarations when clangd is recovering from errors.
+        private static func localSignatureHelp(in text: String, call: CallContext) -> LSPSignatureHelp? {
+            let ns = text as NSString
+            var searchStart = 0
+            var seenLabels = Set<String>()
+            var signatures: [LSPSignatureHelp.Signature] = []
+
+            while searchStart < ns.length {
+                let searchRange = NSRange(location: searchStart, length: ns.length - searchStart)
+                let match = ns.range(of: call.identifier, options: [], range: searchRange)
+                guard match.location != NSNotFound else { break }
+                searchStart = NSMaxRange(match)
+
+                guard isIdentifierBoundary(before: match.location, in: ns),
+                      isIdentifierBoundary(after: NSMaxRange(match), in: ns) else { continue }
+                var cursor = NSMaxRange(match)
+                skipWhitespace(in: ns, cursor: &cursor)
+                guard cursor < ns.length, ns.character(at: cursor) == 40,
+                      cursor != call.openParen,
+                      let closeParen = matchingParen(in: ns, openParen: cursor) else { continue }
+
+                var terminator = closeParen + 1
+                skipWhitespace(in: ns, cursor: &terminator)
+                guard terminator < ns.length,
+                      ns.character(at: terminator) == 59 || ns.character(at: terminator) == 123,
+                      declarationPrefix(before: match.location, in: ns) != nil else { continue }
+
+                let parameterRange = NSRange(location: cursor + 1, length: closeParen - cursor - 1)
+                let labels = parameterLabels(in: ns, range: parameterRange)
+                let signature = makeLocalSignature(identifier: call.identifier, parameters: labels)
+                if seenLabels.insert(signature.label).inserted {
+                    signatures.append(signature)
+                }
+            }
+
+            guard !signatures.isEmpty else { return nil }
+            let requiredCount = call.activeParameter + 1
+            let activeSignature = signatures.indices.min { lhs, rhs in
+                signatureScore(signatures[lhs], requiredCount: requiredCount)
+                    < signatureScore(signatures[rhs], requiredCount: requiredCount)
+            } ?? 0
+            return LSPSignatureHelp(
+                signatures: signatures,
+                activeSignature: activeSignature,
+                activeParameter: call.activeParameter
+            )
+        }
+
+        private static func declarationPrefix(before identifier: Int, in ns: NSString) -> String? {
+            var start = identifier
+            while start > 0 {
+                let character = ns.character(at: start - 1)
+                if character == 10 || character == 13 || character == 59 || character == 123 || character == 125 { break }
+                start -= 1
+            }
+            let raw = ns.substring(with: NSRange(location: start, length: identifier - start))
+            let prefix = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !prefix.isEmpty else { return nil }
+
+            let firstWord = prefix.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" }).first.map(String.init)
+            let expressionKeywords: Set<String> = ["return", "if", "for", "while", "switch", "case", "sizeof"]
+            guard firstWord.map({ !expressionKeywords.contains($0) }) ?? false else { return nil }
+            for character in prefix.utf16 {
+                guard isIdentifierCharacter(character) || isWhitespace(character)
+                        || character == 42 || character == 38 || character == 58
+                        || character == 60 || character == 62 || character == 44
+                        || character == 91 || character == 93 else { return nil }
+            }
+            return prefix
+        }
+
+        private static func parameterLabels(in ns: NSString, range: NSRange) -> [String] {
+            guard range.length > 0 else { return [] }
+            var labels: [String] = []
+            var start = range.location
+            var parenDepth = 0
+            var bracketDepth = 0
+            var braceDepth = 0
+            var angleDepth = 0
+            var quote: unichar?
+            var escaped = false
+            let end = NSMaxRange(range)
+            var i = range.location
+
+            func appendLabel(until labelEnd: Int) {
+                let raw = ns.substring(with: NSRange(location: start, length: labelEnd - start))
+                let label = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !label.isEmpty { labels.append(label) }
+            }
+
+            while i < end {
+                let character = ns.character(at: i)
+                if quote != nil {
+                    if escaped {
+                        escaped = false
+                    } else if character == 92 {
+                        escaped = true
+                    } else if character == quote {
+                        quote = nil
+                    }
+                } else {
+                    switch character {
+                    case 34, 39: quote = character
+                    case 40: parenDepth += 1
+                    case 41: parenDepth = max(0, parenDepth - 1)
+                    case 91: bracketDepth += 1
+                    case 93: bracketDepth = max(0, bracketDepth - 1)
+                    case 123: braceDepth += 1
+                    case 125: braceDepth = max(0, braceDepth - 1)
+                    case 60: angleDepth += 1
+                    case 62: angleDepth = max(0, angleDepth - 1)
+                    case 44 where parenDepth == 0 && bracketDepth == 0 && braceDepth == 0 && angleDepth == 0:
+                        appendLabel(until: i)
+                        start = i + 1
+                    default: break
+                    }
+                }
+                i += 1
+            }
+            appendLabel(until: end)
+            return labels.count == 1 && labels[0] == "void" ? [] : labels
+        }
+
+        private static func makeLocalSignature(identifier: String, parameters: [String]) -> LSPSignatureHelp.Signature {
+            let head = "\(identifier)("
+            var label = head
+            var offset = (head as NSString).length
+            var ranges: [LSPSignatureHelp.Parameter] = []
+            for (index, parameter) in parameters.enumerated() {
+                if index > 0 {
+                    label += ", "
+                    offset += 2
+                }
+                let length = (parameter as NSString).length
+                ranges.append(.init(start: offset, length: length))
+                label += parameter
+                offset += length
+            }
+            label += ")"
+            return .init(label: label, parameters: ranges)
+        }
+
+        private static func matchingParen(in ns: NSString, openParen: Int) -> Int? {
+            var depth = 0
+            var quote: unichar?
+            var escaped = false
+            var i = openParen
+            while i < ns.length {
+                let character = ns.character(at: i)
+                if quote != nil {
+                    if escaped {
+                        escaped = false
+                    } else if character == 92 {
+                        escaped = true
+                    } else if character == quote {
+                        quote = nil
+                    }
+                } else if character == 34 || character == 39 {
+                    quote = character
+                } else if character == 40 {
+                    depth += 1
+                } else if character == 41 {
+                    depth -= 1
+                    if depth == 0 { return i }
+                }
+                i += 1
+            }
+            return nil
+        }
+
+        private static func signatureScore(_ signature: LSPSignatureHelp.Signature, requiredCount: Int) -> Int {
+            if signature.parameters.count >= requiredCount {
+                return signature.parameters.count - requiredCount
+            }
+            return 1_000 + requiredCount - signature.parameters.count
+        }
+
+        private static func skipWhitespace(in ns: NSString, cursor: inout Int) {
+            while cursor < ns.length, isWhitespace(ns.character(at: cursor)) { cursor += 1 }
+        }
+
+        private static func isIdentifierBoundary(before location: Int, in ns: NSString) -> Bool {
+            location == 0 || !isIdentifierCharacter(ns.character(at: location - 1))
+        }
+
+        private static func isIdentifierBoundary(after location: Int, in ns: NSString) -> Bool {
+            location == ns.length || !isIdentifierCharacter(ns.character(at: location))
+        }
+
+        private static func isIdentifierCharacter(_ character: unichar) -> Bool {
+            character == 95 || (character >= 48 && character <= 57)
+                || (character >= 65 && character <= 90) || (character >= 97 && character <= 122)
+        }
+
+        private static func isASCIIDigit(_ character: unichar) -> Bool {
+            character >= 48 && character <= 57
+        }
+
+        private static func isWhitespace(_ character: unichar) -> Bool {
+            character == 9 || character == 10 || character == 13 || character == 32
         }
 
         /// Resolves the definition of the symbol at a character index via the LSP
@@ -674,6 +1124,10 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 updateCompletionPopup(in: textView, minimumPrefix: 0)
                 return true
             case #selector(NSResponder.cancelOperation(_:)):
+                if signaturePanel.isVisible {
+                    hideSignatureHelp()
+                    return true
+                }
                 // Collapse multiple cursors back to a single caret.
                 if textView.selectedRanges.count > 1 {
                     let primary = textView.selectedRanges.last?.rangeValue ?? textView.selectedRange()
@@ -868,9 +1322,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         /// Debounced semantic completion prefetch + buffer sync via the language
-        /// server for any supported language backed by a real path. Completions
-        /// land in `lspItems`; diagnostics arrive asynchronously over the bus.
-        /// Failures are silent — the editor keeps its keyword/buffer fallback.
+        /// server for any supported language backed by a real path. Cancelling
+        /// the prior work item coalesces edit bursts so only the final buffer is
+        /// sent through `didChange`. Failures keep the local completion fallback.
         private func scheduleLSP(in textView: NSTextView) {
             let language = document.language
             guard LSPService.config(for: language) != nil, let url = document.fileURL else {
@@ -900,7 +1354,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 }
             }
             lspWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: work)
         }
 
         /// Starts the language server as soon as a supported file opens, registers
@@ -960,6 +1414,62 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 }
             }
             return (line, character)
+        }
+
+        /// Maps the document's diagnostics to resolved character ranges and hands
+        /// them to the text view to draw as squiggles. Recomputed from the live
+        /// buffer so the underlines track the text between LSP publishes.
+        func refreshDiagnosticUnderlines() {
+            guard let textView = textView as? BriskCodeTextView else { return }
+            let ns = textView.string as NSString
+            let underlines: [(range: NSRange, severity: Diagnostic.Severity)] = document.diagnostics.compactMap { d in
+                guard d.severity != .note, let range = Self.diagnosticRange(for: d, in: ns) else { return nil }
+                return (range, d.severity)
+            }
+            textView.setDiagnosticUnderlines(underlines)
+        }
+
+        /// Resolves a diagnostic's span to a character range: the real end when
+        /// the source gave one (LSP), otherwise the token at the start column
+        /// (the clang/swiftc fallback only reports a point).
+        static func diagnosticRange(for d: Diagnostic, in ns: NSString) -> NSRange? {
+            guard let lineStart = lineStartOffset(in: ns, line1: d.line) else { return nil }
+            let start = min(ns.length, lineStart + max(0, d.column - 1))
+            if let endLine = d.endLine, let endColumn = d.endColumn,
+               let endLineStart = lineStartOffset(in: ns, line1: endLine) {
+                let end = min(ns.length, endLineStart + max(0, endColumn - 1))
+                if end > start { return NSRange(location: start, length: end - start) }
+            }
+            let word = wordRange(at: start, in: ns)
+            if word.length > 0 { return word }
+            let len = min(1, ns.length - start)
+            return len > 0 ? NSRange(location: start, length: len) : nil
+        }
+
+        /// Character offset of the 1-based line's first character, or nil if the
+        /// line is past the end of the buffer.
+        private static func lineStartOffset(in ns: NSString, line1: Int) -> Int? {
+            if line1 <= 1 { return 0 }
+            var lineNo = 1
+            var result: Int?
+            ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines, .substringNotRequired]) { _, _, enclosingRange, stop in
+                lineNo += 1
+                if lineNo == line1 {
+                    result = NSMaxRange(enclosingRange)
+                    stop.pointee = true
+                }
+            }
+            return result
+        }
+
+        /// The diagnostic(s) whose span covers a character index, for the hover.
+        func diagnostics(at index: Int) -> [Diagnostic] {
+            guard let textView else { return [] }
+            let ns = textView.string as NSString
+            return document.diagnostics.filter { d in
+                guard let range = Self.diagnosticRange(for: d, in: ns) else { return false }
+                return NSLocationInRange(index, range) || index == NSMaxRange(range)
+            }
         }
 
         /// Unique identifiers found in the buffer — gives "suggest my own
