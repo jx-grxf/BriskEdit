@@ -7,6 +7,18 @@ struct BriskEditApp: App {
     @State private var preferences = Preferences()
     @State private var updates = UpdateService()
 
+    init() {
+        // Ignore SIGPIPE at the earliest possible point — the `App` initializer
+        // runs at process start, before any window, LSP, formatter, or terminal
+        // pipe exists. Relying on `applicationWillFinishLaunching` alone is unsafe:
+        // under SwiftUI's `NSApplicationDelegateAdaptor` that callback is not
+        // guaranteed to fire, which leaves the default SIGPIPE disposition in
+        // place — so the first write to a peer that closed its pipe (e.g. a
+        // clangd that died on half-typed code) terminates the whole app silently
+        // (SIGPIPE produces no crash report).
+        AppRuntimeSafety.install()
+    }
+
     /// Full visible frame of the main display at launch. Used as the window's
     /// `defaultSize` so SwiftUI's *own* sizing pass targets full-size — the
     /// AppKit `setFrame` enforcement alone lost a race against this pass and the
