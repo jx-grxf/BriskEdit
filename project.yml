@@ -16,7 +16,7 @@ settings:
     SWIFT_UPCOMING_FEATURE_REGION_BASED_ISOLATION: YES
     SWIFT_UPCOMING_FEATURE_INFERRED_SENDABLE_CAPTURES: YES
     ENABLE_USER_SCRIPT_SANDBOXING: NO
-    MARKETING_VERSION: "0.3.4"
+    MARKETING_VERSION: "0.3.5"
     CURRENT_PROJECT_VERSION: "1"
     # Sparkle EdDSA public key (NOT secret — it ships in every binary). This is
     # the project's canonical release key; the matching private key lives only in
