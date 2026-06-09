@@ -95,6 +95,7 @@ struct TerminalPanel: View {
                     TerminalEmulatorView(
                         terminal: terminal,
                         font: preferences.terminalFont,
+                        optionAsMeta: preferences.terminalOptionAsMeta,
                         isActive: isActive
                     )
                     .opacity(isActive ? 1 : 0)
@@ -153,6 +154,7 @@ private struct TerminalSessionChip: View {
 private struct TerminalEmulatorView: NSViewRepresentable {
     @Bindable var terminal: TerminalController
     let font: NSFont
+    let optionAsMeta: Bool
     let isActive: Bool
 
     func makeCoordinator() -> Coordinator {
@@ -163,11 +165,18 @@ private struct TerminalEmulatorView: NSViewRepresentable {
         let view = LocalProcessTerminalView(frame: .zero)
         view.font = font
         context.coordinator.appliedFont = font
+        // Off by default so ⌥ produces layout characters (`@`, `{`, `|`, …) on
+        // international keyboards instead of being hijacked as the Meta modifier.
+        view.optionAsMetaKey = optionAsMeta
         view.configureNativeColors()
         view.nativeBackgroundColor = .textBackgroundColor
         view.nativeForegroundColor = .textColor
         view.caretColor = .controlAccentColor
         view.processDelegate = context.coordinator
+        // Forward the scroll wheel to full-screen TUIs (Claude Code etc.) that
+        // run on the alternate screen, which has no scrollback — see
+        // TerminalScrollForwarder.
+        TerminalScrollForwarder.installIfNeeded()
         // Layer-backed + opaque so AppKit composites the grid in one pass while
         // the panel is being dragged, instead of repainting through the window
         // background — that repaint is what made the terminal flicker on resize.
@@ -192,6 +201,9 @@ private struct TerminalEmulatorView: NSViewRepresentable {
         if context.coordinator.appliedFont != font {
             context.coordinator.appliedFont = font
             view.font = font
+        }
+        if view.optionAsMetaKey != optionAsMeta {
+            view.optionAsMetaKey = optionAsMeta
         }
         if context.coordinator.restartToken != terminal.restartToken {
             let firstStart = context.coordinator.restartToken == nil
@@ -335,5 +347,112 @@ private struct TerminalEmulatorView: NSViewRepresentable {
                 terminal.markTerminated()
             }
         }
+    }
+}
+
+/// Makes the scroll wheel work inside full-screen TUIs (Claude Code, htop, less…).
+///
+/// SwiftTerm's own `scrollWheel` only moves the *scrollback* of the normal
+/// screen. Full-screen apps run on the **alternate screen**, which has no
+/// scrollback, so the wheel does nothing there — and SwiftTerm never forwards
+/// the wheel to the app either. Codex works because it stays on the normal
+/// screen; Claude Code doesn't because it's on the alternate screen.
+///
+/// `scrollWheel` is `public` (not `open`) on the SwiftTerm view, so it can't be
+/// overridden by subclassing. Instead a single app-wide local event monitor (the
+/// same approach as the Ctrl-C caret monitor) intercepts wheel events over a
+/// terminal that is on the alternate screen and forwards them to the program:
+/// proper mouse-wheel events when the app enabled mouse reporting (Claude), or
+/// cursor up/down as a fallback (matching iTerm2's behaviour). Events on the
+/// normal screen are passed straight through so scrollback keeps working.
+@MainActor
+enum TerminalScrollForwarder {
+    private static var installed = false
+    /// Residual trackpad travel (points) carried between precise scroll events so
+    /// a flick is metered into discrete line ticks instead of flooding the app.
+    private static var preciseResidual: CGFloat = 0
+
+    static func installIfNeeded() {
+        guard !installed else { return }
+        installed = true
+        // The handler is `@Sendable`/nonisolated, so we read the (Sendable)
+        // scalars off the event here and resolve the window/view on the main
+        // actor — passing the `NSEvent` itself across that boundary isn't allowed.
+        NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { event in
+            let location = event.locationInWindow
+            let precise = event.hasPreciseScrollingDeltas
+            let scrollingDeltaY = event.scrollingDeltaY
+            let deltaY = event.deltaY
+            let consumed = MainActor.assumeIsolated {
+                forward(locationInWindow: location, precise: precise, scrollingDeltaY: scrollingDeltaY, deltaY: deltaY)
+            }
+            return consumed ? nil : event
+        }
+    }
+
+    /// Returns `true` when the scroll was forwarded to a TUI and should be
+    /// consumed; `false` to let SwiftTerm handle it (normal-screen scrollback).
+    private static func forward(locationInWindow: NSPoint, precise: Bool, scrollingDeltaY: CGFloat, deltaY: CGFloat) -> Bool {
+        guard let root = NSApp.keyWindow?.contentView,
+              let hit = root.hitTest(locationInWindow),
+              let view = enclosingTerminalView(hit) else { return false }
+        let terminal = view.getTerminal()
+        // Normal screen → SwiftTerm scrolls its scrollback (works). Only the
+        // alternate screen needs forwarding.
+        guard terminal.isCurrentBufferAlternate else { return false }
+
+        let (scrollUp, count) = lineTicks(precise: precise, scrollingDeltaY: scrollingDeltaY, deltaY: deltaY)
+        guard count > 0 else { return true }
+
+        if view.allowMouseReporting, terminal.mouseMode != .off {
+            let (col, row) = gridLocation(in: view, locationInWindow: locationInWindow)
+            // Button 4 = wheel up, 5 = wheel down; sendEvent encodes per the
+            // app's active mouse protocol (SGR for modern TUIs).
+            let flags = terminal.encodeButton(button: scrollUp ? 4 : 5, release: false, shift: false, meta: false, control: false)
+            for _ in 0..<count { terminal.sendEvent(buttonFlags: flags, x: col, y: row) }
+        } else {
+            let arrow = scrollUp ? "\u{1b}[A" : "\u{1b}[B"
+            view.send(txt: String(repeating: arrow, count: count))
+        }
+        return true
+    }
+
+    private static func enclosingTerminalView(_ view: NSView) -> LocalProcessTerminalView? {
+        var current: NSView? = view
+        while let node = current {
+            if let terminal = node as? LocalProcessTerminalView { return terminal }
+            current = node.superview
+        }
+        return nil
+    }
+
+    /// (scrollUp, lineCount). Positive wheel/trackpad travel reveals earlier
+    /// content (scroll up); precise deltas are accumulated against a per-line
+    /// threshold so trackpad scrolling stays smooth without overwhelming the app.
+    private static func lineTicks(precise: Bool, scrollingDeltaY: CGFloat, deltaY: CGFloat) -> (up: Bool, count: Int) {
+        if precise {
+            preciseResidual += scrollingDeltaY
+            let perLine: CGFloat = 16
+            let ticks = Int(preciseResidual / perLine)
+            if ticks != 0 { preciseResidual -= CGFloat(ticks) * perLine }
+            return (ticks > 0, abs(ticks))
+        }
+        let lines = Int(abs(deltaY))
+        return (deltaY > 0, min(max(lines, 1), 5))
+    }
+
+    /// 0-based grid cell under the pointer (what `sendEvent` expects).
+    private static func gridLocation(in view: LocalProcessTerminalView, locationInWindow: NSPoint) -> (col: Int, row: Int) {
+        let terminal = view.getTerminal()
+        let cols = max(terminal.cols, 1)
+        let rows = max(terminal.rows, 1)
+        let local = view.convert(locationInWindow, from: nil)
+        let cellWidth = view.bounds.width / CGFloat(cols)
+        let cellHeight = view.bounds.height / CGFloat(rows)
+        guard cellWidth > 0, cellHeight > 0 else { return (0, 0) }
+        let col = min(max(Int(local.x / cellWidth), 0), cols - 1)
+        let yFromTop = view.isFlipped ? local.y : (view.bounds.height - local.y)
+        let row = min(max(Int(yFromTop / cellHeight), 0), rows - 1)
+        return (col, row)
     }
 }

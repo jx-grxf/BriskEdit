@@ -241,6 +241,12 @@ private struct TerminalPreferencesView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Keyboard") {
+                Toggle("Use Option as Meta key", isOn: $prefs.terminalOptionAsMeta)
+                Text("Off: ⌥ types layout characters — needed for `@`, `{`, `}`, `|`, `~` on international layouts (e.g. German ⌥L = @). On: ⌥ acts as Meta (⌥-key sends ESC-key) for Emacs-style shortcuts.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
