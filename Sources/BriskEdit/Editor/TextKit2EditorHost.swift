@@ -343,6 +343,16 @@ struct TextKit2EditorHost: NSViewRepresentable {
         var lastSyncedRevision = 0
         private let popup = CompletionPopup()
         let folding = FoldingController()
+        /// A per-editor undo manager handed to the text view via
+        /// `undoManager(for:)`. Without it, `NSTextView` registers undo with the
+        /// window's *shared* `NSUndoManager`, which outlives this editor — when a
+        /// folder drop swaps the workspace root and tears the tab/editor down, the
+        /// text view is deallocated but its registrations linger in that shared
+        /// manager. A later ⌘Z then sent `_undoRedoTextOperation:` to the freed
+        /// view and crashed (EXC_BAD_ACCESS). Owning the manager here ties its
+        /// lifetime — and the registrations that retain the text view — to the
+        /// coordinator, so undo state dies with the editor.
+        let editorUndoManager = UndoManager()
         private let hoverPanel = HoverPanel()
         private var hoverWork: DispatchWorkItem?
         private let signaturePanel = SignatureHelpPanel()
@@ -374,6 +384,11 @@ struct TextKit2EditorHost: NSViewRepresentable {
         deinit {
             formatTask?.cancel()
             NotificationCenter.default.removeObserver(self)
+        }
+
+        /// Give the text view its own undo manager (see `editorUndoManager`).
+        func undoManager(for view: NSTextView) -> UndoManager? {
+            editorUndoManager
         }
 
         /// Repaints the gutter on scroll/resize, and recomputes the git diff when
