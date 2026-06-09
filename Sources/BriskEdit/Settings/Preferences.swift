@@ -78,6 +78,14 @@ final class Preferences {
     var terminalFontSize: CGFloat {
         didSet { persist() }
     }
+    /// When on, the terminal treats ⌥ (Option) as the Meta modifier (⌥-key sends
+    /// ESC-key). Off by default so Option keeps producing layout characters —
+    /// crucial on international layouts where `@`, `{`, `}`, `|`, `~` live on
+    /// Option combinations (e.g. German ⌥L = `@`). Power users who want Emacs-style
+    /// Meta can turn it on.
+    var terminalOptionAsMeta: Bool {
+        didSet { persist() }
+    }
     /// Experimental: mirror the active file, language and workspace to Discord
     /// as Rich Presence (vscord-style). Off by default; opt-in per machine.
     var discordRichPresence: Bool {
@@ -116,6 +124,7 @@ final class Preferences {
         self.autosave = defaults.bool(forKey: Keys.autosave)
         self.terminalFontName = defaults.string(forKey: Keys.terminalFontName) ?? "MesloLGS Nerd Font"
         self.terminalFontSize = CGFloat(defaults.double(forKey: Keys.terminalFontSize).nonZero ?? 14)
+        self.terminalOptionAsMeta = defaults.object(forKey: Keys.terminalOptionAsMeta) as? Bool ?? false
         self.discordRichPresence = defaults.bool(forKey: Keys.discordRichPresence)
         self.discordShowFileName = defaults.object(forKey: Keys.discordShowFileName) as? Bool ?? true
         self.discordShowWorkspace = defaults.object(forKey: Keys.discordShowWorkspace) as? Bool ?? true
@@ -183,6 +192,7 @@ final class Preferences {
         defaults.set(autosave, forKey: Keys.autosave)
         defaults.set(terminalFontName, forKey: Keys.terminalFontName)
         defaults.set(Double(terminalFontSize), forKey: Keys.terminalFontSize)
+        defaults.set(terminalOptionAsMeta, forKey: Keys.terminalOptionAsMeta)
         defaults.set(discordRichPresence, forKey: Keys.discordRichPresence)
         defaults.set(discordShowFileName, forKey: Keys.discordShowFileName)
         defaults.set(discordShowWorkspace, forKey: Keys.discordShowWorkspace)
@@ -204,6 +214,7 @@ final class Preferences {
         static let autosave = "editor.autosave"
         static let terminalFontName = "terminal.fontName"
         static let terminalFontSize = "terminal.fontSize"
+        static let terminalOptionAsMeta = "terminal.optionAsMeta"
         static let discordRichPresence = "experimental.discordRichPresence"
         static let discordShowFileName = "experimental.discordShowFileName"
         static let discordShowWorkspace = "experimental.discordShowWorkspace"
