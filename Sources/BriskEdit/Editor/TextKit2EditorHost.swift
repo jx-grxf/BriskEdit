@@ -1,175 +1,6 @@
 import AppKit
 import SwiftUI
 
-/// NSTextView subclass that notifies the coordinator when it loses focus, so
-/// the floating completion popup can be dismissed.
-final class BriskCodeTextView: NSTextView {
-    var onResignFirstResponder: (() -> Void)?
-    var onBecomeFirstResponder: (() -> Void)?
-    /// ⌘D — add the next occurrence of the selection as another cursor.
-    var onSelectNextOccurrence: (() -> Void)?
-    /// Go to definition for the symbol at a character index (⌘-click or F12).
-    var onGoToDefinition: ((Int) -> Void)?
-    /// Mouse paused over a point (hover) / left the view.
-    var onHover: ((NSPoint) -> Void)?
-    var onHoverExit: (() -> Void)?
-    /// Reformats the whole buffer with the language's external formatter
-    /// (context menu / ⇧⌥F). Only offered when `canFormatDocument` is true.
-    var onFormatDocument: (() -> Void)?
-    var canFormatDocument: () -> Bool = { false }
-    private var hoverTrackingArea: NSTrackingArea?
-
-    /// Resolved diagnostic spans (character ranges) with severity, drawn as wavy
-    /// underlines under the offending text — the VS Code red/yellow squiggle.
-    private var diagnosticUnderlines: [(range: NSRange, severity: Diagnostic.Severity)] = []
-    var diagnosticErrorColor: NSColor = .systemRed
-    var diagnosticWarningColor: NSColor = .systemYellow
-
-    func setDiagnosticUnderlines(_ underlines: [(range: NSRange, severity: Diagnostic.Severity)]) {
-        diagnosticUnderlines = underlines
-        needsDisplay = true
-    }
-
-    override var isOpaque: Bool { true }
-
-    override func updateTrackingAreas() {
-        super.updateTrackingAreas()
-        if let hoverTrackingArea { removeTrackingArea(hoverTrackingArea) }
-        let area = NSTrackingArea(rect: bounds, options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect], owner: self, userInfo: nil)
-        addTrackingArea(area)
-        hoverTrackingArea = area
-    }
-
-    override func mouseMoved(with event: NSEvent) {
-        super.mouseMoved(with: event)
-        onHover?(convert(event.locationInWindow, from: nil))
-    }
-
-    override func mouseExited(with event: NSEvent) {
-        super.mouseExited(with: event)
-        onHoverExit?()
-    }
-
-    override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if flags == .command, event.charactersIgnoringModifiers == "d" {
-            onSelectNextOccurrence?()
-            return true
-        }
-        // ⇧⌥F — Format Document (matches VS Code's shortcut).
-        if !event.isARepeat,
-           flags == [.shift, .option], event.charactersIgnoringModifiers?.lowercased() == "f",
-           canFormatDocument() {
-            onFormatDocument?()
-            return true
-        }
-        return super.performKeyEquivalent(with: event)
-    }
-
-    override func menu(for event: NSEvent) -> NSMenu? {
-        let menu = super.menu(for: event) ?? NSMenu()
-        if canFormatDocument() {
-            let item = NSMenuItem(title: "Format Document", action: #selector(formatDocumentAction), keyEquivalent: "f")
-            item.keyEquivalentModifierMask = [.shift, .option]
-            item.target = self
-            menu.insertItem(item, at: 0)
-            menu.insertItem(.separator(), at: 1)
-        }
-        return menu
-    }
-
-    @objc private func formatDocumentAction() {
-        onFormatDocument?()
-    }
-
-    override func keyDown(with event: NSEvent) {
-        if event.keyCode == 111 { // F12
-            onGoToDefinition?(selectedRange().location)
-            return
-        }
-        super.keyDown(with: event)
-    }
-
-    override func mouseDown(with event: NSEvent) {
-        if event.modifierFlags.contains(.command) {
-            let point = convert(event.locationInWindow, from: nil)
-            onGoToDefinition?(characterIndexForInsertion(at: point))
-            return
-        }
-        super.mouseDown(with: event)
-    }
-
-    override func resignFirstResponder() -> Bool {
-        onResignFirstResponder?()
-        return super.resignFirstResponder()
-    }
-
-    override func becomeFirstResponder() -> Bool {
-        let became = super.becomeFirstResponder()
-        if became { onBecomeFirstResponder?() }
-        return became
-    }
-
-    override func draw(_ dirtyRect: NSRect) {
-        super.draw(dirtyRect)
-        drawDiagnosticUnderlines(in: dirtyRect)
-    }
-
-    /// Paints a wavy underline beneath every diagnostic span that intersects the
-    /// dirty rect. Uses TextKit 2 segment enumeration so multi-line spans and
-    /// wrapped lines each get their own squiggle, in the text's own coordinates
-    /// (scrolls correctly, read-only — never touches layout).
-    private func drawDiagnosticUnderlines(in dirtyRect: NSRect) {
-        guard !diagnosticUnderlines.isEmpty,
-              let layoutManager = textLayoutManager,
-              let contentManager = layoutManager.textContentManager else { return }
-        let documentStart = contentManager.documentRange.location
-        let origin = textContainerOrigin
-        let length = (string as NSString).length
-
-        for underline in diagnosticUnderlines {
-            let range = underline.range
-            guard range.location >= 0, range.length > 0, NSMaxRange(range) <= length,
-                  let start = contentManager.location(documentStart, offsetBy: range.location),
-                  let end = contentManager.location(start, offsetBy: range.length),
-                  let textRange = NSTextRange(location: start, end: end) else { continue }
-            let color = underline.severity == .warning ? diagnosticWarningColor : diagnosticErrorColor
-            layoutManager.enumerateTextSegments(in: textRange, type: .standard, options: []) { _, frame, _, _ in
-                var rect = frame
-                rect.origin.x += origin.x
-                rect.origin.y += origin.y
-                guard rect.width > 0, rect.intersects(dirtyRect) else { return true }
-                Self.drawSquiggle(under: rect, color: color)
-                return true
-            }
-        }
-    }
-
-    /// Draws a 2px-amplitude sine-ish squiggle along the bottom edge of `rect`.
-    private static func drawSquiggle(under rect: NSRect, color: NSColor) {
-        let amplitude: CGFloat = 1.4
-        let wavelength: CGFloat = 4
-        let baseline = rect.maxY - amplitude
-        let path = NSBezierPath()
-        path.lineWidth = 1
-        path.move(to: NSPoint(x: rect.minX, y: baseline))
-        var x = rect.minX
-        var up = true
-        while x < rect.maxX {
-            let nextX = min(x + wavelength / 2, rect.maxX)
-            let midX = (x + nextX) / 2
-            let controlY = baseline + (up ? amplitude : -amplitude)
-            path.curve(to: NSPoint(x: nextX, y: baseline),
-                       controlPoint1: NSPoint(x: midX, y: controlY),
-                       controlPoint2: NSPoint(x: midX, y: controlY))
-            x = nextX
-            up.toggle()
-        }
-        color.setStroke()
-        path.stroke()
-    }
-}
-
 private final class EditorBackingView: NSView {
     var fillColor: NSColor {
         didSet {
@@ -1120,6 +951,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
             case #selector(NSResponder.insertNewline(_:)):
                 insertSmartNewline(in: textView)
                 return true
+            case #selector(NSResponder.deleteBackward(_:)):
+                return smartOutdent(in: textView)
             case #selector(NSResponder.complete(_:)):
                 updateCompletionPopup(in: textView, minimumPrefix: 0)
                 return true
@@ -1502,10 +1335,36 @@ struct TextKit2EditorHost: NSViewRepresentable {
             "TODO:", "MARK:", "FIXME:", "main", "printf", "scanf", "return", "true", "false", "NULL", "nil"
         ]
 
+        /// Backspace inside a line's leading whitespace removes a whole indent
+        /// level (back to the previous tab stop) in one keystroke instead of one
+        /// space at a time. Engages only in spaces mode, with a single empty
+        /// caret sitting in pure leading whitespace; every other case returns
+        /// false so AppKit's default delete (selection delete, line-join,
+        /// tab-mode) runs unchanged.
+        private func smartOutdent(in textView: NSTextView) -> Bool {
+            guard theme.usesSpacesForTabs,
+                  textView.selectedRanges.count == 1 else { return false }
+            let selection = textView.selectedRange()
+            guard selection.length == 0, selection.location > 0 else { return false }
+            let nsString = textView.string as NSString
+            let lineStart = nsString.lineRange(for: NSRange(location: selection.location, length: 0)).location
+            let width = selection.location - lineStart
+            guard width > 0 else { return false }            // caret at line start -> default join
+            for offset in lineStart..<selection.location {   // only when caret is in leading whitespace
+                let c = nsString.character(at: offset)
+                guard c == 0x20 || c == 0x09 else { return false }
+            }
+            let tab = max(theme.tabWidth, 1)
+            let removal = width - ((width - 1) / tab) * tab  // distance to previous tab stop (e.g. 15->3, 12->4)
+            textView.insertText("", replacementRange: NSRange(location: selection.location - removal, length: removal))
+            return true
+        }
+
         private func insertSmartNewline(in textView: NSTextView) {
             let nsString = textView.string as NSString
             let selection = textView.selectedRange()
-            let lineStart = nsString.lineRange(for: NSRange(location: selection.location, length: 0)).location
+            let lineRange = nsString.lineRange(for: NSRange(location: selection.location, length: 0))
+            let lineStart = lineRange.location
             var offset = lineStart
             var indent = ""
             while offset < selection.location {
@@ -1530,252 +1389,36 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 return
             }
 
+            // If the line being left holds only whitespace (auto-indent the user
+            // never typed into), drop that phantom indent as part of this edit so
+            // the abandoned line stays empty instead of accumulating trailing
+            // spaces. The new line still gets `indent`, so the caret column is
+            // unchanged.
+            var replacement = selection
+            if offset == selection.location, selection.length == 0,
+               isTrailingWhitespaceOnly(nsString, from: selection.location, lineEnd: NSMaxRange(lineRange)) {
+                replacement = NSRange(location: lineStart, length: selection.location - lineStart)
+            }
+
             var insertion = "\n" + indent
             if let prev = previous, bracketPairs[prev] != nil || prev == ":" {
                 insertion += indentUnit
             }
-            textView.insertText(insertion, replacementRange: selection)
-        }
-    }
-}
-
-@MainActor
-private enum TextKit2SyntaxHighlighter {
-    private static let maxHighlightedCharacters = 500_000
-
-    /// Compiled-regex cache so patterns aren't rebuilt on every keystroke.
-    private static var regexCache: [String: NSRegularExpression] = [:]
-
-    private static func regex(_ pattern: String, options: NSRegularExpression.Options) -> NSRegularExpression? {
-        let key = "\(options.rawValue)|\(pattern)"
-        if let cached = regexCache[key] { return cached }
-        guard let compiled = try? NSRegularExpression(pattern: pattern, options: options) else { return nil }
-        regexCache[key] = compiled
-        return compiled
-    }
-
-    /// Paints display-only color via the layout manager's *rendering attributes*,
-    /// which (unlike text-storage edits) never invalidate layout — the key to
-    /// flicker-free highlighting on TextKit 2.
-    @MainActor
-    struct RenderingPainter {
-        let layoutManager: NSTextLayoutManager
-        let contentManager: NSTextContentManager
-        let documentStart: NSTextLocation
-
-        init?(textView: NSTextView) {
-            guard let layoutManager = textView.textLayoutManager,
-                  let contentManager = layoutManager.textContentManager else { return nil }
-            self.layoutManager = layoutManager
-            self.contentManager = contentManager
-            self.documentStart = contentManager.documentRange.location
+            textView.insertText(insertion, replacementRange: replacement)
         }
 
-        /// Drops all color overrides so untouched tokens fall back to the storage's
-        /// base foreground color.
-        func reset() {
-            layoutManager.invalidateRenderingAttributes(for: contentManager.documentRange)
-        }
-
-        func paint(_ attributes: [NSAttributedString.Key: Any], range: NSRange) {
-            guard let start = contentManager.location(documentStart, offsetBy: range.location),
-                  let end = contentManager.location(start, offsetBy: range.length),
-                  let textRange = NSTextRange(location: start, end: end) else { return }
-            layoutManager.setRenderingAttributes(attributes, for: textRange)
-        }
-    }
-
-    /// Recolors the whole document using TextKit 2 **rendering attributes**
-    /// (display-only color overrides on the layout manager) instead of mutating
-    /// the text storage. Storage edits invalidate layout fragments — even for
-    /// off-screen text — which made the viewport churn and the visible text
-    /// flash/jitter (a line popping in and out) while typing. Rendering
-    /// attributes never touch layout, so highlighting is invisible to the
-    /// viewport controller: no flash, no jitter, and we can color the entire
-    /// document again (correct for multi-line comments/strings).
-    ///
-    /// Skipped for plain text and very large files, which then render with the
-    /// text view's uniform color.
-    static func apply(to textView: NSTextView, language: SourceLanguage, theme: EditorTheme) {
-        guard let painter = RenderingPainter(textView: textView),
-              let storage = textView.textContentStorage?.textStorage else { return }
-        // Clear previous colors first so removed tokens fall back to the base
-        // foreground (the text storage's own color).
-        painter.reset()
-        let length = storage.length
-        guard length > 0, length <= maxHighlightedCharacters, language != .plainText else {
-            textView.typingAttributes = baseAttributes(theme: theme)
-            return
-        }
-        let source = storage.string as NSString
-        let range = NSRange(location: 0, length: length)
-        // Order matters: later passes win on overlapping ranges, so tokens that
-        // must always survive (strings, comments) run last.
-        highlightFunctions(with: painter, source: source, range: range, language: language, color: theme.function)
-        highlightTypes(with: painter, source: source, range: range, language: language, color: theme.type)
-        highlightKeywords(with: painter, source: source, range: range, language: language, theme: theme)
-        highlightNumbers(with: painter, source: source, range: range, color: theme.number)
-        highlightPreprocessor(with: painter, source: source, range: range, language: language, color: theme.preprocessor)
-        highlightStrings(with: painter, source: source, range: range, color: theme.string)
-        highlightComments(with: painter, source: source, range: range, language: language, color: theme.comment)
-        textView.typingAttributes = baseAttributes(theme: theme)
-    }
-
-    private static func baseAttributes(theme: EditorTheme) -> [NSAttributedString.Key: Any] {
-        [
-            .font: theme.nsFont,
-            .foregroundColor: theme.foreground,
-            .paragraphStyle: theme.paragraphStyle
-        ]
-    }
-
-    private static func highlightComments(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
-        let patterns: [String]
-        switch language {
-        case .markdown, .html, .xml:
-            patterns = ["<!--(?s:.*?)-->"]
-        case .python, .shell, .yaml, .ruby, .perl, .toml:
-            patterns = ["#.*$"]
-        case .ini:
-            patterns = ["[#;].*$"]
-        case .lua:
-            patterns = ["--\\[\\[(?s:.*?)\\]\\]", "--.*$"]
-        case .sql:
-            patterns = ["--.*$", "/\\*(?s:.*?)\\*/"]
-        default:
-            patterns = ["//.*$", "/\\*(?s:.*?)\\*/"]
-        }
-        apply(patterns: patterns, with: painter, source: source, range: range, options: [.anchorsMatchLines], attributes: [.foregroundColor: color])
-    }
-
-    private static func highlightStrings(with painter: RenderingPainter, source: NSString, range: NSRange, color: NSColor) {
-        apply(patterns: ["\"(?:\\\\.|[^\"\\\\])*\"", "'(?:\\\\.|[^'\\\\])*'", "<[A-Za-z0-9_./]+\\.h>"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
-    }
-
-    private static func highlightNumbers(with painter: RenderingPainter, source: NSString, range: NSRange, color: NSColor) {
-        apply(patterns: ["\\b0[xX][0-9a-fA-F]+\\b", "\\b\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?[fFuUlL]*\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
-    }
-
-    private static func highlightPreprocessor(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
-        guard language == .c || language == .cpp else { return }
-        // Color only the `#directive` token so the included path stays a string.
-        applyCaptureGroup(
-            pattern: "^(\\s*#\\s*(?:include|define|if|ifdef|ifndef|else|elif|endif|pragma|undef|error|warning))\\b",
-            group: 1,
-            with: painter,
-            source: source,
-            range: range,
-            options: [.anchorsMatchLines],
-            attributes: [.foregroundColor: color]
-        )
-    }
-
-    private static func highlightFunctions(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
-        switch language {
-        case .markdown, .yaml, .json, .html, .xml, .css, .plainText:
-            return
-        default:
-            break
-        }
-        applyCaptureGroup(pattern: "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()", group: 1, with: painter, source: source, range: range, attributes: [.foregroundColor: color])
-    }
-
-    private static func highlightTypes(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
-        switch language {
-        case .markdown, .yaml, .json, .html, .xml, .css, .shell, .plainText:
-            return
-        default:
-            break
-        }
-        // CamelCase identifiers (types/classes) and C `_t` suffixed types.
-        apply(patterns: ["\\b[A-Z][A-Za-z0-9_]*\\b", "\\b[a-z_][A-Za-z0-9_]*_t\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
-    }
-
-    private static func highlightKeywords(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, theme: EditorTheme) {
-        let (keywords, control) = keywordSets(for: language)
-        if !keywords.isEmpty {
-            let escaped = keywords.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
-            apply(patterns: ["\\b(\(escaped))\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: theme.keyword])
-        }
-        if !control.isEmpty {
-            let escaped = control.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
-            apply(patterns: ["\\b(\(escaped))\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: theme.controlKeyword])
-        }
-    }
-
-    /// Returns (declaration/storage keywords, control-flow keywords) so each
-    /// group can be colored separately, mirroring VS Code's Dark+ scheme.
-    private static func keywordSets(for language: SourceLanguage) -> ([String], [String]) {
-        let control: [String]
-        let keywords: [String]
-        switch language {
-        case .c, .cpp:
-            control = ["break", "case", "continue", "default", "do", "else", "for", "goto", "if", "return", "switch", "while"]
-            keywords = ["auto", "char", "const", "double", "enum", "extern", "float", "inline", "int", "long", "short", "signed", "sizeof", "static", "struct", "typedef", "union", "unsigned", "void", "class", "namespace", "template", "typename", "using", "public", "private", "protected", "virtual", "new", "delete", "this", "nullptr", "bool", "true", "false"]
-        case .swift:
-            control = ["break", "case", "catch", "continue", "default", "do", "else", "fallthrough", "for", "guard", "if", "return", "switch", "throw", "try", "while", "await"]
-            keywords = ["actor", "as", "async", "class", "enum", "extension", "false", "func", "import", "in", "let", "nil", "private", "protocol", "public", "self", "static", "struct", "throws", "true", "var", "internal", "final", "override", "init", "deinit", "lazy", "weak", "some", "any"]
-        case .javascript, .typescript:
-            control = ["break", "case", "catch", "continue", "default", "do", "else", "for", "if", "return", "switch", "throw", "try", "while", "await", "yield"]
-            keywords = ["async", "class", "const", "export", "extends", "false", "function", "import", "in", "instanceof", "let", "new", "null", "of", "static", "super", "this", "true", "type", "typeof", "var", "void", "interface", "enum", "implements"]
-        case .php:
-            control = ["break", "case", "continue", "default", "do", "else", "elseif", "for", "foreach", "if", "return", "switch", "while", "try", "catch", "throw"]
-            keywords = ["abstract", "array", "class", "const", "echo", "extends", "false", "function", "implements", "interface", "namespace", "new", "null", "private", "protected", "public", "static", "true", "use", "var"]
-        case .python:
-            control = ["break", "continue", "elif", "else", "except", "finally", "for", "if", "raise", "return", "try", "while", "with", "yield", "pass"]
-            keywords = ["and", "as", "async", "await", "class", "def", "False", "from", "global", "import", "in", "is", "lambda", "None", "nonlocal", "not", "or", "True"]
-        case .rust:
-            control = ["break", "continue", "else", "for", "if", "loop", "match", "return", "while"]
-            keywords = ["as", "async", "await", "const", "crate", "enum", "false", "fn", "impl", "let", "mod", "move", "mut", "pub", "ref", "self", "static", "struct", "trait", "true", "type", "use", "where", "dyn", "Box"]
-        case .go:
-            control = ["break", "case", "continue", "default", "else", "fallthrough", "for", "goto", "if", "range", "return", "select", "switch"]
-            keywords = ["chan", "const", "defer", "func", "go", "import", "interface", "map", "package", "struct", "type", "var", "nil", "true", "false"]
-        case .java:
-            control = ["break", "case", "catch", "continue", "default", "do", "else", "finally", "for", "if", "return", "switch", "throw", "try", "while"]
-            keywords = ["abstract", "class", "enum", "extends", "final", "implements", "import", "instanceof", "interface", "native", "new", "package", "private", "protected", "public", "static", "super", "synchronized", "this", "throws", "transient", "void", "volatile", "boolean", "byte", "char", "double", "float", "int", "long", "short", "true", "false", "null", "var", "record", "sealed"]
-        case .kotlin:
-            control = ["break", "catch", "continue", "do", "else", "finally", "for", "if", "return", "throw", "try", "when", "while"]
-            keywords = ["abstract", "as", "class", "companion", "const", "data", "enum", "fun", "import", "in", "interface", "internal", "is", "lateinit", "object", "open", "override", "package", "private", "protected", "public", "sealed", "suspend", "val", "var", "vararg", "by", "true", "false", "null", "this", "super"]
-        case .ruby:
-            control = ["begin", "break", "case", "else", "elsif", "ensure", "for", "if", "next", "redo", "rescue", "retry", "return", "unless", "until", "when", "while", "yield"]
-            keywords = ["alias", "and", "attr_accessor", "attr_reader", "attr_writer", "class", "def", "do", "end", "module", "nil", "not", "or", "require", "require_relative", "self", "super", "then", "true", "false", "lambda", "proc"]
-        case .lua:
-            control = ["break", "do", "else", "elseif", "end", "for", "goto", "if", "repeat", "return", "then", "until", "while"]
-            keywords = ["and", "false", "function", "in", "local", "nil", "not", "or", "true", "self", "require"]
-        case .sql:
-            control = ["CASE", "WHEN", "THEN", "ELSE", "END", "IF", "WHILE", "LOOP"]
-            keywords = ["SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "VIEW", "INDEX", "ALTER", "DROP", "JOIN", "INNER", "LEFT", "RIGHT", "OUTER", "ON", "GROUP", "BY", "ORDER", "HAVING", "LIMIT", "OFFSET", "DISTINCT", "AS", "AND", "OR", "NOT", "NULL", "PRIMARY", "KEY", "FOREIGN", "REFERENCES", "DEFAULT", "UNIQUE", "INT", "INTEGER", "VARCHAR", "TEXT", "BOOLEAN", "TIMESTAMP", "DATE"]
-        case .perl:
-            control = ["if", "elsif", "else", "unless", "for", "foreach", "while", "until", "do", "return", "last", "next", "redo"]
-            keywords = ["use", "no", "my", "our", "local", "sub", "package", "require", "print", "printf", "say", "undef", "qw"]
-        case .dart:
-            control = ["break", "case", "catch", "continue", "default", "do", "else", "finally", "for", "if", "return", "switch", "throw", "try", "while", "await", "yield"]
-            keywords = ["abstract", "as", "async", "class", "const", "enum", "extends", "factory", "final", "get", "implements", "import", "is", "late", "library", "mixin", "new", "set", "static", "super", "this", "typedef", "var", "void", "with", "true", "false", "null", "required"]
-        default:
-            control = []
-            keywords = []
-        }
-        return (keywords, control)
-    }
-
-    private static func apply(patterns: [String], with painter: RenderingPainter, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
-        let text = source as String
-        for pattern in patterns {
-            guard let regex = regex(pattern, options: options) else { continue }
-            regex.enumerateMatches(in: text, options: [], range: range) { match, _, _ in
-                guard let match else { return }
-                painter.paint(attributes, range: match.range)
+        /// True when everything from `location` to the line's end (excluding the
+        /// terminating newline) is whitespace — i.e. there is no real code after
+        /// the caret on this line.
+        private func isTrailingWhitespaceOnly(_ nsString: NSString, from location: Int, lineEnd: Int) -> Bool {
+            var i = location
+            while i < lineEnd {
+                let c = nsString.character(at: i)
+                if c == 0x0A || c == 0x0D { break }
+                if c != 0x20 && c != 0x09 { return false }
+                i += 1
             }
-        }
-    }
-
-    private static func applyCaptureGroup(pattern: String, group: Int, with painter: RenderingPainter, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
-        guard let regex = regex(pattern, options: options) else { return }
-        regex.enumerateMatches(in: source as String, options: [], range: range) { match, _, _ in
-            guard let match, group < match.numberOfRanges else { return }
-            let captured = match.range(at: group)
-            guard captured.location != NSNotFound else { return }
-            painter.paint(attributes, range: captured)
+            return true
         }
     }
 }
