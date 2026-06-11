@@ -162,7 +162,7 @@ private struct TerminalEmulatorView: NSViewRepresentable {
     }
 
     func makeNSView(context: Context) -> LocalProcessTerminalView {
-        let view = LocalProcessTerminalView(frame: .zero)
+        let view = DroppableLocalProcessTerminalView(frame: .zero)
         view.font = font
         context.coordinator.appliedFont = font
         // Off by default so ⌥ produces layout characters (`@`, `{`, `|`, …) on
@@ -347,6 +347,55 @@ private struct TerminalEmulatorView: NSViewRepresentable {
                 terminal.markTerminated()
             }
         }
+    }
+}
+
+/// Accepts Finder file and folder drops directly in the terminal instead of
+/// letting the parent workspace drop destination open them in the editor.
+private final class DroppableLocalProcessTerminalView: LocalProcessTerminalView {
+    override init(frame: CGRect) {
+        super.init(frame: frame)
+        registerForDraggedTypes([.fileURL])
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedFileURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        droppedFileURLs(from: sender).isEmpty ? [] : .copy
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        !droppedFileURLs(from: sender).isEmpty
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = droppedFileURLs(from: sender)
+        guard !urls.isEmpty else { return false }
+
+        // Focus first so subsequent typing stays in the terminal even when the
+        // editor or sidebar owned first responder before the drop.
+        window?.makeFirstResponder(self)
+        let paths = urls.map { RunService.shellQuote($0.path) }.joined(separator: " ")
+        send(txt: paths + " ")
+        return true
+    }
+
+    private func droppedFileURLs(from sender: NSDraggingInfo) -> [URL] {
+        let options: [NSPasteboard.ReadingOptionKey: Any] = [
+            .urlReadingFileURLsOnly: true
+        ]
+        let objects = sender.draggingPasteboard.readObjects(
+            forClasses: [NSURL.self],
+            options: options
+        )
+        return (objects as? [URL]) ?? []
     }
 }
 
