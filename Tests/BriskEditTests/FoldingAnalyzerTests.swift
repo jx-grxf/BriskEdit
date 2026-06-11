@@ -2,6 +2,54 @@ import XCTest
 @testable import BriskEdit
 
 final class FoldingAnalyzerTests: XCTestCase {
+    func testRefreshPolicyRecomputesForFoldingInputs() {
+        var disabled = EditorTheme.default
+        disabled.showCodeFolding = false
+        var enabled = disabled
+        enabled.showCodeFolding = true
+
+        XCTAssertTrue(FoldingRefreshPolicy.needsRecompute(
+            previousTheme: disabled,
+            theme: enabled,
+            languageChanged: false,
+            documentReseeded: false
+        ))
+
+        var widerTabs = enabled
+        widerTabs.tabWidth = 8
+        XCTAssertTrue(FoldingRefreshPolicy.needsRecompute(
+            previousTheme: enabled,
+            theme: widerTabs,
+            languageChanged: false,
+            documentReseeded: false
+        ))
+        XCTAssertTrue(FoldingRefreshPolicy.needsRecompute(
+            previousTheme: enabled,
+            theme: enabled,
+            languageChanged: true,
+            documentReseeded: false
+        ))
+        XCTAssertTrue(FoldingRefreshPolicy.needsRecompute(
+            previousTheme: enabled,
+            theme: enabled,
+            languageChanged: false,
+            documentReseeded: true
+        ))
+    }
+
+    func testRefreshPolicyIgnoresUnrelatedThemeChanges() {
+        let previous = EditorTheme.default
+        var changed = previous
+        changed.fontSize += 1
+
+        XCTAssertFalse(FoldingRefreshPolicy.needsRecompute(
+            previousTheme: previous,
+            theme: changed,
+            languageChanged: false,
+            documentReseeded: false
+        ))
+    }
+
     /// Allman-style brace block: the fold header should be promoted to the
     /// signature line and the trailing `}` absorbed, so the whole function
     /// collapses to a single clean header line.

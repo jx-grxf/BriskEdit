@@ -190,7 +190,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         coordinator.openLocation = onOpenLocation
         coordinator.workspaceRootURL = workspaceRootURL
         coordinator.showHoverTooltips = showHoverTooltips
-        let themeChanged = coordinator.theme != theme
+        let previousTheme = coordinator.theme
+        let themeChanged = previousTheme != theme
         coordinator.theme = theme
 
         // Re-applying the text view's static config (font, paragraph style,
@@ -236,6 +237,14 @@ struct TextKit2EditorHost: NSViewRepresentable {
         // (the user picked a different syntax in the status bar).
         let languageChanged = coordinator.lastLanguage != document.language
         coordinator.lastLanguage = document.language
+        if FoldingRefreshPolicy.needsRecompute(
+            previousTheme: previousTheme,
+            theme: theme,
+            languageChanged: languageChanged,
+            documentReseeded: didReseed
+        ) {
+            coordinator.recomputeFoldRegions()
+        }
         if didReseed || themeChanged || languageChanged {
             coordinator.applyHighlight()
         }

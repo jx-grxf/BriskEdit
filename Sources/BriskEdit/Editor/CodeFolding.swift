@@ -13,6 +13,20 @@ struct FoldRegion: Equatable {
     let hiddenRange: NSRange
 }
 
+enum FoldingRefreshPolicy {
+    static func needsRecompute(
+        previousTheme: EditorTheme,
+        theme: EditorTheme,
+        languageChanged: Bool,
+        documentReseeded: Bool
+    ) -> Bool {
+        documentReseeded
+            || languageChanged
+            || previousTheme.showCodeFolding != theme.showCodeFolding
+            || previousTheme.tabWidth != theme.tabWidth
+    }
+}
+
 /// Detects foldable regions by indentation. A line is a fold header when the
 /// next non-blank line is indented deeper; the region runs until indentation
 /// returns to the header's level (blank lines in between stay inside it).
