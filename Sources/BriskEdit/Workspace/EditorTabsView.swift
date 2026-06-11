@@ -88,10 +88,15 @@ struct EditorTabsView: View {
                     editorSurface(for: tab, availableWidth: width)
                         .frame(minWidth: 320)
                         .layoutPriority(1)
-                    if let previewKind = workspace.splitPreviewKind {
+                    if let splitContent = workspace.splitPreviewContent {
                         PreviewSplitHandle()
                             .gesture(resizePreviewGesture(maxWidth: width - 360))
-                        SplitPreviewPane(kind: previewKind) { workspace.splitPreviewKind = nil }
+                        SplitPreviewPane(
+                            content: splitContent,
+                            markdownDocument: markdownDocument(for: splitContent),
+                            onClose: { workspace.splitPreviewContent = nil },
+                            onOpenFile: { url in Task { await workspace.openFile(at: url) } }
+                        )
                             .frame(width: clampedPreviewWidth(maxWidth: width - 360))
                             .layoutPriority(0)
                     }
@@ -178,7 +183,10 @@ struct EditorTabsView: View {
         if let previewKind = tab.previewKind {
             previewSurface(for: previewKind)
                 .id(tab.id)
-        } else if workspace.showMarkdownPreview && tab.document.language == .markdown && availableWidth >= 760 {
+        } else if workspace.splitPreviewContent == nil,
+                  workspace.showMarkdownPreview,
+                  tab.document.language == .markdown,
+                  availableWidth >= 760 {
             HStack(spacing: 0) {
                 TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, showHoverTooltips: preferences.showHoverTooltips, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
@@ -215,6 +223,11 @@ struct EditorTabsView: View {
         case .image(let url):
             ImageViewerHost(url: url)
         }
+    }
+
+    private func markdownDocument(for content: SplitPreviewContent) -> TextDocument? {
+        guard case .markdown(let id) = content else { return nil }
+        return workspace.tabs.first(where: { $0.id == id })?.document
     }
 }
 
@@ -265,14 +278,16 @@ private struct PreviewSplitHandle: View {
 }
 
 private struct SplitPreviewPane: View {
-    let kind: PreviewKind
+    let content: SplitPreviewContent
+    let markdownDocument: TextDocument?
     let onClose: () -> Void
+    let onOpenFile: (URL) -> Void
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: kind.systemImage)
-                Text(kind.url.lastPathComponent)
+                Image(systemName: systemImage)
+                Text(displayName)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -293,13 +308,41 @@ private struct SplitPreviewPane: View {
 
     @ViewBuilder
     private var previewSurface: some View {
-        switch kind {
-        case .pdf(let url):
-            PDFViewerHost(url: url)
-        case .quickLook(let url):
-            QuickLookPreviewHost(url: url)
-        case .image(let url):
-            ImageViewerHost(url: url)
+        switch content {
+        case .native(let kind):
+            switch kind {
+            case .pdf(let url):
+                PDFViewerHost(url: url)
+            case .quickLook(let url):
+                QuickLookPreviewHost(url: url)
+            case .image(let url):
+                ImageViewerHost(url: url)
+            }
+        case .markdown:
+            if let markdownDocument {
+                MarkdownPreview(
+                    document: markdownDocument,
+                    showsHeader: false,
+                    onClose: onClose,
+                    onOpenFile: onOpenFile
+                )
+            } else {
+                ContentUnavailableView("Preview Unavailable", systemImage: "doc.richtext")
+            }
+        }
+    }
+
+    private var displayName: String {
+        switch content {
+        case .native(let kind): kind.url.lastPathComponent
+        case .markdown: markdownDocument?.displayName ?? "Markdown"
+        }
+    }
+
+    private var systemImage: String {
+        switch content {
+        case .native(let kind): kind.systemImage
+        case .markdown: "doc.richtext"
         }
     }
 }
@@ -340,10 +383,8 @@ private struct TabStrip: View {
                         onCloseRight: { workspace.requestCloseTabsToRight(of: tab.id) },
                         onCloseAll: { workspace.requestCloseAllTabs() },
                         onOpenSplitPreview: {
-                            if let previewKind = tab.previewKind {
-                                workspace.splitPreviewKind = previewKind
-                            } else if let url = tab.document.fileURL, let previewKind = PreviewKind.previewKind(for: url) {
-                                workspace.splitPreviewKind = previewKind
+                            if let url = tab.document.fileURL {
+                                Task { await workspace.openInSplitScreen(url) }
                             }
                         }
                     )
@@ -423,7 +464,7 @@ private struct TabChip: View {
             Button("Close Other Tabs") { onCloseOthers() }
             Button("Close Tabs to the Right") { onCloseRight() }
             Button("Close All Tabs") { onCloseAll() }
-            if tab.previewKind != nil || tab.document.fileURL.flatMap(PreviewKind.previewKind(for:)) != nil {
+            if tab.document.fileURL.map(SplitPreviewContent.supports) == true {
                 Divider()
                 Button("Open in Split Preview") { onOpenSplitPreview() }
             }

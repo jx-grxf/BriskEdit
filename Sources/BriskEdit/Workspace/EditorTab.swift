@@ -38,6 +38,16 @@ enum PreviewKind: Equatable {
     }
 }
 
+enum SplitPreviewContent: Equatable {
+    case native(PreviewKind)
+    case markdown(EditorTab.ID)
+
+    static func supports(_ url: URL) -> Bool {
+        PreviewKind.previewKind(for: url) != nil
+            || SourceLanguage(url: url, displayName: url.lastPathComponent) == .markdown
+    }
+}
+
 @MainActor
 @Observable
 final class EditorTab: Identifiable {

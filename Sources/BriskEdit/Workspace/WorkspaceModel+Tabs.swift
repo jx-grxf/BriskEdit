@@ -73,6 +73,9 @@ extension WorkspaceModel {
 
     func closeTab(_ id: EditorTab.ID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        if splitPreviewContent == .markdown(id) {
+            splitPreviewContent = nil
+        }
         stopWatching(id)
         releaseLSP(tabs[index])
         tabs.remove(at: index)
@@ -133,8 +136,28 @@ extension WorkspaceModel {
         }
     }
 
-    func toggleSplitPreview(_ kind: PreviewKind) {
-        splitPreviewKind = (splitPreviewKind == kind) ? nil : kind
+    func openInSplitScreen(_ url: URL) async {
+        if let kind = PreviewKind.previewKind(for: url) {
+            let content = SplitPreviewContent.native(kind)
+            splitPreviewContent = (splitPreviewContent == content) ? nil : content
+            return
+        }
+
+        guard SourceLanguage(url: url, displayName: url.lastPathComponent) == .markdown else { return }
+        if case .markdown(let id) = splitPreviewContent,
+           tabs.first(where: { $0.id == id })?.document.fileURL == url {
+            splitPreviewContent = nil
+            return
+        }
+
+        let previousActiveID = activeTabID
+        await openFile(at: url)
+        guard let markdownTab = tabs.first(where: { $0.document.fileURL == url }) else { return }
+        if let previousActiveID, tabs.contains(where: { $0.id == previousActiveID }) {
+            activeTabID = previousActiveID
+        }
+        splitPreviewContent = .markdown(markdownTab.id)
+        persistSession()
     }
 
     /// Saves every dirty tab; returns false if the user cancels a Save dialog.

@@ -48,8 +48,8 @@ final class WorkspaceModel {
     /// Directories the user has expanded in the file tree — kept here (not in
     /// per-row @State) so the tree survives reloads without collapsing.
     var expandedDirectories: Set<URL> = []
-    /// When set, a native preview is shown in a resizable pane beside the editor.
-    var splitPreviewKind: PreviewKind?
+    /// When set, a native or Markdown preview is shown beside the active editor.
+    var splitPreviewContent: SplitPreviewContent?
     /// Open terminal sessions (VS Code-style). Each stays alive while the panel
     /// is shown; the list lets the user add, switch and close them.
     var terminals: [TerminalController] = []

@@ -346,8 +346,10 @@ private struct FileContextMenu: View {
             Divider()
         } else {
             Button("Open") { workspace.selectedSidebarURL = node.url }
-            if let previewKind = PreviewKind.previewKind(for: node.url) {
-                Button("Open in Split Screen") { workspace.toggleSplitPreview(previewKind) }
+            if SplitPreviewContent.supports(node.url) {
+                Button("Open in Split Screen") {
+                    Task { await workspace.openInSplitScreen(node.url) }
+                }
             }
             Divider()
         }

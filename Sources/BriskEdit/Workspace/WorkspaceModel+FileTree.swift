@@ -24,7 +24,7 @@ extension WorkspaceModel {
         selectedSidebarURL = nil
         expandedDirectories.removeAll()
         childCache.removeAll(keepingCapacity: true)
-        splitPreviewKind = nil
+        splitPreviewContent = nil
         reloadToken = UUID()
         if persistsSession {
             UserDefaults.standard.removeObject(forKey: Keys.lastWorkspaceRoot)
