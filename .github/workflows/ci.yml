@@ -103,6 +103,33 @@ jobs:
         with:
           fail-on-severity: high
 
+  promo:
+    name: Promo tooling
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+
+      - name: Set up Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: promo/package-lock.json
+
+      - name: Install locked dependencies
+        working-directory: promo
+        run: npm ci
+
+      - name: Audit dependencies
+        working-directory: promo
+        run: npm audit --audit-level=high
+
+      - name: Lint and type-check
+        working-directory: promo
+        run: npm run lint
+
   tests:
     name: Tests
     runs-on: macos-26
