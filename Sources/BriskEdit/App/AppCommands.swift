@@ -48,6 +48,24 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("w", modifiers: [.command, .shift])
             .disabled(workspace?.rootURL == nil)
+
+            Divider()
+
+            Button("Close Tab") {
+                if let id = workspace?.activeTabID { workspace?.requestCloseTab(id) }
+            }
+            .keyboardShortcut("w", modifiers: [.command, .control])
+            .disabled(workspace?.activeTab == nil)
+
+            Button("Close Other Tabs") {
+                if let id = workspace?.activeTabID { workspace?.requestCloseOtherTabs(keeping: id) }
+            }
+            .disabled((workspace?.tabs.count ?? 0) < 2)
+
+            Button("Close All Tabs") {
+                workspace?.requestCloseAllTabs()
+            }
+            .disabled(workspace?.tabs.isEmpty != false)
         }
 
         CommandGroup(after: .saveItem) {
@@ -56,6 +74,18 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("s", modifiers: .command)
             .disabled(workspace?.activeTab == nil)
+
+            Button("Save As…") {
+                Task { await workspace?.saveActiveTabAs() }
+            }
+            .keyboardShortcut("s", modifiers: [.command, .shift])
+            .disabled(workspace?.activeTab == nil)
+
+            Button("Save All") {
+                Task { _ = await workspace?.saveAllForQuit() }
+            }
+            .keyboardShortcut("s", modifiers: [.command, .option])
+            .disabled(workspace?.hasUnsavedChanges != true)
         }
 
         CommandMenu("Go") {

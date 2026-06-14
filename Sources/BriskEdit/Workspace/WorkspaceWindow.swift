@@ -156,16 +156,7 @@ private struct WorkspaceSidebar: View {
     var body: some View {
         if let root = workspace.rootURL {
             VStack(spacing: 0) {
-                Picker("Sidebar section", selection: $workspace.sidebarTab) {
-                    Image(systemName: "folder").accessibilityLabel("Files").tag(SidebarTab.files)
-                    Image(systemName: "magnifyingglass").accessibilityLabel("Search").tag(SidebarTab.search)
-                    Image(systemName: "list.bullet.indent").accessibilityLabel("Outline").tag(SidebarTab.outline)
-                    Image(systemName: "arrow.triangle.branch").accessibilityLabel("Source Control").tag(SidebarTab.sourceControl)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .padding(.horizontal, 10)
-                .padding(.vertical, DesignTokens.Spacing.small)
+                SidebarActivityBar(selection: $workspace.sidebarTab)
                 Divider()
                 WorkspaceSidebarPanes(workspace: workspace, root: root)
             }
@@ -183,6 +174,58 @@ private struct WorkspaceSidebar: View {
                 Button("Open Folder…", action: openFolder)
             }
         }
+    }
+}
+
+/// A flat icon row for switching sidebar panes — the IDE "activity bar" idiom
+/// (VS Code / Nova). Replaces the chunky segmented control, which read as a
+/// form widget rather than navigation chrome. The active pane gets the accent
+/// tint over a soft rounded fill; the rest stay quiet and monochrome.
+private struct SidebarActivityBar: View {
+    @Binding var selection: SidebarTab
+
+    private struct Item: Identifiable {
+        let tab: SidebarTab
+        let symbol: String
+        let label: String
+        var id: SidebarTab { tab }
+    }
+
+    private let items: [Item] = [
+        Item(tab: .files, symbol: "folder", label: "Files"),
+        Item(tab: .search, symbol: "magnifyingglass", label: "Search"),
+        Item(tab: .outline, symbol: "list.bullet.indent", label: "Outline"),
+        Item(tab: .sourceControl, symbol: "arrow.triangle.branch", label: "Source Control"),
+    ]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(items) { item in
+                let isActive = selection == item.tab
+                Button {
+                    selection = item.tab
+                } label: {
+                    Image(systemName: item.symbol)
+                        .font(.system(size: 14, weight: .medium))
+                        .symbolVariant(isActive ? .fill : .none)
+                        .frame(width: 30, height: 26)
+                        .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.accentColor.opacity(isActive ? 0.14 : 0))
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(item.label)
+                .accessibilityLabel(item.label)
+                .accessibilityAddTraits(isActive ? [.isSelected] : [])
+            }
+            Spacer(minLength: 0)
+        }
+        .animation(.easeInOut(duration: 0.12), value: selection)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
     }
 }
 

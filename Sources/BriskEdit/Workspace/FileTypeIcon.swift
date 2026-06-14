@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// Shows the real macOS file-type icon (PDF, Markdown, SVG, images, code, …)
-/// for an on-disk file. Folders and unsaved buffers fall back to a tinted SF
-/// Symbol so the tree stays colorful and consistent.
+/// Shows a colorful, Nova-style glyph for each file. Recognized code/markup
+/// files render as a tinted SF Symbol per language (so the tree reads at a
+/// glance and feels native, instead of the flat grey document icons the system
+/// hands back); genuine media files (images, PDFs, binaries) keep their real
+/// macOS thumbnail because that preview is actually useful.
 struct FileTypeIcon: View {
     let url: URL?
     let isDirectory: Bool
@@ -13,16 +15,28 @@ struct FileTypeIcon: View {
     var body: some View {
         if isDirectory {
             Image(systemName: "folder.fill")
+                .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(Color.accentColor)
+                .font(.system(size: size * 0.95))
+                .frame(width: size, height: size)
+        } else if language != .plainText {
+            // A recognized language → colored glyph, the Nova look.
+            Image(systemName: language.iconName)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(Self.tint(language))
+                .font(.system(size: size * 0.9, weight: .medium))
                 .frame(width: size, height: size)
         } else if let icon = Self.icon(for: url) {
+            // Unrecognized but on disk (image/PDF/binary): real thumbnail.
             Image(nsImage: icon)
                 .resizable()
                 .interpolation(.high)
                 .frame(width: size, height: size)
         } else {
-            Image(systemName: language.iconName)
-                .foregroundStyle(Self.tint(language))
+            Image(systemName: "doc.text")
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(.secondary)
+                .font(.system(size: size * 0.9))
                 .frame(width: size, height: size)
         }
     }

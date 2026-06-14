@@ -61,6 +61,35 @@ extension WorkspaceModel {
         }.value
     }
 
+    /// Reveals a path in the file tree: switches to the Files pane, expands every
+    /// ancestor folder (and the target itself if it is a directory) and selects
+    /// it. Used by the breadcrumb bar's path segments.
+    func revealInFileTree(_ url: URL, isDirectory: Bool) {
+        guard let root = rootURL else { return }
+        sidebarTab = .files
+        let rootStd = root.standardizedFileURL
+        expandedDirectories.insert(rootStd)
+        if isDirectory { expandedDirectories.insert(url.standardizedFileURL) }
+        var dir = url.deletingLastPathComponent().standardizedFileURL
+        while dir.path.hasPrefix(rootStd.path) {
+            expandedDirectories.insert(dir)
+            if dir.path == rootStd.path { break }
+            let parent = dir.deletingLastPathComponent().standardizedFileURL
+            if parent.path == dir.path { break }
+            dir = parent
+        }
+        selectedSidebarURL = url
+    }
+
+    /// Recomputes the file-tree git badges for the current workspace root.
+    func refreshGitDecorations() async {
+        guard let root = rootURL else {
+            if !gitDecorations.isEmpty { gitDecorations = GitDecorations() }
+            return
+        }
+        gitDecorations = await GitService.decorations(root: root)
+    }
+
     func loadChildren(of url: URL) async -> [FileNode] {
         let key = FileTreeCacheKey(url: url, includeHidden: showHiddenFiles)
         if let cached = childCache[key] {

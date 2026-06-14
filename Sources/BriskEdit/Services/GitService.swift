@@ -48,6 +48,33 @@ struct GitResult: Sendable {
     let output: String
 }
 
+/// VCS status of a single file, used to decorate file-tree rows.
+enum GitDecoration: String, Sendable {
+    case modified, added, untracked, deleted, renamed, conflicted
+
+    /// Single-letter badge shown at the trailing edge of a tree row.
+    var badge: String {
+        switch self {
+        case .modified: "M"
+        case .added: "A"
+        case .untracked: "U"
+        case .deleted: "D"
+        case .renamed: "R"
+        case .conflicted: "!"
+        }
+    }
+}
+
+/// File-tree decoration snapshot: the per-file status plus the set of folders
+/// that contain at least one changed descendant (so collapsed folders can still
+/// signal "something changed in here").
+struct GitDecorations: Sendable {
+    var files: [URL: GitDecoration] = [:]
+    var dirtyDirectories: Set<URL> = []
+
+    var isEmpty: Bool { files.isEmpty }
+}
+
 /// Computes a git "gutter" diff by comparing the *current buffer* against the
 /// committed `HEAD` blob — so it reflects uncommitted edits live, not just what
 /// is saved. Shells out to the user's own `git`; returns nil outside a repo.
@@ -93,6 +120,60 @@ enum GitService {
             }
             return GitStatus(branch: branch, upstream: upstream, ahead: ahead, behind: behind, hasRemote: hasRemote, changes: changes)
         }.value
+    }
+
+    /// Per-file decorations for the file tree (modified / added / untracked …),
+    /// keyed by absolute, standardized URL, plus the set of ancestor folders that
+    /// contain a change. Returns empty outside a repository.
+    static func decorations(root: URL) async -> GitDecorations {
+        let rootPath = root.path
+        return await Task.detached(priority: .utility) { () -> GitDecorations in
+            guard let top = run(["-C", rootPath, "rev-parse", "--show-toplevel"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !top.isEmpty,
+                let out = run(["-C", top, "status", "--porcelain=v1"]) else { return GitDecorations() }
+            let topURL = URL(fileURLWithPath: top, isDirectory: true)
+            let rootStd = URL(fileURLWithPath: rootPath, isDirectory: true).standardizedFileURL
+            var result = GitDecorations()
+            for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
+                let line = String(raw)
+                guard line.count >= 4 else { continue }
+                let chars = Array(line)
+                let index = chars[0], worktree = chars[1]
+                var path = String(line.dropFirst(3))
+                // Renames render as "old -> new"; decorate the new path.
+                if let arrow = path.range(of: " -> ") { path = String(path[arrow.upperBound...]) }
+                path = path.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+                guard !path.isEmpty else { continue }
+                let fileURL = topURL.appendingPathComponent(path).standardizedFileURL
+                result.files[fileURL] = decoration(index: index, worktree: worktree)
+                // Walk up to the workspace root marking each ancestor dirty.
+                var dir = fileURL.deletingLastPathComponent().standardizedFileURL
+                while dir.path.hasPrefix(rootStd.path) {
+                    result.dirtyDirectories.insert(dir)
+                    if dir.path == rootStd.path { break }
+                    let parent = dir.deletingLastPathComponent().standardizedFileURL
+                    if parent.path == dir.path { break }
+                    dir = parent
+                }
+            }
+            return result
+        }.value
+    }
+
+    /// Maps a porcelain `XY` status pair to a single tree decoration. Conflicts
+    /// (unmerged) win, then untracked, then the most relevant of the two stages.
+    private static func decoration(index: Character, worktree: Character) -> GitDecoration {
+        if index == "U" || worktree == "U"
+            || (index == "A" && worktree == "A")
+            || (index == "D" && worktree == "D") { return .conflicted }
+        if index == "?" || worktree == "?" { return .untracked }
+        let code = worktree != " " ? worktree : index
+        switch code {
+        case "A": return .added
+        case "D": return .deleted
+        case "R", "C": return .renamed
+        default: return .modified
+        }
     }
 
     @discardableResult

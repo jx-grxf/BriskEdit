@@ -39,6 +39,10 @@ struct EditorTabsView: View {
                     VStack(spacing: 0) {
                         TabStrip(workspace: workspace)
                         Divider()
+                        if workspace.activeTab != nil {
+                            BreadcrumbBar(workspace: workspace)
+                            Divider()
+                        }
                     }
                 }
             }
@@ -400,6 +404,92 @@ private struct TabStrip: View {
         .frame(height: DesignTokens.Chrome.tabStripHeight)
         .background(.thinMaterial)
         .clipped()
+    }
+}
+
+/// Path breadcrumb under the tab strip: workspace ▸ folders ▸ file (the Nova /
+/// VS Code idiom). Folder segments reveal that folder in the file tree; the
+/// file segment reveals the current document. Falls back to just the name for
+/// untitled buffers or files outside the workspace root.
+private struct BreadcrumbBar: View {
+    @Bindable var workspace: WorkspaceModel
+
+    private struct Segment: Identifiable {
+        let id = UUID()
+        let name: String
+        let url: URL?
+        let isDirectory: Bool
+        let isLast: Bool
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(segments) { seg in
+                    segmentButton(seg)
+                    if !seg.isLast {
+                        Image(systemName: "chevron.compact.right")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+        }
+        .scrollEdgeEffectStyle(.hard, for: .horizontal)
+        .frame(height: 24)
+        .background(.bar)
+    }
+
+    @ViewBuilder
+    private func segmentButton(_ seg: Segment) -> some View {
+        Button {
+            if let url = seg.url {
+                workspace.revealInFileTree(url, isDirectory: seg.isDirectory)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                if seg.isLast, let doc = workspace.activeTab?.document {
+                    FileTypeIcon(url: doc.fileURL, isDirectory: false, language: doc.language, size: 13)
+                }
+                Text(seg.name)
+                    .font(.caption)
+                    .foregroundStyle(seg.isLast ? .primary : .secondary)
+                    .lineLimit(1)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(seg.url == nil)
+        .help(seg.url?.path ?? seg.name)
+    }
+
+    private var segments: [Segment] {
+        guard let doc = workspace.activeTab?.document else { return [] }
+        guard let fileURL = doc.fileURL else {
+            return [Segment(name: doc.displayName, url: nil, isDirectory: false, isLast: true)]
+        }
+        let std = fileURL.standardizedFileURL
+        if let root = workspace.rootURL?.standardizedFileURL,
+           std.path.hasPrefix(root.path + "/") {
+            let relative = String(std.path.dropFirst(root.path.count + 1))
+            let parts = relative.split(separator: "/").map(String.init)
+            var result: [Segment] = [
+                Segment(name: root.lastPathComponent, url: root, isDirectory: true, isLast: parts.isEmpty)
+            ]
+            var url = root
+            for (i, part) in parts.enumerated() {
+                url = url.appendingPathComponent(part)
+                let isLast = i == parts.count - 1
+                result.append(Segment(name: part, url: url, isDirectory: !isLast, isLast: isLast))
+            }
+            return result
+        }
+        // Outside the workspace root: parent folder + file name.
+        let parent = std.deletingLastPathComponent()
+        return [
+            Segment(name: parent.lastPathComponent, url: parent, isDirectory: true, isLast: false),
+            Segment(name: std.lastPathComponent, url: std, isDirectory: false, isLast: true),
+        ]
     }
 }
 

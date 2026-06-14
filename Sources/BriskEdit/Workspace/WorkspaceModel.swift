@@ -60,6 +60,10 @@ final class WorkspaceModel {
     var persistsSession = false
     var childCache: [FileTreeCacheKey: [FileNode]] = [:]
     var watchers: [EditorTab.ID: FileWatcher] = [:]
+    /// Per-file VCS status driving the file-tree git badges. Refreshed on root
+    /// change, after git operations (`.gitDidChange`) and when the window
+    /// re-activates. Empty outside a repository.
+    var gitDecorations = GitDecorations()
 
     init() {
         WorkspaceRegistry.register(self)
