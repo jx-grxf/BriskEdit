@@ -19,6 +19,9 @@ struct WorkspaceWindow: View {
             WorkspaceDetail(workspace: workspace, onOpenFile: openFile)
         }
         .navigationSplitViewStyle(.balanced)
+        .transaction { transaction in
+            if preferences.reduceMotion { transaction.disablesAnimations = true }
+        }
         .task {
             guard !didStartSession else { return }
             didStartSession = true

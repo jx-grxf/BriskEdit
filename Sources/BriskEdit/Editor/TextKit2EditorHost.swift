@@ -33,6 +33,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
     let theme: EditorTheme
     var showMinimap: Bool = true
     var showHoverTooltips: Bool = true
+    var highlightDebounce: TimeInterval = 0.08
+    var gitDiffDebounce: TimeInterval = 0.4
     var workspaceRootURL: URL?
     /// Opens a (possibly different) file at a 1-based line/column — used for
     /// go-to-definition. Provided by the host view, which owns the workspace.
@@ -47,6 +49,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.document = document
         context.coordinator.theme = theme
         context.coordinator.showHoverTooltips = showHoverTooltips
+        context.coordinator.highlightDebounce = highlightDebounce
+        context.coordinator.gitDiffDebounce = gitDiffDebounce
         context.coordinator.workspaceRootURL = workspaceRootURL
         textView.onResignFirstResponder = { [weak coordinator = context.coordinator] in
             coordinator?.dismissCompletions()
@@ -190,6 +194,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         coordinator.openLocation = onOpenLocation
         coordinator.workspaceRootURL = workspaceRootURL
         coordinator.showHoverTooltips = showHoverTooltips
+        coordinator.highlightDebounce = highlightDebounce
+        coordinator.gitDiffDebounce = gitDiffDebounce
         let previousTheme = coordinator.theme
         let themeChanged = previousTheme != theme
         coordinator.theme = theme
@@ -331,6 +337,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var formatTask: Task<Void, Never>?
         private var hoverIndex = -1
         var showHoverTooltips = true
+        var highlightDebounce: TimeInterval = 0.08
+        var gitDiffDebounce: TimeInterval = 0.4
         private var completionRange: NSRange?
         private var ignoreNextSelectionChange = false
         private var lastRevealToken = 0
@@ -1046,7 +1054,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 self?.applyHighlight()
             }
             highlightWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + highlightDebounce, execute: work)
         }
 
         /// Re-detects foldable regions after an edit. The analysis is cheap
@@ -1093,7 +1101,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 }
             }
             gitWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + gitDiffDebounce, execute: work)
         }
 
         /// Recomputes the suggestion list for the identifier at the caret and

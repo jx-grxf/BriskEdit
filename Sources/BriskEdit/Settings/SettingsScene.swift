@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct SettingsScene: View {
+    @Environment(Preferences.self) private var preferences
+
     var body: some View {
         TabView {
             GeneralPreferencesView()
@@ -20,6 +22,9 @@ struct SettingsScene: View {
                 .tabItem { Label("Experimental", systemImage: "flask") }
         }
         .frame(width: 520, height: 480)
+        .transaction { transaction in
+            if preferences.reduceMotion { transaction.disablesAnimations = true }
+        }
     }
 }
 

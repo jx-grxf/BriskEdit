@@ -5,6 +5,7 @@ import WebKit
 struct MarkdownPreview: View {
     let document: TextDocument
     var showsHeader = true
+    var renderDebounceMilliseconds = 180
     var onClose: () -> Void = {}
     var onOpenFile: (URL) -> Void = { _ in }
     @State private var html = ""
@@ -43,7 +44,7 @@ struct MarkdownPreview: View {
         let markdown = document.text
         renderTask = Task {
             if debounce {
-                try? await Task.sleep(for: .milliseconds(180))
+                try? await Task.sleep(for: .milliseconds(renderDebounceMilliseconds))
             }
             guard !Task.isCancelled else { return }
             guard markdown.utf8.count <= 4 * 1024 * 1024 else {

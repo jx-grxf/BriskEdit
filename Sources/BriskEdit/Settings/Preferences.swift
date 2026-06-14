@@ -63,6 +63,28 @@ final class Preferences {
         let allowsMinimap: Bool
         let allowsHover: Bool
         let reduceMotion: Bool
+        let highlightDebounce: TimeInterval
+        let gitDiffDebounce: TimeInterval
+        let markdownPreviewDebounceMilliseconds: Int
+
+        init(mode: PerformanceMode) {
+            switch mode {
+            case .lowPower, .adaptive:
+                allowsMinimap = false
+                allowsHover = false
+                reduceMotion = true
+                highlightDebounce = 0.18
+                gitDiffDebounce = 0.8
+                markdownPreviewDebounceMilliseconds = 450
+            case .power:
+                allowsMinimap = true
+                allowsHover = true
+                reduceMotion = false
+                highlightDebounce = 0.08
+                gitDiffDebounce = 0.4
+                markdownPreviewDebounceMilliseconds = 180
+            }
+        }
     }
 
     var performanceMode: PerformanceMode {
@@ -215,12 +237,7 @@ final class Preferences {
     }
 
     var performanceProfile: PerformanceProfile {
-        switch resolvedPerformanceMode {
-        case .lowPower, .adaptive:
-            PerformanceProfile(allowsMinimap: false, allowsHover: false, reduceMotion: true)
-        case .power:
-            PerformanceProfile(allowsMinimap: true, allowsHover: true, reduceMotion: false)
-        }
+        PerformanceProfile(mode: resolvedPerformanceMode)
     }
 
     /// Minimap shown only when the user enabled it *and* the active profile
@@ -228,6 +245,9 @@ final class Preferences {
     var effectiveShowMinimap: Bool { showMinimap && performanceProfile.allowsMinimap }
     var effectiveShowHoverTooltips: Bool { showHoverTooltips && performanceProfile.allowsHover }
     var reduceMotion: Bool { performanceProfile.reduceMotion }
+    var highlightDebounce: TimeInterval { performanceProfile.highlightDebounce }
+    var gitDiffDebounce: TimeInterval { performanceProfile.gitDiffDebounce }
+    var markdownPreviewDebounceMilliseconds: Int { performanceProfile.markdownPreviewDebounceMilliseconds }
 
     /// Resolves the configured terminal font, falling back to the system
     /// monospaced face when the named font isn't installed. Accepts both

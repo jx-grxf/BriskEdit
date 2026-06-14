@@ -192,7 +192,7 @@ struct EditorTabsView: View {
                   tab.document.language == .markdown,
                   availableWidth >= 760 {
             HStack(spacing: 0) {
-                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
+                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                     .id(tab.id)
@@ -202,6 +202,7 @@ struct EditorTabsView: View {
                     .gesture(resizeMarkdownGesture(maxWidth: availableWidth - 360))
                 MarkdownPreview(
                     document: tab.document,
+                    renderDebounceMilliseconds: preferences.markdownPreviewDebounceMilliseconds,
                     onClose: { workspace.showMarkdownPreview = false },
                     onOpenFile: { url in Task { await workspace.openFile(at: url) } }
                 )
@@ -209,7 +210,7 @@ struct EditorTabsView: View {
                 .layoutPriority(0)
             }
         } else {
-            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
+            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                 .id(tab.id)
@@ -286,6 +287,7 @@ private struct SplitPreviewPane: View {
     let markdownDocument: TextDocument?
     let onClose: () -> Void
     let onOpenFile: (URL) -> Void
+    @Environment(Preferences.self) private var preferences
 
     var body: some View {
         VStack(spacing: 0) {
@@ -327,6 +329,7 @@ private struct SplitPreviewPane: View {
                 MarkdownPreview(
                     document: markdownDocument,
                     showsHeader: false,
+                    renderDebounceMilliseconds: preferences.markdownPreviewDebounceMilliseconds,
                     onClose: onClose,
                     onOpenFile: onOpenFile
                 )
