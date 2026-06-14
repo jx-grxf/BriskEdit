@@ -48,8 +48,20 @@ final class TextDocument {
         SourceLanguage(url: fileURL, displayName: displayName)
     }
 
+    /// Cache of the exact UTF-8 byte count, keyed by revision. `byteCount` is a
+    /// cheap UTF-16 estimate kept current for the large-file gate; the status bar
+    /// wants the real size, so compute it once per edit (not per render).
+    private var utf8CountCache: (revision: Int, count: Int)?
+
     var fileSizeLabel: String {
-        ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
+        let count: Int
+        if let cache = utf8CountCache, cache.revision == revision {
+            count = cache.count
+        } else {
+            count = text.utf8.count
+            utf8CountCache = (revision, count)
+        }
+        return ByteCountFormatter.string(fromByteCount: Int64(count), countStyle: .file)
     }
 
     var isLargeFile: Bool {
@@ -117,17 +129,24 @@ final class TextDocument {
     /// debounce it so typing in a 20 MB file stays smooth.
     private func scheduleLineIndexRebuild() {
         lineIndexWork?.cancel()
-        guard !isLargeFile else {
-            lineStartOffsets = [0]
-            return
-        }
         if (text as NSString).length <= 100_000 {
             rebuildLineIndex()
             return
         }
-        let work = DispatchWorkItem { [weak self] in self?.rebuildLineIndex() }
+        // Large/medium buffers: scan newlines off the main thread, debounced, so
+        // typing stays smooth while Ln/Col in the status bar stay correct (even in
+        // large-file mode, where running this on the main actor would stall).
+        let snapshot = text
+        let revisionAtSchedule = revision
+        let work = DispatchWorkItem { [weak self] in
+            let offsets = TextDocument.computeLineStartOffsets(in: snapshot)
+            Task { @MainActor [weak self] in
+                guard let self, self.revision == revisionAtSchedule else { return }
+                self.lineStartOffsets = offsets
+            }
+        }
         lineIndexWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
     /// Points the document at a new on-disk location (e.g. after a rename)
@@ -234,6 +253,11 @@ final class TextDocument {
     }
 
     private func rebuildLineIndex() {
+        lineStartOffsets = Self.computeLineStartOffsets(in: text)
+    }
+
+    /// Pure newline scan — safe to run off the main actor for large buffers.
+    nonisolated static func computeLineStartOffsets(in text: String) -> [Int] {
         var starts = [0]
         let nsString = text as NSString
         nsString.enumerateSubstrings(
@@ -245,7 +269,7 @@ final class TextDocument {
                 starts.append(next)
             }
         }
-        lineStartOffsets = starts
+        return starts
     }
 }
 
@@ -474,7 +498,15 @@ enum SourceLanguage: String, Sendable, CaseIterable, Identifiable {
             ["SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "ALTER", "DROP", "JOIN", "INNER", "LEFT", "GROUP BY", "ORDER BY", "LIMIT"]
         case .perl:
             ["use", "my", "our", "sub", "if", "elsif", "else", "unless", "foreach", "while", "return", "print"]
-        case .json, .yaml, .markdown, .php, .toml, .ini, .dart, .plainText:
+        case .php:
+            ["<?php", "echo", "function", "class", "public", "private", "protected", "static", "return", "namespace", "use", "if", "else", "elseif", "foreach", "while", "$this"]
+        case .dart:
+            ["import", "class", "extends", "implements", "void", "final", "const", "var", "late", "async", "await", "return", "if", "else", "for", "while", "Widget", "build", "override"]
+        case .toml:
+            ["true", "false"]
+        case .ini:
+            ["true", "false", "yes", "no"]
+        case .json, .yaml, .markdown, .plainText:
             []
         }
     }
