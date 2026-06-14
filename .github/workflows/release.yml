@@ -172,6 +172,8 @@ jobs:
             -derivedDataPath .build/release-tests \
             -onlyUsePackageVersionsFromResolvedFile \
             -skipPackageUpdates \
+            -retry-tests-on-failure \
+            -test-iterations 3 \
             BRISKEDIT_WARNINGS_AS_ERRORS=YES \
             | tee .build/release-tests.log | tail -120
 

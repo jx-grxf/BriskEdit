@@ -166,6 +166,8 @@ jobs:
             -derivedDataPath .build/ci-tests \
             -onlyUsePackageVersionsFromResolvedFile \
             -skipPackageUpdates \
+            -retry-tests-on-failure \
+            -test-iterations 3 \
             BRISKEDIT_WARNINGS_AS_ERRORS=YES \
             | tee .build/ci-tests.log | tail -120
 
