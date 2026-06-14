@@ -4,10 +4,12 @@ import Observation
 @MainActor
 @Observable
 final class TextDocument {
-    nonisolated static let maximumEditableFileBytes: Int64 = 64 * 1024 * 1024
+    nonisolated static let largeFileFeatureThresholdBytes = 4 * 1024 * 1024
+    nonisolated static let maximumEditableFileBytes: Int64 = 128 * 1024 * 1024
     private(set) var fileURL: URL?
     private(set) var encoding: String.Encoding
     var text: String
+    private(set) var byteCount: Int
     var isDirty: Bool = false
     var cursorLine: Int = 1
     var cursorColumn: Int = 1
@@ -47,14 +49,25 @@ final class TextDocument {
     }
 
     var fileSizeLabel: String {
-        ByteCountFormatter.string(fromByteCount: Int64(text.utf8.count), countStyle: .file)
+        ByteCountFormatter.string(fromByteCount: Int64(byteCount), countStyle: .file)
     }
 
-    init(fileURL: URL?, text: String, encoding: String.Encoding) {
+    var isLargeFile: Bool {
+        Self.isLargeFile(byteCount: byteCount)
+    }
+
+    nonisolated static func isLargeFile(byteCount: Int) -> Bool {
+        byteCount > largeFileFeatureThresholdBytes
+    }
+
+    init(fileURL: URL?, text: String, encoding: String.Encoding, byteCount: Int? = nil) {
         self.fileURL = fileURL
         self.text = text
         self.encoding = encoding
-        rebuildLineIndex()
+        self.byteCount = byteCount ?? text.utf8.count
+        if !isLargeFile {
+            rebuildLineIndex()
+        }
     }
 
     static func empty() -> TextDocument {
@@ -62,21 +75,22 @@ final class TextDocument {
     }
 
     static func load(from url: URL) async throws -> TextDocument {
-        let loaded = try await Task.detached(priority: .userInitiated) { () -> (String, String.Encoding) in
+        let loaded = try await Task.detached(priority: .userInitiated) { () -> (String, String.Encoding, Int) in
             let values = try url.resourceValues(forKeys: [.fileSizeKey])
             if let size = values.fileSize, Int64(size) > maximumEditableFileBytes {
                 throw TextDocumentError.fileTooLarge(maximumBytes: maximumEditableFileBytes)
             }
             var used: String.Encoding = .utf8
             let str = try String(contentsOf: url, usedEncoding: &used)
-            return (str, used)
+            return (str, used, values.fileSize ?? str.utf8.count)
         }.value
-        return TextDocument(fileURL: url, text: loaded.0, encoding: loaded.1)
+        return TextDocument(fileURL: url, text: loaded.0, encoding: loaded.1, byteCount: loaded.2)
     }
 
-    func applyEdit(text newText: String) {
+    func applyEdit(text newText: String, sizeHint: Int? = nil) {
         guard text != newText else { return }
         text = newText
+        byteCount = sizeHint ?? newText.utf8.count
         revision &+= 1
         isDirty = true
         scheduleLineIndexRebuild()
@@ -103,6 +117,10 @@ final class TextDocument {
     /// debounce it so typing in a 20 MB file stays smooth.
     private func scheduleLineIndexRebuild() {
         lineIndexWork?.cancel()
+        guard !isLargeFile else {
+            lineStartOffsets = [0]
+            return
+        }
         if (text as NSString).length <= 100_000 {
             rebuildLineIndex()
             return
@@ -123,9 +141,10 @@ final class TextDocument {
     func applyFormatted(_ newText: String) {
         guard newText != text else { return }
         text = newText
+        byteCount = newText.utf8.count
         revision &+= 1
         isDirty = true
-        rebuildLineIndex()
+        scheduleLineIndexRebuild()
     }
 
     /// Re-reads the file from disk after an external change. Bumps `revision`
@@ -139,12 +158,13 @@ final class TextDocument {
         }.value
         guard let loaded else { return }
         text = loaded.0
+        byteCount = loaded.0.utf8.count
         encoding = loaded.1
         revision &+= 1
         isDirty = false
         lastSavedRevision = revision
         externalChangePending = false
-        rebuildLineIndex()
+        scheduleLineIndexRebuild()
     }
 
     /// Asks the editor to scroll to and select `length` characters starting at a

@@ -2,6 +2,21 @@ import XCTest
 @testable import BriskEdit
 
 final class TextDocumentSafetyTests: XCTestCase {
+    func testLargeFileThresholdStartsAboveFourMiB() {
+        XCTAssertFalse(TextDocument.isLargeFile(byteCount: TextDocument.largeFileFeatureThresholdBytes))
+        XCTAssertTrue(TextDocument.isLargeFile(byteCount: TextDocument.largeFileFeatureThresholdBytes + 1))
+    }
+
+    @MainActor
+    func testLargeFileSignalTracksEdits() {
+        let document = TextDocument(fileURL: nil, text: "small", encoding: .utf8)
+        XCTAssertFalse(document.isLargeFile)
+
+        document.applyEdit(text: String(repeating: "x", count: TextDocument.largeFileFeatureThresholdBytes + 1))
+
+        XCTAssertTrue(document.isLargeFile)
+    }
+
     @MainActor
     func testSuccessfulSavePostsGitChangeNotification() async throws {
         let url = FileManager.default.temporaryDirectory

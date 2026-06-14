@@ -82,6 +82,11 @@ enum TextKit2SyntaxHighlighter {
         textView.typingAttributes = baseAttributes(theme: theme)
     }
 
+    static func clear(in textView: NSTextView, theme: EditorTheme) {
+        RenderingPainter(textView: textView)?.reset()
+        textView.typingAttributes = baseAttributes(theme: theme)
+    }
+
     private static func baseAttributes(theme: EditorTheme) -> [NSAttributedString.Key: Any] {
         [
             .font: theme.nsFont,

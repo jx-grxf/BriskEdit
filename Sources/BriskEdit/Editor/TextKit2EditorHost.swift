@@ -48,6 +48,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.document = document
         context.coordinator.theme = theme
+        context.coordinator.isLargeFile = document.isLargeFile
         context.coordinator.showHoverTooltips = showHoverTooltips
         context.coordinator.highlightDebounce = highlightDebounce
         context.coordinator.gitDiffDebounce = gitDiffDebounce
@@ -150,9 +151,10 @@ struct TextKit2EditorHost: NSViewRepresentable {
         container.addSubview(gutter)
         container.addSubview(scrollView)
         container.addSubview(minimap)
-        let minimapWidth = minimap.widthAnchor.constraint(equalToConstant: showMinimap ? MinimapView.width : 0)
+        let minimapVisible = showMinimap && !document.isLargeFile
+        let minimapWidth = minimap.widthAnchor.constraint(equalToConstant: minimapVisible ? MinimapView.width : 0)
         context.coordinator.minimapWidthConstraint = minimapWidth
-        minimap.isHidden = !showMinimap
+        minimap.isHidden = !minimapVisible
         NSLayoutConstraint.activate([
             gutter.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             gutter.topAnchor.constraint(equalTo: container.topAnchor),
@@ -191,6 +193,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         guard let textView = context.coordinator.textView else { return }
         let coordinator = context.coordinator
         coordinator.document = document
+        let largeFileModeChanged = coordinator.isLargeFile != document.isLargeFile
+        coordinator.isLargeFile = document.isLargeFile
         coordinator.openLocation = onOpenLocation
         coordinator.workspaceRootURL = workspaceRootURL
         coordinator.showHoverTooltips = showHoverTooltips
@@ -217,12 +221,17 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         // Toggle the minimap without rebuilding the editor.
         if let minimap = coordinator.minimap, let width = coordinator.minimapWidthConstraint {
-            let target: CGFloat = showMinimap ? MinimapView.width : 0
+            let minimapVisible = showMinimap && !document.isLargeFile
+            let target: CGFloat = minimapVisible ? MinimapView.width : 0
             if width.constant != target {
                 width.constant = target
-                minimap.isHidden = !showMinimap
-                if showMinimap { minimap.invalidateContent() }
+                minimap.isHidden = !minimapVisible
+                if minimapVisible { minimap.invalidateContent() }
             }
+        }
+
+        if largeFileModeChanged, document.isLargeFile {
+            coordinator.disableExpensiveFeaturesForLargeFile()
         }
 
         // Only touch the (potentially huge) text when the change came from
@@ -251,7 +260,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         ) {
             coordinator.recomputeFoldRegions()
         }
-        if didReseed || themeChanged || languageChanged {
+        if didReseed || themeChanged || languageChanged || (largeFileModeChanged && !document.isLargeFile) {
             coordinator.applyHighlight()
         }
         coordinator.syncLSPIdentity()
@@ -337,6 +346,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var formatTask: Task<Void, Never>?
         private var hoverIndex = -1
         var showHoverTooltips = true
+        var isLargeFile = false
         var highlightDebounce: TimeInterval = 0.08
         var gitDiffDebounce: TimeInterval = 0.4
         private var completionRange: NSRange?
@@ -388,7 +398,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            document.applyEdit(text: textView.string)
+            let wasLargeFile = isLargeFile
+            document.applyEdit(text: textView.string, sizeHint: textView.textStorage?.length)
+            isLargeFile = document.isLargeFile
+            if !wasLargeFile, isLargeFile {
+                disableExpensiveFeaturesForLargeFile()
+            }
             lastSyncedRevision = document.revision
             // Keep the last check's markers visible until the debounced re-check
             // (LSP push or DiagnosticsService) replaces them wholesale. Clearing
@@ -459,7 +474,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// type/docs in a floating panel. Cancelled by movement, edits and scroll.
         func scheduleHover(at point: NSPoint) {
             hoverWork?.cancel()
-            guard showHoverTooltips, let textView else { hoverPanel.hide(); return }
+            guard !isLargeFile, showHoverTooltips, let textView else { hoverPanel.hide(); return }
             // Hover works for diagnostics (squiggles) even without a language
             // server, so don't gate scheduling on the LSP config here.
             let work = DispatchWorkItem { [weak self] in self?.performHover(at: point, in: textView) }
@@ -530,7 +545,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// only hit the server when actually inside a call.
         private func scheduleSignatureHelp(in textView: NSTextView) {
             signatureWork?.cancel()
-            guard document.fileURL != nil, LSPService.config(for: document.language) != nil else { signaturePanel.hide(); return }
+            guard !isLargeFile, document.fileURL != nil, LSPService.config(for: document.language) != nil else { signaturePanel.hide(); return }
             let selection = textView.selectedRange()
             guard selection.length == 0,
                   Self.isInsideCall(textView.string as NSString, caret: selection.location) != nil else {
@@ -992,7 +1007,41 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         func applyHighlight() {
             guard let textView else { return }
+            guard !isLargeFile else {
+                TextKit2SyntaxHighlighter.clear(in: textView, theme: theme)
+                return
+            }
             TextKit2SyntaxHighlighter.apply(to: textView, language: document.language, theme: theme)
+        }
+
+        func disableExpensiveFeaturesForLargeFile() {
+            highlightWork?.cancel()
+            gitWork?.cancel()
+            lspWork?.cancel()
+            minimapWork?.cancel()
+            hoverWork?.cancel()
+            signatureWork?.cancel()
+            popup.hide()
+            hoverPanel.hide()
+            signaturePanel.hide()
+            lspItems = []
+            if let uri = lspDiagnosticsURI {
+                LSPDiagnosticsBus.shared.removeHandler(uri: uri)
+                if let language = lspLanguage {
+                    Task { await LSPService.shared.didClose(language: language, uri: uri) }
+                }
+            }
+            lspDiagnosticsURI = nil
+            lspLanguage = nil
+            lspRoot = nil
+            folding.unfoldAll()
+            folding.updateRegions([])
+            gutter?.setGitDiff(nil)
+            document.diagnostics = []
+            if let textView {
+                TextKit2SyntaxHighlighter.clear(in: textView, theme: theme)
+                (textView as? BriskCodeTextView)?.setDiagnosticUnderlines([])
+            }
         }
 
         /// Reformats the whole buffer with the language's external formatter.
@@ -1049,6 +1098,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         private func scheduleHighlight() {
             highlightWork?.cancel()
+            guard !isLargeFile else { return }
             let work = DispatchWorkItem { [weak self] in
                 self?.recomputeFoldRegions()
                 self?.applyHighlight()
@@ -1063,7 +1113,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// untouched by the folding machinery.
         func recomputeFoldRegions() {
             guard let textView else { return }
-            guard theme.showCodeFolding, document.language.supportsFolding else {
+            guard !isLargeFile, theme.showCodeFolding, document.language.supportsFolding else {
                 folding.unfoldAll()
                 folding.updateRegions([])
                 gutter?.refresh()
@@ -1079,7 +1129,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// (each draw) is wasteful, so coalesce rapid typing into a single rebuild
         /// once edits settle — the overview can lag a beat without anyone noticing.
         private func scheduleMinimapRebuild() {
-            guard minimap != nil else { return }
+            guard !isLargeFile, minimap?.isHidden == false else { return }
             minimapWork?.cancel()
             let work = DispatchWorkItem { [weak self] in self?.minimap?.invalidateContent() }
             minimapWork = work
@@ -1091,6 +1141,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         func scheduleGitDiff() {
             gitWork?.cancel()
             guard gutter != nil else { return }
+            guard !isLargeFile else { gutter?.setGitDiff(nil); return }
             guard document.fileURL != nil else { gutter?.setGitDiff(nil); return }
             let work = DispatchWorkItem { [weak self] in
                 guard let self, let tv = self.textView, let url = self.document.fileURL else { return }
@@ -1107,7 +1158,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// Recomputes the suggestion list for the identifier at the caret and
         /// shows/updates the floating popup. Never mutates the document.
         private func updateCompletionPopup(in textView: NSTextView, minimumPrefix: Int = 2) {
-            guard document.language != .plainText else { popup.hide(); return }
+            guard !isLargeFile, document.language != .plainText else { popup.hide(); return }
             let selection = textView.selectedRange()
             guard selection.length == 0 else { popup.hide(); return }
 
@@ -1177,7 +1228,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// sent through `didChange`. Failures keep the local completion fallback.
         private func scheduleLSP(in textView: NSTextView) {
             let language = document.language
-            guard LSPService.config(for: language) != nil, let url = document.fileURL else {
+            guard !isLargeFile, LSPService.config(for: language) != nil, let url = document.fileURL else {
                 lspItems = []
                 return
             }
@@ -1211,7 +1262,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// for its diagnostics, and primes the first completion so the launch cost
         /// isn't paid mid-type.
         func warmUpLSP() {
-            guard let textView, let url = document.fileURL else { return }
+            guard !isLargeFile, let textView, let url = document.fileURL else { return }
             let language = document.language
             guard LSPService.config(for: language) != nil else { return }
             let uri = url.absoluteString
@@ -1231,6 +1282,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         func syncLSPIdentity() {
+            guard !isLargeFile else { return }
             let uri = document.fileURL?.absoluteString
             let language = document.language
             let root = document.fileURL.map(lspRootPath)
@@ -1271,6 +1323,10 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// buffer so the underlines track the text between LSP publishes.
         func refreshDiagnosticUnderlines() {
             guard let textView = textView as? BriskCodeTextView else { return }
+            guard !isLargeFile else {
+                textView.setDiagnosticUnderlines([])
+                return
+            }
             let ns = textView.string as NSString
             let underlines: [(range: NSRange, severity: Diagnostic.Severity)] = document.diagnostics.compactMap { d in
                 guard d.severity != .note, let range = Self.diagnosticRange(for: d, in: ns) else { return nil }
