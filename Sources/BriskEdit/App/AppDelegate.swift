@@ -59,9 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return menu
     }
 
-    /// Re-open a window when the user clicks the Dock icon with none open.
+    /// Let SwiftUI re-present the primary scene when the Dock icon is clicked
+    /// with no visible windows. Requesting a secondary window here duplicates
+    /// the system reopen: one restored primary plus one empty workspace.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { NewWindowCoordinator.shared.openNewWindow() }
         return true
     }
 
