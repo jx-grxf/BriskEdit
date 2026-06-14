@@ -415,11 +415,13 @@ private struct BreadcrumbBar: View {
     @Bindable var workspace: WorkspaceModel
 
     private struct Segment: Identifiable {
-        let id = UUID()
         let name: String
         let url: URL?
         let isDirectory: Bool
         let isLast: Bool
+        // Stable identity (path, or the name for untitled buffers) so ForEach
+        // doesn't churn every render — a fresh UUID here rebuilt the whole bar.
+        var id: String { url?.path ?? name }
     }
 
     var body: some View {
