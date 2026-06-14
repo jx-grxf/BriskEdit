@@ -141,8 +141,11 @@ if [[ "$CREATE_DMG_HELP" == *"--volname"* ]]; then
 elif [[ "$CREATE_DMG_HELP" == *"--dmg-title"* ]]; then
   # sindresorhus/create-dmg (npm): emits "<App> <version>.dmg" next to the app.
   find dist -maxdepth 1 -type f -name 'BriskEdit*.dmg' -delete
-  ( cd dist && "$CREATE_DMG_BIN" --overwrite --no-code-sign \
-      --dmg-title="BriskEdit ${BRISKEDIT_VERSION}" BriskEdit.app . >/dev/null 2>&1 || true )
+  (
+    cd dist
+    "$CREATE_DMG_BIN" --overwrite --no-code-sign \
+      --dmg-title="BriskEdit ${BRISKEDIT_VERSION}" BriskEdit.app . >/dev/null 2>&1 || true
+  )
   produced="$(find dist -maxdepth 1 -type f -name 'BriskEdit*.dmg' -print -quit)"
   if [[ -n "$produced" && "$produced" != "$DMG" ]]; then
     mv "$produced" "$DMG"
