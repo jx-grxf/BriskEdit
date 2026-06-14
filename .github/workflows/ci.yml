@@ -29,9 +29,18 @@ jobs:
           fetch-depth: 0
 
       - name: Check whitespace and shell syntax
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
         run: |
           set -euo pipefail
-          git log --check --oneline --all
+          if [[ -n "$PR_BASE_SHA" ]]; then
+            git diff --check "$PR_BASE_SHA"...HEAD
+          elif [[ -n "$PUSH_BEFORE_SHA" && ! "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
+            git diff --check "$PUSH_BEFORE_SHA" HEAD
+          else
+            git diff --check HEAD^
+          fi
           bash -n script/*.sh
 
       - name: Validate release metadata and package lock
