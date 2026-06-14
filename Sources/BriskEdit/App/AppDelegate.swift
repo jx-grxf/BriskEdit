@@ -59,9 +59,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return menu
     }
 
-    /// Re-open a window when the user clicks the Dock icon with none open.
+    /// Let SwiftUI re-present the primary scene when the Dock icon is clicked
+    /// with no visible windows. Requesting a secondary window here duplicates
+    /// the system reopen: one restored primary plus one empty workspace.
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        if !flag { NewWindowCoordinator.shared.openNewWindow() }
         return true
     }
 
@@ -153,9 +154,7 @@ final class ExternalFileOpenCoordinator {
     func open(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         if let workspace = WorkspaceRegistry.models.first {
-            for url in urls {
-                Task { await workspace.openFile(at: url) }
-            }
+            route(urls, into: workspace)
         } else {
             pendingURLs.append(contentsOf: urls)
             NewWindowCoordinator.shared.openNewWindow()
@@ -166,8 +165,20 @@ final class ExternalFileOpenCoordinator {
         guard !pendingURLs.isEmpty else { return }
         let urls = pendingURLs
         pendingURLs.removeAll()
+        route(urls, into: workspace)
+    }
+
+    /// Directories become the workspace root (so `briskedit .` / "Open With" on a
+    /// folder opens a project), files open as tabs.
+    private func route(_ urls: [URL], into workspace: WorkspaceModel) {
+        let fm = FileManager.default
         for url in urls {
-            Task { await workspace.openFile(at: url) }
+            var isDirectory: ObjCBool = false
+            if fm.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                workspace.setWorkspaceRoot(url)
+            } else {
+                Task { await workspace.openFile(at: url) }
+            }
         }
     }
 }

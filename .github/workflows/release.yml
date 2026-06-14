@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version without the leading v"
+        description: "Existing signed tag version without the leading v"
         required: true
         type: string
       build:
@@ -16,23 +16,121 @@ on:
         type: string
 
 permissions:
-  contents: write
+  contents: read
 
-# Serialize releases. The "Publish beta appcast feed" step edits a single shared
-# "beta" GitHub release, so two release runs at once (e.g. a stable and a beta
-# tag pushed close together, or a re-run) would race on its appcast and clobber
-# each other. Never cancel an in-flight release — a half-published one is worse.
 concurrency:
   group: release
   cancel-in-progress: false
 
+defaults:
+  run:
+    shell: bash
+
 jobs:
-  build-release:
-    runs-on: macos-26
-    timeout-minutes: 40
+  preflight:
+    name: Release preflight
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
+      build: ${{ steps.version.outputs.build }}
+      channel: ${{ steps.version.outputs.channel }}
+      commit: ${{ steps.tag.outputs.commit }}
     steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+      - name: Checkout history
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Resolve release identity
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_BUILD: ${{ inputs.build }}
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            tag="$GITHUB_REF_NAME"
+          else
+            tag="v${INPUT_VERSION#v}"
+          fi
+          version="${tag#v}"
+          build="${INPUT_BUILD:-$GITHUB_RUN_NUMBER}"
+
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || {
+            echo "error: unsupported release version '$version'" >&2
+            exit 1
+          }
+          [[ "$build" =~ ^[1-9][0-9]*$ ]] || {
+            echo "error: build number must be a positive integer" >&2
+            exit 1
+          }
+
+          if [[ "$version" == *-beta.* ]]; then
+            channel="beta"
+          else
+            channel="stable"
+          fi
+
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "build=$build"
+            echo "channel=$channel"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify signed annotated tag on main
+        id: tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          ref_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}")"
+          [[ "$(jq -r '.object.type' <<<"$ref_json")" == "tag" ]] || {
+            echo "error: $RELEASE_TAG must be an annotated tag" >&2
+            exit 1
+          }
+          tag_object="$(jq -r '.object.sha' <<<"$ref_json")"
+          tag_json="$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object}")"
+          [[ "$(jq -r '.verification.verified' <<<"$tag_json")" == "true" ]] || {
+            echo "error: GitHub did not verify the signature on $RELEASE_TAG" >&2
+            exit 1
+          }
+          commit="$(jq -r '.object.sha' <<<"$tag_json")"
+          git fetch --force origin main "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          git merge-base --is-ancestor "$commit" origin/main || {
+            echo "error: tagged commit is not reachable from origin/main" >&2
+            exit 1
+          }
+          git checkout --detach "$commit"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Verify release metadata
+        env:
+          BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
+          BRISKEDIT_BUILD: ${{ steps.version.outputs.build }}
+          BRISKEDIT_UPDATE_CHANNEL: ${{ steps.version.outputs.channel }}
+          BRISKEDIT_RELEASE_TAG: ${{ steps.version.outputs.tag }}
+        run: ./script/verify_release_metadata.sh
+
+  build-release:
+    name: Build and publish release
+    needs: preflight
+    runs-on: macos-26
+    timeout-minutes: 50
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - name: Checkout signed tag
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.preflight.outputs.tag }}
+          fetch-depth: 0
 
       - name: Show toolchain
         run: |
@@ -41,101 +139,67 @@ jobs:
           swift --version
 
       - name: Install tools
-        run: |
-          brew install xcodegen create-dmg
+        run: brew install xcodegen create-dmg
 
-      - name: Audit release identity
-        run: ./script/audit_release_identity.sh
-
-      - name: Resolve version
-        id: version
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
-            tag="${GITHUB_REF_NAME}"
-            version="${tag#v}"
-          else
-            version="${{ inputs.version }}"
-            tag="v${version#v}"
-            version="${version#v}"
-          fi
-          build="${{ inputs.build }}"
-          if [[ -z "$build" ]]; then
-            build="$GITHUB_RUN_NUMBER"
-          fi
-          if [[ "$tag" == *"-beta."* || "$tag" == *"-beta"* ]]; then
-            channel="beta"
-            prerelease="--prerelease"
-          else
-            channel="stable"
-            prerelease=""
-          fi
-          echo "tag=$tag" >>"$GITHUB_OUTPUT"
-          echo "version=$version" >>"$GITHUB_OUTPUT"
-          echo "build=$build" >>"$GITHUB_OUTPUT"
-          echo "channel=$channel" >>"$GITHUB_OUTPUT"
-          echo "prerelease=$prerelease" >>"$GITHUB_OUTPUT"
-
-      # Fail fast before the long build if the notes weren't trimmed to this
-      # release. Sparkle's in-app update dialog ships the TOPMOST "## " section
-      # of RELEASE_NOTES.md, and the GitHub release uses the whole file — so a
-      # stale top section silently ships the wrong notes to every updater.
-      - name: Verify release notes
+      - name: Verify release secrets
         env:
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+          BRISKEDIT_SPARKLE_PRIVATE_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PRIVATE_KEY }}
+          BRISKEDIT_SPARKLE_PUBLIC_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PUBLIC_KEY }}
+          BRISKEDIT_SIGN_IDENTITY: ${{ secrets.BRISKEDIT_SIGN_IDENTITY }}
+          BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
+          BRISKEDIT_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.BRISKEDIT_NOTARY_KEYCHAIN_PROFILE }}
+          BRISKEDIT_NOTARY_APPLE_ID: ${{ secrets.BRISKEDIT_NOTARY_APPLE_ID }}
+          BRISKEDIT_NOTARY_TEAM_ID: ${{ secrets.BRISKEDIT_NOTARY_TEAM_ID }}
+          BRISKEDIT_NOTARY_PASSWORD: ${{ secrets.BRISKEDIT_NOTARY_PASSWORD }}
+        run: ./script/verify_release_secrets.sh
+
+      - name: Generate locked Xcode project
+        run: ./script/prepare_xcode_project.sh
+
+      - name: Test tagged source
+        env:
+          # Forwarded into the xctest process (xcodebuild only propagates
+          # TEST_RUNNER_-prefixed vars); skips UI integration tests that are
+          # unstable on the headless CI VM.
+          TEST_RUNNER_CI: "1"
         run: |
-          set -euo pipefail
-          if [[ ! -f RELEASE_NOTES.md ]]; then
-            echo "error: RELEASE_NOTES.md is missing — GitHub and Sparkle notes both read from it." >&2
-            exit 1
-          fi
-          top="$(grep -m1 '^## ' RELEASE_NOTES.md | sed 's/^## //' | awk '{print $1}')"
-          if [[ "$top" != "$RELEASE_VERSION" ]]; then
-            echo "error: top RELEASE_NOTES.md section is '${top:-<none>}', expected '${RELEASE_VERSION}'." >&2
-            echo "Sparkle ships the topmost '## ' section as the in-app release notes." >&2
-            echo "Trim/reorder RELEASE_NOTES.md so ${RELEASE_VERSION} is the first section before tagging." >&2
-            exit 1
-          fi
-          echo "release notes ok: top section is ${RELEASE_VERSION}"
+          set -o pipefail
+          mkdir -p .build
+          xcodebuild test \
+            -project BriskEdit.xcodeproj \
+            -scheme BriskEdit \
+            -destination 'platform=macOS' \
+            -derivedDataPath .build/release-tests \
+            -onlyUsePackageVersionsFromResolvedFile \
+            -skipPackageUpdates \
+            -retry-tests-on-failure \
+            -test-iterations 3 \
+            BRISKEDIT_WARNINGS_AS_ERRORS=YES \
+            | tee .build/release-tests.log | tail -120
 
       - name: Build DMG
         env:
-          BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
-          BRISKEDIT_BUILD: ${{ steps.version.outputs.build }}
-          BRISKEDIT_UPDATE_CHANNEL: ${{ steps.version.outputs.channel }}
+          BRISKEDIT_VERSION: ${{ needs.preflight.outputs.version }}
+          BRISKEDIT_BUILD: ${{ needs.preflight.outputs.build }}
+          BRISKEDIT_UPDATE_CHANNEL: ${{ needs.preflight.outputs.channel }}
+          BRISKEDIT_WARNINGS_AS_ERRORS: "true"
           BRISKEDIT_SPARKLE_PUBLIC_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PUBLIC_KEY }}
           BRISKEDIT_SIGN_IDENTITY: ${{ secrets.BRISKEDIT_SIGN_IDENTITY }}
         run: ./script/package_dmg.sh
 
       - name: Build Sparkle assets
         env:
-          BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
-          BRISKEDIT_BUILD: ${{ steps.version.outputs.build }}
-          BRISKEDIT_UPDATE_CHANNEL: ${{ steps.version.outputs.channel }}
+          BRISKEDIT_VERSION: ${{ needs.preflight.outputs.version }}
+          BRISKEDIT_BUILD: ${{ needs.preflight.outputs.build }}
+          BRISKEDIT_UPDATE_CHANNEL: ${{ needs.preflight.outputs.channel }}
           BRISKEDIT_SPARKLE_PRIVATE_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PRIVATE_KEY }}
-          BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}
+          BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX: https://github.com/${{ github.repository }}/releases/download/${{ needs.preflight.outputs.tag }}
         run: ./script/create_sparkle_assets.sh
-
-      - name: Verify Sparkle appcast
-        run: |
-          ./script/verify_appcast.swift \
-            "dist/sparkle/appcast.xml" \
-            "https://github.com/${{ github.repository }}/releases/download/${{ steps.version.outputs.tag }}/BriskEdit-${{ steps.version.outputs.version }}.zip" \
-            "${{ steps.version.outputs.channel }}"
-
-      - name: Verify app signature
-        run: codesign --verify --deep --strict dist/BriskEdit.app
-
-      - name: Verify DMG
-        env:
-          BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
-        run: hdiutil imageinfo "dist/BriskEdit-${BRISKEDIT_VERSION}.dmg" >/dev/null
 
       - name: Notarize DMG
         env:
-          BRISKEDIT_VERSION: ${{ steps.version.outputs.version }}
-          BRISKEDIT_UPDATE_CHANNEL: ${{ steps.version.outputs.channel }}
+          BRISKEDIT_VERSION: ${{ needs.preflight.outputs.version }}
+          BRISKEDIT_UPDATE_CHANNEL: ${{ needs.preflight.outputs.channel }}
           BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
           BRISKEDIT_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.BRISKEDIT_NOTARY_KEYCHAIN_PROFILE }}
           BRISKEDIT_NOTARY_APPLE_ID: ${{ secrets.BRISKEDIT_NOTARY_APPLE_ID }}
@@ -143,93 +207,119 @@ jobs:
           BRISKEDIT_NOTARY_PASSWORD: ${{ secrets.BRISKEDIT_NOTARY_PASSWORD }}
         run: ./script/notarize_release.sh
 
-      - name: Upload DMG artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: BriskEdit-${{ steps.version.outputs.version }}-dmg
-          path: dist/BriskEdit-${{ steps.version.outputs.version }}.dmg
-          if-no-files-found: error
+      - name: Verify release artifacts
+        env:
+          BRISKEDIT_VERSION: ${{ needs.preflight.outputs.version }}
+          BRISKEDIT_BUILD: ${{ needs.preflight.outputs.build }}
+          BRISKEDIT_UPDATE_CHANNEL: ${{ needs.preflight.outputs.channel }}
+          BRISKEDIT_RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
+        run: ./script/verify_release_artifacts.sh
 
-      - name: Upload Sparkle artifact
-        uses: actions/upload-artifact@v7
+      - name: Extract current release notes
+        run: |
+          ./script/extract_release_notes.sh \
+            "${{ needs.preflight.outputs.version }}" \
+            dist/RELEASE_NOTES.md
+
+      - name: Attest release artifacts
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
-          name: BriskEdit-${{ steps.version.outputs.version }}-sparkle
-          path: |
-            dist/sparkle/BriskEdit-${{ steps.version.outputs.version }}.zip
+          subject-path: |
+            dist/BriskEdit-*.dmg
+            dist/sparkle/BriskEdit-*.zip
             dist/sparkle/appcast.xml
+            dist/SHA256SUMS
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: BriskEdit-${{ needs.preflight.outputs.version }}
+          path: |
+            dist/BriskEdit-${{ needs.preflight.outputs.version }}.dmg
+            dist/sparkle/BriskEdit-${{ needs.preflight.outputs.version }}.zip
+            dist/sparkle/appcast.xml
+            dist/SHA256SUMS
+            dist/RELEASE_NOTES.md
           if-no-files-found: error
+          retention-days: 30
 
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
-          RELEASE_VERSION: ${{ steps.version.outputs.version }}
-          RELEASE_PRERELEASE: ${{ steps.version.outputs.prerelease }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+          RELEASE_CHANNEL: ${{ needs.preflight.outputs.channel }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.commit }}
         run: |
           set -euo pipefail
-          asset="dist/BriskEdit-${RELEASE_VERSION}.dmg"
-          sparkle_zip="dist/sparkle/BriskEdit-${RELEASE_VERSION}.zip"
-          appcast="dist/sparkle/appcast.xml"
+          assets=(
+            "dist/BriskEdit-${RELEASE_VERSION}.dmg#BriskEdit-${RELEASE_VERSION}.dmg"
+            "dist/sparkle/BriskEdit-${RELEASE_VERSION}.zip#BriskEdit-${RELEASE_VERSION}.zip"
+            "dist/sparkle/appcast.xml#appcast.xml"
+            "dist/SHA256SUMS#SHA256SUMS"
+          )
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release upload "$RELEASE_TAG" "$asset#BriskEdit-${RELEASE_VERSION}.dmg" --clobber
-            gh release upload "$RELEASE_TAG" "$sparkle_zip#BriskEdit-${RELEASE_VERSION}.zip" --clobber
-            gh release upload "$RELEASE_TAG" "$appcast#appcast.xml" --clobber
+            if [[ "$RELEASE_CHANNEL" == "beta" ]]; then
+              gh release edit "$RELEASE_TAG" --target "$RELEASE_COMMIT" --title "BriskEdit ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --prerelease --latest=false
+            else
+              gh release edit "$RELEASE_TAG" --target "$RELEASE_COMMIT" --title "BriskEdit ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --prerelease=false --latest
+            fi
+            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          elif [[ "$RELEASE_CHANNEL" == "beta" ]]; then
+            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --target "$RELEASE_COMMIT" --title "BriskEdit ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --prerelease
           else
-            gh release create "$RELEASE_TAG" \
-              "$asset#BriskEdit-${RELEASE_VERSION}.dmg" \
-              "$sparkle_zip#BriskEdit-${RELEASE_VERSION}.zip" \
-              "$appcast#appcast.xml" \
-              --target "$GITHUB_SHA" \
-              --title "BriskEdit ${RELEASE_VERSION}" \
-              --notes-file RELEASE_NOTES.md \
-              $RELEASE_PRERELEASE
+            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --target "$RELEASE_COMMIT" --title "BriskEdit ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --latest
           fi
 
-      # Refresh the moving beta feed for EVERY release, stable or beta. Beta
-      # testers poll this feed; a stable build's appcast rides Sparkle's default
-      # channel (no tag), so publishing it here lets beta users roll forward onto
-      # the new stable automatically instead of being stranded on an older beta.
-      - name: Publish beta appcast feed
-        if: success()
+      - name: Verify published release
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
+          RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
         run: |
           set -euo pipefail
-          beta_tag="beta"
-          appcast="dist/sparkle/appcast.xml"
-          if gh release view "$beta_tag" >/dev/null 2>&1; then
-            gh release edit "$beta_tag" --target "$GITHUB_SHA" --prerelease --title "BriskEdit Beta Feed"
-            gh release upload "$beta_tag" "$appcast#appcast.xml" --clobber
+          release_json="$(gh release view "$RELEASE_TAG" --json assets,isDraft,url)"
+          [[ "$(jq -r '.isDraft' <<<"$release_json")" == "false" ]]
+          for name in "BriskEdit-${RELEASE_VERSION}.dmg" "BriskEdit-${RELEASE_VERSION}.zip" appcast.xml SHA256SUMS; do
+            size="$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .size' <<<"$release_json")"
+            [[ "$size" =~ ^[1-9][0-9]*$ ]] || {
+              echo "error: published asset $name is missing or empty" >&2
+              exit 1
+            }
+          done
+          echo "Published $(jq -r '.url' <<<"$release_json")"
+
+      - name: Publish beta appcast feed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_COMMIT: ${{ needs.preflight.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if gh release view beta >/dev/null 2>&1; then
+            gh release edit beta --target "$RELEASE_COMMIT" --prerelease --latest=false --title "BriskEdit Beta Feed"
+            gh release upload beta "dist/sparkle/appcast.xml#appcast.xml" --clobber
           else
-            gh release create "$beta_tag" \
-              "$appcast#appcast.xml" \
-              --target "$GITHUB_SHA" \
+            gh release create beta "dist/sparkle/appcast.xml#appcast.xml" \
+              --target "$RELEASE_COMMIT" \
               --title "BriskEdit Beta Feed" \
               --notes "Moving Sparkle beta appcast feed. Install beta builds from versioned prereleases." \
               --prerelease
           fi
 
-      # The release is now published with its assets. Trigger a rebuild of the
-      # marketing site (johannesgrof.me) so its build-time GitHub fetch picks up
-      # the new version and download links. Fires for both stable and beta tags.
-      # The release above is created with GITHUB_TOKEN, which by design does not
-      # emit a `release` event another workflow could listen on, so we kick the
-      # site from here instead of a separate `on: release` workflow.
       - name: Refresh website with new release
-        if: success()
         env:
           DEPLOY_HOOK: ${{ secrets.WEBSITE_DEPLOY_HOOK }}
-          RELEASE_TAG: ${{ steps.version.outputs.tag }}
+          RELEASE_TAG: ${{ needs.preflight.outputs.tag }}
         run: |
           set -euo pipefail
-          if [ -z "${DEPLOY_HOOK:-}" ]; then
-            echo "WEBSITE_DEPLOY_HOOK secret not set — skipping website rebuild." >&2
+          if [[ -z "${DEPLOY_HOOK:-}" ]]; then
+            echo "WEBSITE_DEPLOY_HOOK is not configured; skipping website rebuild."
             exit 0
           fi
-          echo "Triggering johannesgrof.me rebuild for ${RELEASE_TAG}…"
           code="$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$DEPLOY_HOOK")"
-          echo "Deploy hook responded with HTTP ${code}"
-          case "$code" in
-            2*) echo "Website rebuild queued." ;;
-            *) echo "Deploy hook failed (HTTP ${code})." >&2; exit 1 ;;
-          esac
+          [[ "$code" == 2* ]] || {
+            echo "error: website deploy hook returned HTTP $code" >&2
+            exit 1
+          }
+          echo "Website rebuild queued for $RELEASE_TAG."

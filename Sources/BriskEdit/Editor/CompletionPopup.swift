@@ -1,7 +1,7 @@
 import AppKit
 
 /// A lightweight, non-intrusive completion list that floats below the caret —
-/// the VS Code style. It never mutates the document; it only reports the chosen
+/// a compact inline style. It never mutates the document; it only reports the chosen
 /// symbol through `onAccept` when the user confirms (Return/Tab/click). Typing,
 /// arrow navigation and dismissal are driven by the editor.
 @MainActor

@@ -19,7 +19,7 @@ final class BriskCodeTextView: NSTextView {
     private var hoverTrackingArea: NSTrackingArea?
 
     /// Resolved diagnostic spans (character ranges) with severity, drawn as wavy
-    /// underlines under the offending text — the VS Code red/yellow squiggle.
+    /// underlines under the offending text — the red/yellow squiggle.
     private var diagnosticUnderlines: [(range: NSRange, severity: Diagnostic.Severity)] = []
     var diagnosticErrorColor: NSColor = .systemRed
     var diagnosticWarningColor: NSColor = .systemYellow
@@ -55,7 +55,7 @@ final class BriskCodeTextView: NSTextView {
             onSelectNextOccurrence?()
             return true
         }
-        // ⇧⌥F — Format Document (matches VS Code's shortcut).
+        // ⇧⌥F — Format Document.
         if !event.isARepeat,
            flags == [.shift, .option], event.charactersIgnoringModifiers?.lowercased() == "f",
            canFormatDocument() {

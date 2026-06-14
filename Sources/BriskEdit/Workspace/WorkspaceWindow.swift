@@ -1,4 +1,4 @@
-import AppKit
+@preconcurrency import AppKit
 import SwiftUI
 
 struct WorkspaceWindow: View {
@@ -19,11 +19,18 @@ struct WorkspaceWindow: View {
             WorkspaceDetail(workspace: workspace, onOpenFile: openFile)
         }
         .navigationSplitViewStyle(.balanced)
+        .transaction { transaction in
+            if preferences.reduceMotion { transaction.disablesAnimations = true }
+        }
         .task {
             guard !didStartSession else { return }
             didStartSession = true
             if kind.restoresSession {
                 await workspace.startPrimarySession(restoreLastWorkspace: preferences.startupBehavior == .restoreLastWorkspace)
+                // After an update (not first install), greet with What's New.
+                if let version = WhatsNew.versionToAnnounceAndMarkSeen() {
+                    workspace.showWhatsNew(version: version)
+                }
             }
             ExternalFileOpenCoordinator.shared.drainPending(into: workspace)
         }
@@ -37,6 +44,7 @@ struct WorkspaceWindow: View {
             isPrimaryWindow: kind.restoresSession,
             isDocumentEdited: workspace.hasUnsavedChanges,
             hasUnsavedChanges: workspace.hasUnsavedChanges,
+            wantsFullSize: kind.restoresSession ? preferences.hasCompletedOnboarding : true,
             saveAll: { await workspace.saveAllForQuit() }
         ))
         .overlay(alignment: .top) {
@@ -67,6 +75,16 @@ struct WorkspaceWindow: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .briskEditTitleSecret)) { note in
             if let message = note.userInfo?["message"] as? String { showSecretBanner(message) }
+        }
+        // First-run onboarding (and replays from Settings) show as a compact
+        // sheet on the primary window only. The window stays medium-sized behind
+        // it and expands to full size once it's dismissed.
+        .sheet(isPresented: Binding(
+            get: { kind.restoresSession && !preferences.hasCompletedOnboarding },
+            set: { _ in }
+        )) {
+            OnboardingView(preferences: preferences, onFinish: {})
+                .interactiveDismissDisabled()
         }
         .toolbar {
             if updates.isUpdateAvailable {
@@ -156,16 +174,7 @@ private struct WorkspaceSidebar: View {
     var body: some View {
         if let root = workspace.rootURL {
             VStack(spacing: 0) {
-                Picker("Sidebar section", selection: $workspace.sidebarTab) {
-                    Image(systemName: "folder").accessibilityLabel("Files").tag(SidebarTab.files)
-                    Image(systemName: "magnifyingglass").accessibilityLabel("Search").tag(SidebarTab.search)
-                    Image(systemName: "list.bullet.indent").accessibilityLabel("Outline").tag(SidebarTab.outline)
-                    Image(systemName: "arrow.triangle.branch").accessibilityLabel("Source Control").tag(SidebarTab.sourceControl)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .padding(.horizontal, 10)
-                .padding(.vertical, DesignTokens.Spacing.small)
+                SidebarActivityBar(selection: $workspace.sidebarTab)
                 Divider()
                 WorkspaceSidebarPanes(workspace: workspace, root: root)
             }
@@ -183,6 +192,58 @@ private struct WorkspaceSidebar: View {
                 Button("Open Folder…", action: openFolder)
             }
         }
+    }
+}
+
+/// A flat icon row for switching sidebar panes — the IDE "activity bar" idiom.
+/// Replaces the chunky segmented control, which read as a
+/// form widget rather than navigation chrome. The active pane gets the accent
+/// tint over a soft rounded fill; the rest stay quiet and monochrome.
+private struct SidebarActivityBar: View {
+    @Binding var selection: SidebarTab
+
+    private struct Item: Identifiable {
+        let tab: SidebarTab
+        let symbol: String
+        let label: String
+        var id: SidebarTab { tab }
+    }
+
+    private let items: [Item] = [
+        Item(tab: .files, symbol: "folder", label: "Files"),
+        Item(tab: .search, symbol: "magnifyingglass", label: "Search"),
+        Item(tab: .outline, symbol: "list.bullet.indent", label: "Outline"),
+        Item(tab: .sourceControl, symbol: "arrow.triangle.branch", label: "Source Control"),
+    ]
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(items) { item in
+                let isActive = selection == item.tab
+                Button {
+                    selection = item.tab
+                } label: {
+                    Image(systemName: item.symbol)
+                        .font(.system(size: 14, weight: .medium))
+                        .symbolVariant(isActive ? .fill : .none)
+                        .frame(width: 30, height: 26)
+                        .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
+                        .background(
+                            RoundedRectangle(cornerRadius: 6, style: .continuous)
+                                .fill(Color.accentColor.opacity(isActive ? 0.14 : 0))
+                        )
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(item.label)
+                .accessibilityLabel(item.label)
+                .accessibilityAddTraits(isActive ? [.isSelected] : [])
+            }
+            Spacer(minLength: 0)
+        }
+        .animation(.easeInOut(duration: 0.12), value: selection)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
     }
 }
 
@@ -229,6 +290,8 @@ private struct WindowConfigurator: NSViewRepresentable {
     let isPrimaryWindow: Bool
     let isDocumentEdited: Bool
     let hasUnsavedChanges: Bool
+    /// Full-size when true; a centered medium frame while onboarding is showing.
+    let wantsFullSize: Bool
     let saveAll: () async -> Bool
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -243,9 +306,10 @@ private struct WindowConfigurator: NSViewRepresentable {
             let edited = isDocumentEdited
             let hasUnsaved = hasUnsavedChanges
             let isPrimary = isPrimaryWindow
+            let fullSize = wantsFullSize
             let save = saveAll
             DispatchQueue.main.async {
-                coordinator?.configure(window: window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, saveAll: save)
+                coordinator?.configure(window: window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, saveAll: save)
             }
         }
         return view
@@ -256,9 +320,10 @@ private struct WindowConfigurator: NSViewRepresentable {
         let edited = isDocumentEdited
         let hasUnsaved = hasUnsavedChanges
         let isPrimary = isPrimaryWindow
+        let fullSize = wantsFullSize
         let save = saveAll
         DispatchQueue.main.async {
-            coordinator.configure(window: nsView.window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, saveAll: save)
+            coordinator.configure(window: nsView.window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, saveAll: save)
         }
     }
 
@@ -268,9 +333,11 @@ private struct WindowConfigurator: NSViewRepresentable {
         private weak var forwardee: NSWindowDelegate?
         private var hasUnsaved = false
         private var saveAll: () async -> Bool = { true }
-        private var didApplyInitialFrame = false
+        /// nil until the first frame is applied; then tracks whether we last sized
+        /// the window full or to the medium onboarding frame.
+        private var appliedFullSize: Bool?
 
-        func configure(window: NSWindow?, isPrimaryWindow: Bool, isEdited: Bool, hasUnsaved: Bool, saveAll: @escaping () async -> Bool) {
+        func configure(window: NSWindow?, isPrimaryWindow: Bool, isEdited: Bool, hasUnsaved: Bool, wantsFullSize: Bool, saveAll: @escaping () async -> Bool) {
             guard let window else { return }
             // We restore the folder + open tabs ourselves (startPrimarySession).
             // Letting AppKit *also* persist/restore this window produces a second,
@@ -290,11 +357,72 @@ private struct WindowConfigurator: NSViewRepresentable {
                 forwardee = window.delegate
                 window.delegate = self
             }
-            if !didApplyInitialFrame {
-                didApplyInitialFrame = true
-                enforceFullSizeFrame(on: window)
-            }
+            applyFrameIfNeeded(window, wantsFullSize: wantsFullSize)
             installTitleClickHook(on: window)
+        }
+
+        /// Drives the window between the medium onboarding frame and full size.
+        /// On first launch for a returning user this is full-size immediately; for
+        /// a first-run user it starts medium and animates to full when onboarding
+        /// finishes (`wantsFullSize` flips true).
+        private func applyFrameIfNeeded(_ window: NSWindow, wantsFullSize: Bool) {
+            guard appliedFullSize != wantsFullSize else { return }
+            let isFirstApply = (appliedFullSize == nil)
+            appliedFullSize = wantsFullSize
+            if wantsFullSize {
+                if isFirstApply {
+                    enforceFullSizeFrame(on: window)
+                } else {
+                    animateToFullSize(window)
+                }
+            } else {
+                enforceOnboardingFrame(on: window)
+            }
+        }
+
+        /// Hold the medium onboarding frame across SwiftUI's settling passes (its
+        /// `defaultSize` is full-screen, so it tries to grow the window back).
+        /// Each re-apply bails if onboarding finished meanwhile.
+        private func enforceOnboardingFrame(on window: NSWindow) {
+            let delays: [Double] = [0, 0.05, 0.12, 0.25, 0.4, 0.6, 0.85, 1.2]
+            for delay in delays {
+                if delay == 0 {
+                    applyOnboardingFrame(to: window)
+                } else {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak window] in
+                        guard let self, let window, self.appliedFullSize == false else { return }
+                        self.applyOnboardingFrame(to: window)
+                    }
+                }
+            }
+        }
+
+        /// A centered, focused frame shown while the onboarding sheet is up.
+        private func applyOnboardingFrame(to window: NSWindow) {
+            guard let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
+            let visible = screen.visibleFrame
+            let size = CGSize(width: min(1080, visible.width * 0.8), height: min(720, visible.height * 0.82))
+            let origin = CGPoint(
+                x: visible.midX - size.width / 2,
+                y: visible.midY - size.height / 2
+            )
+            let target = CGRect(origin: origin, size: size)
+            // No-op once it already matches, so we stop fighting a settled window.
+            let frame = window.frame
+            if abs(frame.width - target.width) < 2, abs(frame.height - target.height) < 2,
+               abs(frame.origin.x - target.origin.x) < 2, abs(frame.origin.y - target.origin.y) < 2 {
+                return
+            }
+            window.setFrame(target, display: true, animate: false)
+        }
+
+        private func animateToFullSize(_ window: NSWindow) {
+            guard let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = 0.45
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                window.animator().setFrame(screen.visibleFrame, display: true)
+            }
         }
 
         /// SwiftUI resizes the window to its content's ideal size *after* our first
@@ -407,11 +535,18 @@ private struct WindowConfigurator: NSViewRepresentable {
 
         override func responds(to aSelector: Selector!) -> Bool {
             if super.responds(to: aSelector) { return true }
-            return forwardee?.responds(to: aSelector) ?? false
+            return MainActor.assumeIsolated {
+                forwardee?.responds(to: aSelector) ?? false
+            }
         }
 
         override func forwardingTarget(for aSelector: Selector!) -> Any? {
-            if let forwardee, forwardee.responds(to: aSelector) { return forwardee }
+            if let target = MainActor.assumeIsolated({ () -> NSWindowDelegate? in
+                guard let forwardee, forwardee.responds(to: aSelector) else { return nil }
+                return forwardee
+            }) {
+                return target
+            }
             return super.forwardingTarget(for: aSelector)
         }
     }

@@ -20,7 +20,6 @@ if [[ -z "${BRISKEDIT_VERSION:-}" ]]; then
   exit 1
 fi
 BUILD="${BRISKEDIT_BUILD:-1}"
-CHANNEL="${BRISKEDIT_UPDATE_CHANNEL:-stable}"
 
 if ! command -v xcodegen >/dev/null 2>&1; then
   echo "error: xcodegen is required" >&2
@@ -48,7 +47,7 @@ if [[ -z "$CREATE_DMG_BIN" ]]; then
   CREATE_DMG_BIN="$(command -v create-dmg 2>/dev/null || true)"
 fi
 
-xcodegen >/dev/null
+./script/prepare_xcode_project.sh
 
 # Use a stable derived-data path inside the repo (.build is gitignored) so the
 # Sparkle SPM artifacts (sign_update) survive for create_sparkle_assets.sh.
@@ -76,6 +75,9 @@ if [[ -n "${BRISKEDIT_SIGN_IDENTITY:-}" ]]; then
     "ENABLE_HARDENED_RUNTIME=YES"
   )
 fi
+if [[ "${BRISKEDIT_WARNINGS_AS_ERRORS:-}" == "true" ]]; then
+  EXTRA_SETTINGS+=("BRISKEDIT_WARNINGS_AS_ERRORS=YES")
+fi
 
 xcodebuild \
   -project BriskEdit.xcodeproj \
@@ -83,6 +85,8 @@ xcodebuild \
   -configuration Release \
   -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA" \
+  -onlyUsePackageVersionsFromResolvedFile \
+  -skipPackageUpdates \
   "${EXTRA_SETTINGS[@]}" \
   build | tail -20
 
@@ -136,9 +140,13 @@ if [[ "$CREATE_DMG_HELP" == *"--volname"* ]]; then
   fi
 elif [[ "$CREATE_DMG_HELP" == *"--dmg-title"* ]]; then
   # sindresorhus/create-dmg (npm): emits "<App> <version>.dmg" next to the app.
-  ( cd dist && "$CREATE_DMG_BIN" --overwrite --no-code-sign \
-      --dmg-title="BriskEdit ${BRISKEDIT_VERSION}" BriskEdit.app . >/dev/null 2>&1 || true )
-  produced="$(ls -t dist/BriskEdit*.dmg 2>/dev/null | head -n1 || true)"
+  find dist -maxdepth 1 -type f -name 'BriskEdit*.dmg' -delete
+  (
+    cd dist
+    "$CREATE_DMG_BIN" --overwrite --no-code-sign \
+      --dmg-title="BriskEdit ${BRISKEDIT_VERSION}" BriskEdit.app . >/dev/null 2>&1 || true
+  )
+  produced="$(find dist -maxdepth 1 -type f -name 'BriskEdit*.dmg' -print -quit)"
   if [[ -n "$produced" && "$produced" != "$DMG" ]]; then
     mv "$produced" "$DMG"
   fi

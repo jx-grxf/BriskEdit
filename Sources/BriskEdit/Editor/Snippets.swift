@@ -10,7 +10,7 @@ enum SecretMode {
     }
 }
 
-/// A code-structure snippet à la VS Code. `body` uses `\t` for one indent
+/// A code-structure snippet. `body` uses `\t` for one indent
 /// level, `\n` for newlines, `$1{text}` for the placeholder that gets selected
 /// on insertion, and `$0` for the final caret position.
 struct CodeSnippet: Equatable, Sendable {
@@ -20,7 +20,7 @@ struct CodeSnippet: Equatable, Sendable {
 }
 
 /// Semantic category of a completion row — drives the leading icon (and tint)
-/// in the popup, mirroring Xcode/VS Code. Maps from the LSP `CompletionItemKind`.
+/// in the popup. Maps from the LSP `CompletionItemKind`.
 enum CompletionKind: Equatable, Sendable {
     case function
     case variable

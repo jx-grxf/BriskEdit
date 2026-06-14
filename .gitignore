@@ -12,6 +12,7 @@ xcuserdata/
 .build/
 .swiftpm/
 Package.resolved
+!Config/Package.resolved
 Packages/
 
 # macOS

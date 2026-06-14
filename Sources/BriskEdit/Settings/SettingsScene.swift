@@ -2,6 +2,8 @@ import AppKit
 import SwiftUI
 
 struct SettingsScene: View {
+    @Environment(Preferences.self) private var preferences
+
     var body: some View {
         TabView {
             GeneralPreferencesView()
@@ -10,6 +12,8 @@ struct SettingsScene: View {
                 .tabItem { Label("Appearance", systemImage: "paintpalette") }
             EditorPreferencesView()
                 .tabItem { Label("Editor", systemImage: "text.cursor") }
+            PerformancePreferencesView()
+                .tabItem { Label("Performance", systemImage: "speedometer") }
             TerminalPreferencesView()
                 .tabItem { Label("Terminal", systemImage: "terminal") }
             UpdatePreferencesView()
@@ -18,6 +22,9 @@ struct SettingsScene: View {
                 .tabItem { Label("Experimental", systemImage: "flask") }
         }
         .frame(width: 520, height: 480)
+        .transaction { transaction in
+            if preferences.reduceMotion { transaction.disablesAnimations = true }
+        }
     }
 }
 
@@ -25,6 +32,9 @@ struct SettingsScene: View {
 
 private struct GeneralPreferencesView: View {
     @Environment(Preferences.self) private var preferences
+    @State private var cliInstalled = CLIInstaller.isInstalled
+    @State private var cliError: String?
+    @State private var cliWorking = false
 
     var body: some View {
         @Bindable var prefs = preferences
@@ -40,10 +50,106 @@ private struct GeneralPreferencesView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Command-Line Tool") {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Shell command: `briskedit`")
+                        Text(cliInstalled
+                             ? "Installed. Run `briskedit .` to open a folder. The shorter `brisk` alias is added when that name is free."
+                             : "Install `briskedit` to open files and folders from the terminal without replacing existing commands.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Button {
+                        Task {
+                            if cliInstalled { await uninstallCLI() } else { await installCLI() }
+                        }
+                    } label: {
+                        ZStack {
+                            // Keep the button width steady so it doesn't jump
+                            // when the label swaps for the spinner.
+                            Text(cliInstalled ? "Uninstall" : "Install").opacity(cliWorking ? 0 : 1)
+                            if cliWorking {
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                        .frame(minWidth: 64)
+                    }
+                    .disabled(cliWorking)
+                    .animation(.easeInOut(duration: 0.15), value: cliWorking)
+                }
+            }
+            Section("Welcome & Setup") {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Onboarding")
+                        Text("Replay the animated welcome to reconfigure the editor, performance and source-control basics.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Button("Show Again") {
+                        prefs.hasCompletedOnboarding = false
+                        NSApp.keyWindow?.makeKeyAndOrderFront(nil)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .padding()
+        .task { cliInstalled = CLIInstaller.isInstalled }
+        .alert("Couldn't install the command", isPresented: Binding(
+            get: { cliError != nil },
+            set: { if !$0 { cliError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(cliError ?? "")
+        }
+    }
+
+    private func installCLI() async {
+        cliWorking = true
+        let start = Date()
+        do {
+            try await CLIInstaller.install()
+            cliInstalled = CLIInstaller.isInstalled
+        } catch CLIInstallerError.authorizationCancelled {
+            // The user dismissed the authorization dialog — nothing to report.
+        } catch {
+            cliError = error.localizedDescription
+        }
+        await holdSpinner(since: start)
+        cliWorking = false
+    }
+
+    private func uninstallCLI() async {
+        cliWorking = true
+        let start = Date()
+        do {
+            try await CLIInstaller.uninstall()
+            cliInstalled = CLIInstaller.isInstalled
+        } catch CLIInstallerError.authorizationCancelled {
+            // The user dismissed the authorization dialog — nothing to report.
+        } catch {
+            cliError = error.localizedDescription
+        }
+        await holdSpinner(since: start)
+        cliWorking = false
+    }
+
+    /// Keeps the spinner on screen for at least a short beat so a near-instant
+    /// install still reads as an action rather than a flicker.
+    private func holdSpinner(since start: Date) async {
+        let minimum = 0.5
+        let elapsed = Date().timeIntervalSince(start)
+        if elapsed < minimum {
+            try? await Task.sleep(for: .seconds(minimum - elapsed))
+        }
     }
 }
 
@@ -69,7 +175,7 @@ private struct AppearancePreferencesView: View {
                         .listRowSeparator(.hidden)
                 }
                 HStack {
-                    Button("Import VS Code Theme…") { importTheme() }
+                    Button("Import Theme…") { importTheme() }
                     Spacer()
                     if let theme = themeStore.theme(id: prefs.themeID), !theme.isBuiltIn {
                         Button("Remove", role: .destructive) {
@@ -78,7 +184,7 @@ private struct AppearancePreferencesView: View {
                         }
                     }
                 }
-                Text("Bring any VS Code `.json` color theme over — keywords, types, strings, comments and git colors are mapped automatically.")
+                Text("Bring any `.json` color theme over — keywords, types, strings, comments and git colors are mapped automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -127,7 +233,7 @@ private struct AppearancePreferencesView: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.json]
-        panel.message = "Choose a VS Code color theme (.json)"
+        panel.message = "Choose a color theme (.json)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let theme = try themeStore.importTheme(from: url)
@@ -215,6 +321,67 @@ private struct EditorPreferencesView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .padding()
+    }
+}
+
+// MARK: - Performance
+
+private struct PerformancePreferencesView: View {
+    @Environment(Preferences.self) private var preferences
+
+    var body: some View {
+        @Bindable var prefs = preferences
+        Form {
+            Section("Performance Mode") {
+                Picker("Mode", selection: $prefs.performanceMode) {
+                    ForEach(Preferences.PerformanceMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Preferences.PerformanceMode.allCases) { mode in
+                        let isSelected = mode == preferences.performanceMode
+                        HStack(alignment: .top, spacing: 9) {
+                            Image(systemName: mode.systemImage)
+                                .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                                .frame(width: 18)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(mode.title)
+                                    .font(.callout.weight(isSelected ? .semibold : .regular))
+                                Text(mode.explanation)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 2)
+
+                if preferences.performanceMode == .adaptive {
+                    Label(
+                        "Right now: \(preferences.resolvedPerformanceMode.title) — \(adaptiveReason)",
+                        systemImage: preferences.resolvedPerformanceMode.systemImage
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .padding()
+    }
+
+    private var adaptiveReason: String {
+        if preferences.isLowPowerModeActive { return "macOS Low Power Mode is on." }
+        switch preferences.thermalState {
+        case .serious, .critical: return "the Mac is under thermal pressure."
+        default: return "running at full speed."
+        }
     }
 }
 
@@ -339,7 +506,7 @@ private struct ExperimentalPreferencesView: View {
                 ExperimentalCard(
                     title: "Discord Rich Presence",
                     systemImage: "gamecontroller",
-                    summary: "Show what you're working on — the file, its language and the workspace — on your Discord profile, just like the VS Code integration.",
+                    summary: "Show what you're working on — the file, its language and the workspace — on your Discord profile.",
                     isOn: $prefs.discordRichPresence
                 ) {
                     Toggle("Show file name", isOn: $prefs.discordShowFileName)

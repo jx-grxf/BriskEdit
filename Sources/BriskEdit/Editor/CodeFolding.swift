@@ -1,7 +1,7 @@
 import AppKit
 
 /// One foldable region, detected purely from indentation (zero-config, language
-/// agnostic — mirrors VS Code's indentation folding provider). Lines are 0-based
+/// agnostic — a plain indentation folding provider). Lines are 0-based
 /// indices into the document's line list.
 struct FoldRegion: Equatable {
     /// The line whose chevron toggles the fold (the "header"); stays visible.
@@ -11,6 +11,20 @@ struct FoldRegion: Equatable {
     let lastLine: Int
     /// UTF-16 character range covering the hidden paragraphs (header excluded).
     let hiddenRange: NSRange
+}
+
+enum FoldingRefreshPolicy {
+    static func needsRecompute(
+        previousTheme: EditorTheme,
+        theme: EditorTheme,
+        languageChanged: Bool,
+        documentReseeded: Bool
+    ) -> Bool {
+        documentReseeded
+            || languageChanged
+            || previousTheme.showCodeFolding != theme.showCodeFolding
+            || previousTheme.tabWidth != theme.tabWidth
+    }
 }
 
 /// Detects foldable regions by indentation. A line is a fold header when the
@@ -220,7 +234,9 @@ final class FoldingController: NSObject, NSTextContentStorageDelegate, @unchecke
             storage.edited(.editedAttributes, range: NSRange(location: location, length: storage.length - location), changeInLength: 0)
         }
         contentStorage.primaryTextLayoutManager?.textViewportLayoutController.layoutViewport()
-        textView?.needsDisplay = true
+        DispatchQueue.main.async { [weak self] in
+            self?.textView?.needsDisplay = true
+        }
     }
 
     // MARK: - NSTextContentStorageDelegate

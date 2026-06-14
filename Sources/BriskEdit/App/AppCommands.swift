@@ -48,6 +48,24 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("w", modifiers: [.command, .shift])
             .disabled(workspace?.rootURL == nil)
+
+            Divider()
+
+            Button("Close Tab") {
+                if let id = workspace?.activeTabID { workspace?.requestCloseTab(id) }
+            }
+            .keyboardShortcut("w", modifiers: [.command, .control])
+            .disabled(workspace?.activeTab == nil)
+
+            Button("Close Other Tabs") {
+                if let id = workspace?.activeTabID { workspace?.requestCloseOtherTabs(keeping: id) }
+            }
+            .disabled((workspace?.tabs.count ?? 0) < 2)
+
+            Button("Close All Tabs") {
+                workspace?.requestCloseAllTabs()
+            }
+            .disabled(workspace?.tabs.isEmpty != false)
         }
 
         CommandGroup(after: .saveItem) {
@@ -56,6 +74,18 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("s", modifiers: .command)
             .disabled(workspace?.activeTab == nil)
+
+            Button("Save As…") {
+                Task { await workspace?.saveActiveTabAs() }
+            }
+            .keyboardShortcut("s", modifiers: [.command, .shift])
+            .disabled(workspace?.activeTab == nil)
+
+            Button("Save All") {
+                Task { _ = await workspace?.saveAllForQuit() }
+            }
+            .keyboardShortcut("s", modifiers: [.command, .option])
+            .disabled(workspace?.hasUnsavedChanges != true)
         }
 
         CommandMenu("Go") {
@@ -118,6 +148,15 @@ struct AppCommands: Commands {
                 Picker("Theme", selection: $preferences.themeID) {
                     ForEach(ThemeStore.shared.themes) { theme in
                         Text(theme.name).tag(theme.id)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
+
+            Menu("Performance Mode") {
+                Picker("Performance Mode", selection: $preferences.performanceMode) {
+                    ForEach(Preferences.PerformanceMode.allCases) { mode in
+                        Label(mode.title, systemImage: mode.systemImage).tag(mode)
                     }
                 }
                 .pickerStyle(.inline)
@@ -186,6 +225,10 @@ struct AppCommands: Commands {
         // Replace the default "BriskEdit Help" item (which only shows an
         // "Help isn't available" alert) with a link to the project on GitHub.
         CommandGroup(replacing: .help) {
+            Button("What's New in BriskEdit") {
+                workspace?.showWhatsNew(version: WhatsNew.currentVersion)
+            }
+            .disabled(workspace == nil)
             Button("BriskEdit on GitHub") {
                 if let url = URL(string: "https://github.com/jx-grxf/BriskEdit") {
                     NSWorkspace.shared.open(url)

@@ -4,6 +4,8 @@ import WebKit
 
 struct MarkdownPreview: View {
     let document: TextDocument
+    var showsHeader = true
+    var renderDebounceMilliseconds = 180
     var onClose: () -> Void = {}
     var onOpenFile: (URL) -> Void = { _ in }
     @State private var html = ""
@@ -11,23 +13,25 @@ struct MarkdownPreview: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Label("Preview", systemImage: "doc.richtext")
-                    .font(.caption.weight(.semibold))
-                Spacer()
-                Text(document.displayName)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Close Preview", systemImage: "xmark") { onClose() }
-                    .buttonStyle(.borderless)
-                    .labelStyle(.iconOnly)
-                    .help("Close Markdown preview")
-                    .accessibilityLabel("Close Markdown preview")
+            if showsHeader {
+                HStack {
+                    Label("Preview", systemImage: "doc.richtext")
+                        .font(.caption.weight(.semibold))
+                    Spacer()
+                    Text(document.displayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Button("Close Preview", systemImage: "xmark") { onClose() }
+                        .buttonStyle(.borderless)
+                        .labelStyle(.iconOnly)
+                        .help("Close Markdown preview")
+                        .accessibilityLabel("Close Markdown preview")
+                }
+                .padding(.horizontal, 10)
+                .frame(height: 34)
+                .background(.bar)
+                Divider()
             }
-            .padding(.horizontal, 10)
-            .frame(height: 34)
-            .background(.bar)
-            Divider()
             MarkdownWebView(html: html, documentURL: document.fileURL, onOpenFile: onOpenFile)
         }
         .onAppear { scheduleRender(debounce: false) }
@@ -40,7 +44,7 @@ struct MarkdownPreview: View {
         let markdown = document.text
         renderTask = Task {
             if debounce {
-                try? await Task.sleep(for: .milliseconds(180))
+                try? await Task.sleep(for: .milliseconds(renderDebounceMilliseconds))
             }
             guard !Task.isCancelled else { return }
             guard markdown.utf8.count <= 4 * 1024 * 1024 else {

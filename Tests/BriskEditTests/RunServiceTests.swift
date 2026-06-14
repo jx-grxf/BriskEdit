@@ -3,7 +3,7 @@ import XCTest
 
 @MainActor
 final class RunServiceTests: XCTestCase {
-    private var temporaryDirectories: [URL] = []
+    nonisolated(unsafe) private var temporaryDirectories: [URL] = []
 
     override func tearDownWithError() throws {
         for url in temporaryDirectories {

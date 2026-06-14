@@ -48,10 +48,68 @@ struct GitResult: Sendable {
     let output: String
 }
 
+/// VCS status of a single file, used to decorate file-tree rows.
+enum GitDecoration: String, Sendable {
+    case modified, added, untracked, deleted, renamed, conflicted
+
+    /// Single-letter badge shown at the trailing edge of a tree row.
+    var badge: String {
+        switch self {
+        case .modified: "M"
+        case .added: "A"
+        case .untracked: "U"
+        case .deleted: "D"
+        case .renamed: "R"
+        case .conflicted: "!"
+        }
+    }
+}
+
+/// File-tree decoration snapshot: the per-file status plus the set of folders
+/// that contain at least one changed descendant (so collapsed folders can still
+/// signal "something changed in here").
+struct GitDecorations: Sendable {
+    var files: [URL: GitDecoration] = [:]
+    var dirtyDirectories: Set<URL> = []
+
+    var isEmpty: Bool { files.isEmpty }
+}
+
+/// Author/commit info for a single buffer line, for inline blame.
+struct GitBlame: Sendable, Equatable {
+    let author: String
+    let summary: String
+    let timestamp: Date
+    let isUncommitted: Bool
+
+    /// "Johannes Grof · 3 days ago" style label (uncommitted lines read
+    /// "You · Uncommitted").
+    var label: String {
+        if isUncommitted { return "You · Uncommitted" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        let when = formatter.localizedString(for: timestamp, relativeTo: Date())
+        let who = author.isEmpty ? "Unknown" : author
+        return "\(who) · \(when)"
+    }
+
+    /// Full label including the commit summary, for the trailing ghost text.
+    var detailedLabel: String {
+        guard !isUncommitted, !summary.isEmpty else { return label }
+        return "\(label) · \(summary)"
+    }
+}
+
 /// Computes a git "gutter" diff by comparing the *current buffer* against the
 /// committed `HEAD` blob — so it reflects uncommitted edits live, not just what
 /// is saved. Shells out to the user's own `git`; returns nil outside a repo.
 enum GitService {
+    struct PorcelainEntry: Equatable {
+        let index: Character
+        let worktree: Character
+        let path: String
+    }
+
     /// Working-tree status (branch + changed files) for the Source Control view.
     /// Returns nil when the folder isn't inside a git repository.
     static func status(root: URL) async -> GitStatus? {
@@ -71,19 +129,12 @@ enum GitService {
             }
             let hasRemote = !((run(["-C", top, "remote"])?.trimmingCharacters(in: .whitespacesAndNewlines)) ?? "").isEmpty
 
-            guard let out = run(["-C", top, "status", "--porcelain=v1"]) else {
+            guard let data = runData(["-C", top, "status", "--porcelain=v1", "-z", "--untracked-files=all"]) else {
                 return GitStatus(branch: branch, upstream: upstream, ahead: ahead, behind: behind, hasRemote: hasRemote, changes: [])
             }
             var changes: [GitFileChange] = []
-            for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
-                let line = String(raw)
-                guard line.count >= 4 else { continue }
-                let chars = Array(line)
-                let index = chars[0], worktree = chars[1]
-                var path = String(line.dropFirst(3))
-                // Renames render as "old -> new"; key on the new path.
-                if let arrow = path.range(of: " -> ") { path = String(path[arrow.upperBound...]) }
-                path = path.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            for entry in parsePorcelainV1Z(data) {
+                let index = entry.index, worktree = entry.worktree, path = entry.path
                 if index == "?" && worktree == "?" {
                     changes.append(GitFileChange(path: path, staged: false, status: "?"))
                 } else {
@@ -93,6 +144,120 @@ enum GitService {
             }
             return GitStatus(branch: branch, upstream: upstream, ahead: ahead, behind: behind, hasRemote: hasRemote, changes: changes)
         }.value
+    }
+
+    /// Per-file decorations for the file tree (modified / added / untracked …),
+    /// keyed by absolute, standardized URL, plus the set of ancestor folders that
+    /// contain a change. Returns empty outside a repository.
+    static func decorations(root: URL) async -> GitDecorations {
+        let rootPath = root.path
+        return await Task.detached(priority: .utility) { () -> GitDecorations in
+            guard let top = run(["-C", rootPath, "rev-parse", "--show-toplevel"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !top.isEmpty,
+                let data = runData(["-C", top, "status", "--porcelain=v1", "-z", "--untracked-files=all"]) else { return GitDecorations() }
+            let topURL = URL(fileURLWithPath: top, isDirectory: true)
+            let rootStd = URL(fileURLWithPath: rootPath, isDirectory: true).standardizedFileURL
+            var result = GitDecorations()
+            for entry in parsePorcelainV1Z(data) {
+                let index = entry.index, worktree = entry.worktree, path = entry.path
+                guard !path.isEmpty else { continue }
+                let fileURL = topURL.appendingPathComponent(path).standardizedFileURL
+                result.files[fileURL] = decoration(index: index, worktree: worktree)
+                // Walk up to the workspace root marking each ancestor dirty.
+                var dir = fileURL.deletingLastPathComponent().standardizedFileURL
+                while dir.path.hasPrefix(rootStd.path) {
+                    result.dirtyDirectories.insert(dir)
+                    if dir.path == rootStd.path { break }
+                    let parent = dir.deletingLastPathComponent().standardizedFileURL
+                    if parent.path == dir.path { break }
+                    dir = parent
+                }
+            }
+            return result
+        }.value
+    }
+
+    /// Blame for a single 1-based line of `file`, parsed from porcelain output.
+    /// Returns nil outside a repo or on error. Uncommitted (locally edited but
+    /// unstaged) lines come back with `isUncommitted == true`.
+    static func blame(file: URL, line: Int, root: URL) async -> GitBlame? {
+        guard line >= 1 else { return nil }
+        let filePath = file.path
+        let rootPath = root.path
+        return await Task.detached(priority: .utility) { () -> GitBlame? in
+            guard let out = run(["-C", rootPath, "blame", "-L", "\(line),\(line)", "--porcelain", "--", filePath]) else { return nil }
+            var author = ""
+            var summary = ""
+            var authorTime: TimeInterval = 0
+            var sha = ""
+            var isFirst = true
+            for raw in out.split(separator: "\n", omittingEmptySubsequences: false) {
+                let lineStr = String(raw)
+                if isFirst {
+                    sha = String(lineStr.prefix(40))
+                    isFirst = false
+                    continue
+                }
+                if lineStr.hasPrefix("author ") {
+                    author = String(lineStr.dropFirst("author ".count))
+                } else if lineStr.hasPrefix("author-time ") {
+                    authorTime = TimeInterval(lineStr.dropFirst("author-time ".count)) ?? 0
+                } else if lineStr.hasPrefix("summary ") {
+                    summary = String(lineStr.dropFirst("summary ".count))
+                }
+            }
+            let uncommitted = author == "Not Committed Yet" || sha.allSatisfy { $0 == "0" }
+            return GitBlame(
+                author: author,
+                summary: summary,
+                timestamp: Date(timeIntervalSince1970: authorTime),
+                isUncommitted: uncommitted
+            )
+        }.value
+    }
+
+    /// Maps a porcelain `XY` status pair to a single tree decoration. Conflicts
+    /// (unmerged) win, then untracked, then the most relevant of the two stages.
+    private static func decoration(index: Character, worktree: Character) -> GitDecoration {
+        if index == "U" || worktree == "U"
+            || (index == "A" && worktree == "A")
+            || (index == "D" && worktree == "D") { return .conflicted }
+        if index == "?" || worktree == "?" { return .untracked }
+        let code = worktree != " " ? worktree : index
+        switch code {
+        case "A": return .added
+        case "D": return .deleted
+        case "R", "C": return .renamed
+        default: return .modified
+        }
+    }
+
+    /// Parses Git's NUL-delimited porcelain format. Unlike the line-oriented
+    /// form, `-z` emits paths verbatim, so Unicode, quotes, tabs and newlines do
+    /// not require Git's C-style unescaping. Rename entries include the old path
+    /// as a second field; the first field is the destination path we display.
+    static func parsePorcelainV1Z(_ data: Data) -> [PorcelainEntry] {
+        let fields = data.split(separator: 0, omittingEmptySubsequences: true)
+        var entries: [PorcelainEntry] = []
+        var fieldIndex = 0
+        while fieldIndex < fields.count {
+            let field = fields[fieldIndex]
+            guard field.count >= 4 else {
+                fieldIndex += 1
+                continue
+            }
+            let bytes = Array(field)
+            let index = Character(UnicodeScalar(bytes[0]))
+            let worktree = Character(UnicodeScalar(bytes[1]))
+            let path = String(decoding: bytes.dropFirst(3), as: UTF8.self)
+            entries.append(PorcelainEntry(index: index, worktree: worktree, path: path))
+
+            fieldIndex += 1
+            if index == "R" || index == "C" || worktree == "R" || worktree == "C" {
+                fieldIndex += 1
+            }
+        }
+        return entries
     }
 
     @discardableResult
@@ -267,6 +432,11 @@ enum GitService {
     /// Runs `git` with the given args and returns stdout, or nil on failure
     /// (unless `allowFailure`, where stdout is returned regardless of exit code).
     private static func run(_ args: [String], allowFailure: Bool = false) -> String? {
+        guard let data = runData(args, allowFailure: allowFailure) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func runData(_ args: [String], allowFailure: Bool = false) -> Data? {
         guard let result = BoundedProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: ["git"] + args,
@@ -275,6 +445,6 @@ enum GitService {
             maximumStandardErrorBytes: 2 * 1024 * 1024
         ), !result.timedOut, !result.outputLimitExceeded,
            allowFailure || result.terminationStatus == 0 else { return nil }
-        return String(data: result.stdout, encoding: .utf8)
+        return result.stdout
     }
 }

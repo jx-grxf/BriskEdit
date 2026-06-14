@@ -15,3 +15,10 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+  - package-ecosystem: "npm"
+    directory: "/promo"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"

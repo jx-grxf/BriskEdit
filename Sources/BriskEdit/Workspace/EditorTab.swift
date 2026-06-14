@@ -38,6 +38,33 @@ enum PreviewKind: Equatable {
     }
 }
 
+enum SplitPreviewContent: Equatable {
+    case native(PreviewKind)
+    case markdown(EditorTab.ID)
+
+    static func supports(_ url: URL) -> Bool {
+        PreviewKind.previewKind(for: url) != nil
+            || SourceLanguage(url: url, displayName: url.lastPathComponent) == .markdown
+    }
+}
+
+/// Non-file tabs that show a built-in page instead of a document or preview.
+enum SpecialTabContent: Equatable {
+    case whatsNew(version: String)
+
+    var title: String {
+        switch self {
+        case .whatsNew: "What's New"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .whatsNew: "sparkles"
+        }
+    }
+}
+
 @MainActor
 @Observable
 final class EditorTab: Identifiable {
@@ -45,13 +72,25 @@ final class EditorTab: Identifiable {
     let document: TextDocument
     /// When set, the tab shows a native preview instead of the text editor.
     let previewKind: PreviewKind?
+    /// When set, the tab shows a built-in page (e.g. What's New) — no document.
+    let special: SpecialTabContent?
 
-    init(document: TextDocument, previewKind: PreviewKind? = nil) {
+    init(document: TextDocument, previewKind: PreviewKind? = nil, special: SpecialTabContent? = nil) {
         self.document = document
         self.previewKind = previewKind
+        self.special = special
+    }
+
+    /// Tab-strip title: the special page's title, otherwise the document name.
+    var displayTitle: String {
+        special?.title ?? document.displayName
     }
 
     static func preview(_ kind: PreviewKind) -> EditorTab {
         EditorTab(document: TextDocument(fileURL: kind.url, text: "", encoding: .utf8), previewKind: kind)
+    }
+
+    static func whatsNew(version: String) -> EditorTab {
+        EditorTab(document: TextDocument(fileURL: nil, text: "", encoding: .utf8), special: .whatsNew(version: version))
     }
 }

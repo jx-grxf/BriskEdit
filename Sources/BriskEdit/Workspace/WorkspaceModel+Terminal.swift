@@ -1,6 +1,6 @@
 import Foundation
 
-// Integrated terminal sessions (VS Code-style multi-shell panel).
+// Integrated terminal sessions (a multi-shell panel).
 extension WorkspaceModel {
     /// Whether the terminal panel should be rendered. It only makes sense inside
     /// a workspace context (a folder, an open file, or an explicitly created

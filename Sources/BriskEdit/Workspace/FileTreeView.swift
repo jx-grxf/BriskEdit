@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 struct FileTreeView: View {
@@ -42,6 +43,18 @@ struct FileTreeView: View {
         }
         .task(id: searchKey) {
             await runSearch()
+        }
+        // File-tree git badges: refresh on root/file-op changes, after git
+        // operations elsewhere, and when the window re-activates (so a save or
+        // commit in another app is reflected).
+        .task(id: "\(root.path)|\(workspace.reloadToken)") {
+            await workspace.refreshGitDecorations()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .gitDidChange)) { _ in
+            Task { await workspace.refreshGitDecorations() }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            Task { await workspace.refreshGitDecorations() }
         }
     }
 
@@ -291,16 +304,43 @@ private struct FileTreeRow: View {
     let node: FileNode
     let isExpanded: Bool
     var isDropTarget: Bool = false
+    @Environment(WorkspaceModel.self) private var workspace
+
+    /// Git status for this exact file, if any.
+    private var decoration: GitDecoration? {
+        workspace.gitDecorations.files[node.url.standardizedFileURL]
+    }
+
+    /// A collapsed/expanded folder that contains changes somewhere below it.
+    private var folderHasChanges: Bool {
+        node.isDirectory && decoration == nil
+            && workspace.gitDecorations.dirtyDirectories.contains(node.url.standardizedFileURL)
+    }
+
+    private var nameColor: Color {
+        decoration?.tint ?? .primary
+    }
 
     var body: some View {
         HStack(spacing: 8) {
             FileTypeIcon(url: node.url, isDirectory: node.isDirectory, language: node.language)
                 .frame(width: 18)
             Text(node.name.isEmpty ? node.url.path : node.name)
-                .foregroundStyle(.primary)
+                .foregroundStyle(nameColor)
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 0)
+            if let decoration {
+                Text(decoration.badge)
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .foregroundStyle(decoration.tint)
+                    .accessibilityLabel("Git status \(decoration.rawValue)")
+            } else if folderHasChanges {
+                Circle()
+                    .fill(Color.orange.opacity(0.8))
+                    .frame(width: 5, height: 5)
+                    .accessibilityLabel("Contains changes")
+            }
         }
         .padding(.vertical, 2)
         .padding(.horizontal, 4)
@@ -346,8 +386,10 @@ private struct FileContextMenu: View {
             Divider()
         } else {
             Button("Open") { workspace.selectedSidebarURL = node.url }
-            if let previewKind = PreviewKind.previewKind(for: node.url) {
-                Button("Open in Split Screen") { workspace.toggleSplitPreview(previewKind) }
+            if SplitPreviewContent.supports(node.url) {
+                Button("Open in Split Screen") {
+                    Task { await workspace.openInSplitScreen(node.url) }
+                }
             }
             Divider()
         }
@@ -360,5 +402,17 @@ private struct FileContextMenu: View {
         Button("Duplicate") { workspace.duplicateFile(node.url) }
         Divider()
         Button("Move to Trash", role: .destructive) { workspace.deleteFile(node.url) }
+    }
+}
+
+extension GitDecoration {
+    /// Tint used for the row's filename and its trailing status badge.
+    var tint: Color {
+        switch self {
+        case .modified: .orange
+        case .added, .untracked: .green
+        case .renamed: .blue
+        case .conflicted, .deleted: .red
+        }
     }
 }

@@ -48,9 +48,9 @@ final class WorkspaceModel {
     /// Directories the user has expanded in the file tree — kept here (not in
     /// per-row @State) so the tree survives reloads without collapsing.
     var expandedDirectories: Set<URL> = []
-    /// When set, a native preview is shown in a resizable pane beside the editor.
-    var splitPreviewKind: PreviewKind?
-    /// Open terminal sessions (VS Code-style). Each stays alive while the panel
+    /// When set, a native or Markdown preview is shown beside the active editor.
+    var splitPreviewContent: SplitPreviewContent?
+    /// Open terminal sessions. Each stays alive while the panel
     /// is shown; the list lets the user add, switch and close them.
     var terminals: [TerminalController] = []
     var activeTerminalID: TerminalController.ID?
@@ -60,6 +60,16 @@ final class WorkspaceModel {
     var persistsSession = false
     var childCache: [FileTreeCacheKey: [FileNode]] = [:]
     var watchers: [EditorTab.ID: FileWatcher] = [:]
+    /// Per-file VCS status driving the file-tree git badges. Refreshed on root
+    /// change, after git operations (`.gitDidChange`) and when the window
+    /// re-activates. Empty outside a repository.
+    var gitDecorations = GitDecorations()
+    /// Coalesces decoration refreshes: the file tree triggers them on every
+    /// window activation and after every save, which otherwise spawns a pile of
+    /// concurrent `git status` processes. At most one runs; others fold into a
+    /// single trailing re-run.
+    @ObservationIgnored var isRefreshingGitDecorations = false
+    @ObservationIgnored var gitDecorationsRefreshPending = false
 
     init() {
         WorkspaceRegistry.register(self)

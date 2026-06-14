@@ -88,7 +88,7 @@ private struct SymbolRow: View {
     }
 }
 
-/// Maps LSP `SymbolKind` codes to SF Symbols + a tint, à la VS Code's outline.
+/// Maps LSP `SymbolKind` codes to SF Symbols + a tint.
 private enum SymbolKind {
     static func icon(_ kind: Int) -> String {
         switch kind {

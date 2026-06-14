@@ -8,12 +8,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
-if ! command -v xcodegen >/dev/null 2>&1; then
-  echo "error: xcodegen is required. Install with: brew install xcodegen" >&2
-  exit 1
-fi
-
-xcodegen >/dev/null
+./script/prepare_xcode_project.sh
 
 DERIVED_DATA="$(mktemp -d)"
 trap 'rm -rf "$DERIVED_DATA"' EXIT
@@ -24,6 +19,8 @@ xcodebuild \
   -configuration Debug \
   -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA" \
+  -onlyUsePackageVersionsFromResolvedFile \
+  -skipPackageUpdates \
   build | tail -20
 
 APP_PATH="$DERIVED_DATA/Build/Products/Debug/BriskEdit.app"

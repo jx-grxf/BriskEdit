@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 
@@ -39,6 +40,10 @@ struct EditorTabsView: View {
                     VStack(spacing: 0) {
                         TabStrip(workspace: workspace)
                         Divider()
+                        if let active = workspace.activeTab, active.special == nil {
+                            BreadcrumbBar(workspace: workspace)
+                            Divider()
+                        }
                     }
                 }
             }
@@ -88,10 +93,15 @@ struct EditorTabsView: View {
                     editorSurface(for: tab, availableWidth: width)
                         .frame(minWidth: 320)
                         .layoutPriority(1)
-                    if let previewKind = workspace.splitPreviewKind {
+                    if let splitContent = workspace.splitPreviewContent {
                         PreviewSplitHandle()
                             .gesture(resizePreviewGesture(maxWidth: width - 360))
-                        SplitPreviewPane(kind: previewKind) { workspace.splitPreviewKind = nil }
+                        SplitPreviewPane(
+                            content: splitContent,
+                            markdownDocument: markdownDocument(for: splitContent),
+                            onClose: { workspace.splitPreviewContent = nil },
+                            onOpenFile: { url in Task { await workspace.openFile(at: url) } }
+                        )
                             .frame(width: clampedPreviewWidth(maxWidth: width - 360))
                             .layoutPriority(0)
                     }
@@ -103,17 +113,22 @@ struct EditorTabsView: View {
     }
 
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label("BriskEdit", systemImage: "text.cursor")
-        } description: {
-            Text("Open a file or drop files here.")
-        } actions: {
-            HStack {
-                Button("New File") { workspace.newUntitled() }
-                    .keyboardShortcut("n", modifiers: .command)
-                Button("Open File…") { onOpenFile() }
-            }
-        }
+        WelcomeView(
+            recents: RecentWorkspacesStore.shared.folders,
+            onNewFile: { workspace.newUntitled() },
+            onOpenFile: onOpenFile,
+            onOpenFolder: openFolderPanel,
+            onOpenRecent: { url in workspace.setWorkspaceRoot(url) }
+        )
+    }
+
+    @MainActor
+    private func openFolderPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        workspace.setWorkspaceRoot(url)
     }
 
     private func clampedPreviewWidth(maxWidth: CGFloat) -> CGFloat {
@@ -175,12 +190,18 @@ struct EditorTabsView: View {
 
     @ViewBuilder
     private func editorSurface(for tab: EditorTab, availableWidth: CGFloat) -> some View {
-        if let previewKind = tab.previewKind {
+        if case .whatsNew(let version) = tab.special {
+            WhatsNewView(version: version)
+                .id(tab.id)
+        } else if let previewKind = tab.previewKind {
             previewSurface(for: previewKind)
                 .id(tab.id)
-        } else if workspace.showMarkdownPreview && tab.document.language == .markdown && availableWidth >= 760 {
+        } else if workspace.splitPreviewContent == nil,
+                  workspace.showMarkdownPreview,
+                  tab.document.language == .markdown,
+                  availableWidth >= 760 {
             HStack(spacing: 0) {
-                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, showHoverTooltips: preferences.showHoverTooltips, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
+                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, showInlineGitBlame: preferences.showInlineGitBlame, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                     .id(tab.id)
@@ -190,6 +211,7 @@ struct EditorTabsView: View {
                     .gesture(resizeMarkdownGesture(maxWidth: availableWidth - 360))
                 MarkdownPreview(
                     document: tab.document,
+                    renderDebounceMilliseconds: preferences.markdownPreviewDebounceMilliseconds,
                     onClose: { workspace.showMarkdownPreview = false },
                     onOpenFile: { url in Task { await workspace.openFile(at: url) } }
                 )
@@ -197,7 +219,7 @@ struct EditorTabsView: View {
                 .layoutPriority(0)
             }
         } else {
-            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, showHoverTooltips: preferences.showHoverTooltips, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
+            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, showInlineGitBlame: preferences.showInlineGitBlame, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                 .id(tab.id)
@@ -215,6 +237,11 @@ struct EditorTabsView: View {
         case .image(let url):
             ImageViewerHost(url: url)
         }
+    }
+
+    private func markdownDocument(for content: SplitPreviewContent) -> TextDocument? {
+        guard case .markdown(let id) = content else { return nil }
+        return workspace.tabs.first(where: { $0.id == id })?.document
     }
 }
 
@@ -265,14 +292,17 @@ private struct PreviewSplitHandle: View {
 }
 
 private struct SplitPreviewPane: View {
-    let kind: PreviewKind
+    let content: SplitPreviewContent
+    let markdownDocument: TextDocument?
     let onClose: () -> Void
+    let onOpenFile: (URL) -> Void
+    @Environment(Preferences.self) private var preferences
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 6) {
-                Image(systemName: kind.systemImage)
-                Text(kind.url.lastPathComponent)
+                Image(systemName: systemImage)
+                Text(displayName)
                     .font(.caption.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
@@ -293,13 +323,42 @@ private struct SplitPreviewPane: View {
 
     @ViewBuilder
     private var previewSurface: some View {
-        switch kind {
-        case .pdf(let url):
-            PDFViewerHost(url: url)
-        case .quickLook(let url):
-            QuickLookPreviewHost(url: url)
-        case .image(let url):
-            ImageViewerHost(url: url)
+        switch content {
+        case .native(let kind):
+            switch kind {
+            case .pdf(let url):
+                PDFViewerHost(url: url)
+            case .quickLook(let url):
+                QuickLookPreviewHost(url: url)
+            case .image(let url):
+                ImageViewerHost(url: url)
+            }
+        case .markdown:
+            if let markdownDocument {
+                MarkdownPreview(
+                    document: markdownDocument,
+                    showsHeader: false,
+                    renderDebounceMilliseconds: preferences.markdownPreviewDebounceMilliseconds,
+                    onClose: onClose,
+                    onOpenFile: onOpenFile
+                )
+            } else {
+                ContentUnavailableView("Preview Unavailable", systemImage: "doc.richtext")
+            }
+        }
+    }
+
+    private var displayName: String {
+        switch content {
+        case .native(let kind): kind.url.lastPathComponent
+        case .markdown: markdownDocument?.displayName ?? "Markdown"
+        }
+    }
+
+    private var systemImage: String {
+        switch content {
+        case .native(let kind): kind.systemImage
+        case .markdown: "doc.richtext"
         }
     }
 }
@@ -340,10 +399,8 @@ private struct TabStrip: View {
                         onCloseRight: { workspace.requestCloseTabsToRight(of: tab.id) },
                         onCloseAll: { workspace.requestCloseAllTabs() },
                         onOpenSplitPreview: {
-                            if let previewKind = tab.previewKind {
-                                workspace.splitPreviewKind = previewKind
-                            } else if let url = tab.document.fileURL, let previewKind = PreviewKind.previewKind(for: url) {
-                                workspace.splitPreviewKind = previewKind
+                            if let url = tab.document.fileURL {
+                                Task { await workspace.openInSplitScreen(url) }
                             }
                         }
                     )
@@ -359,6 +416,94 @@ private struct TabStrip: View {
         .frame(height: DesignTokens.Chrome.tabStripHeight)
         .background(.thinMaterial)
         .clipped()
+    }
+}
+
+/// Path breadcrumb under the tab strip: workspace ▸ folders ▸ file.
+/// Folder segments reveal that folder in the file tree; the
+/// file segment reveals the current document. Falls back to just the name for
+/// untitled buffers or files outside the workspace root.
+private struct BreadcrumbBar: View {
+    @Bindable var workspace: WorkspaceModel
+
+    private struct Segment: Identifiable {
+        let name: String
+        let url: URL?
+        let isDirectory: Bool
+        let isLast: Bool
+        // Stable identity (path, or the name for untitled buffers) so ForEach
+        // doesn't churn every render — a fresh UUID here rebuilt the whole bar.
+        var id: String { url?.path ?? name }
+    }
+
+    var body: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 3) {
+                ForEach(segments) { seg in
+                    segmentButton(seg)
+                    if !seg.isLast {
+                        Image(systemName: "chevron.compact.right")
+                            .font(.caption2)
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+            }
+            .padding(.horizontal, 12)
+        }
+        .scrollEdgeEffectStyle(.hard, for: .horizontal)
+        .frame(height: 24)
+        .background(.bar)
+    }
+
+    @ViewBuilder
+    private func segmentButton(_ seg: Segment) -> some View {
+        Button {
+            if let url = seg.url {
+                workspace.revealInFileTree(url, isDirectory: seg.isDirectory)
+            }
+        } label: {
+            HStack(spacing: 4) {
+                if seg.isLast, let doc = workspace.activeTab?.document {
+                    FileTypeIcon(url: doc.fileURL, isDirectory: false, language: doc.language, size: 13)
+                }
+                Text(seg.name)
+                    .font(.caption)
+                    .foregroundStyle(seg.isLast ? .primary : .secondary)
+                    .lineLimit(1)
+            }
+        }
+        .buttonStyle(.plain)
+        .disabled(seg.url == nil)
+        .help(seg.url?.path ?? seg.name)
+    }
+
+    private var segments: [Segment] {
+        guard let doc = workspace.activeTab?.document else { return [] }
+        guard let fileURL = doc.fileURL else {
+            return [Segment(name: doc.displayName, url: nil, isDirectory: false, isLast: true)]
+        }
+        let std = fileURL.standardizedFileURL
+        if let root = workspace.rootURL?.standardizedFileURL,
+           std.path.hasPrefix(root.path + "/") {
+            let relative = String(std.path.dropFirst(root.path.count + 1))
+            let parts = relative.split(separator: "/").map(String.init)
+            var result: [Segment] = [
+                Segment(name: root.lastPathComponent, url: root, isDirectory: true, isLast: parts.isEmpty)
+            ]
+            var url = root
+            for (i, part) in parts.enumerated() {
+                url = url.appendingPathComponent(part)
+                let isLast = i == parts.count - 1
+                result.append(Segment(name: part, url: url, isDirectory: !isLast, isLast: isLast))
+            }
+            return result
+        }
+        // Outside the workspace root: parent folder + file name.
+        let parent = std.deletingLastPathComponent()
+        return [
+            Segment(name: parent.lastPathComponent, url: parent, isDirectory: true, isLast: false),
+            Segment(name: std.lastPathComponent, url: std, isDirectory: false, isLast: true),
+        ]
     }
 }
 
@@ -380,13 +525,20 @@ private struct TabChip: View {
         // on top so it still gets its own clicks.
         Button(action: onSelect) {
             HStack(spacing: 6) {
-                FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
-                Text(tab.document.displayName)
+                if let special = tab.special {
+                    Image(systemName: special.symbol)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.tint)
+                        .frame(width: 14)
+                } else {
+                    FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
+                }
+                Text(tab.displayTitle)
                     .foregroundStyle(isActive ? .primary : .secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
-                if tab.document.isDirty {
+                if tab.special == nil, tab.document.isDirty {
                     Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
                 }
             }
@@ -396,7 +548,7 @@ private struct TabChip: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Select \(tab.document.displayName)")
+        .accessibilityLabel("Select \(tab.displayTitle)")
         .animation(.easeInOut(duration: 0.15), value: isActive)
         // Native "front tab" look: the active tab reads as a raised surface
         // (matching the editor area) instead of an accent wash, with a thin
@@ -423,7 +575,7 @@ private struct TabChip: View {
             Button("Close Other Tabs") { onCloseOthers() }
             Button("Close Tabs to the Right") { onCloseRight() }
             Button("Close All Tabs") { onCloseAll() }
-            if tab.previewKind != nil || tab.document.fileURL.flatMap(PreviewKind.previewKind(for:)) != nil {
+            if tab.document.fileURL.map(SplitPreviewContent.supports) == true {
                 Divider()
                 Button("Open in Split Preview") { onOpenSplitPreview() }
             }
@@ -466,7 +618,7 @@ private struct DiagnosticSummary: View {
     }
 }
 
-/// Nova-style clickable language label in the status bar: opens a menu of every
+/// Clickable language label in the status bar: opens a menu of every
 /// supported syntax, with an "Auto-detect" option that clears the manual choice.
 private struct LanguagePicker: View {
     let document: TextDocument

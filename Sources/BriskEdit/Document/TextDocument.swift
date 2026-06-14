@@ -4,10 +4,12 @@ import Observation
 @MainActor
 @Observable
 final class TextDocument {
-    nonisolated static let maximumEditableFileBytes: Int64 = 64 * 1024 * 1024
+    nonisolated static let largeFileFeatureThresholdBytes = 4 * 1024 * 1024
+    nonisolated static let maximumEditableFileBytes: Int64 = 128 * 1024 * 1024
     private(set) var fileURL: URL?
     private(set) var encoding: String.Encoding
     var text: String
+    private(set) var byteCount: Int
     var isDirty: Bool = false
     var cursorLine: Int = 1
     var cursorColumn: Int = 1
@@ -46,15 +48,38 @@ final class TextDocument {
         SourceLanguage(url: fileURL, displayName: displayName)
     }
 
+    /// Cache of the exact UTF-8 byte count, keyed by revision. `byteCount` is a
+    /// cheap UTF-16 estimate kept current for the large-file gate; the status bar
+    /// wants the real size, so compute it once per edit (not per render).
+    private var utf8CountCache: (revision: Int, count: Int)?
+
     var fileSizeLabel: String {
-        ByteCountFormatter.string(fromByteCount: Int64(text.utf8.count), countStyle: .file)
+        let count: Int
+        if let cache = utf8CountCache, cache.revision == revision {
+            count = cache.count
+        } else {
+            count = text.utf8.count
+            utf8CountCache = (revision, count)
+        }
+        return ByteCountFormatter.string(fromByteCount: Int64(count), countStyle: .file)
     }
 
-    init(fileURL: URL?, text: String, encoding: String.Encoding) {
+    var isLargeFile: Bool {
+        Self.isLargeFile(byteCount: byteCount)
+    }
+
+    nonisolated static func isLargeFile(byteCount: Int) -> Bool {
+        byteCount > largeFileFeatureThresholdBytes
+    }
+
+    init(fileURL: URL?, text: String, encoding: String.Encoding, byteCount: Int? = nil) {
         self.fileURL = fileURL
         self.text = text
         self.encoding = encoding
-        rebuildLineIndex()
+        self.byteCount = byteCount ?? text.utf8.count
+        if !isLargeFile {
+            rebuildLineIndex()
+        }
     }
 
     static func empty() -> TextDocument {
@@ -62,21 +87,22 @@ final class TextDocument {
     }
 
     static func load(from url: URL) async throws -> TextDocument {
-        let loaded = try await Task.detached(priority: .userInitiated) { () -> (String, String.Encoding) in
+        let loaded = try await Task.detached(priority: .userInitiated) { () -> (String, String.Encoding, Int) in
             let values = try url.resourceValues(forKeys: [.fileSizeKey])
             if let size = values.fileSize, Int64(size) > maximumEditableFileBytes {
                 throw TextDocumentError.fileTooLarge(maximumBytes: maximumEditableFileBytes)
             }
             var used: String.Encoding = .utf8
             let str = try String(contentsOf: url, usedEncoding: &used)
-            return (str, used)
+            return (str, used, values.fileSize ?? str.utf8.count)
         }.value
-        return TextDocument(fileURL: url, text: loaded.0, encoding: loaded.1)
+        return TextDocument(fileURL: url, text: loaded.0, encoding: loaded.1, byteCount: loaded.2)
     }
 
-    func applyEdit(text newText: String) {
+    func applyEdit(text newText: String, sizeHint: Int? = nil) {
         guard text != newText else { return }
         text = newText
+        byteCount = sizeHint ?? newText.utf8.count
         revision &+= 1
         isDirty = true
         scheduleLineIndexRebuild()
@@ -107,9 +133,20 @@ final class TextDocument {
             rebuildLineIndex()
             return
         }
-        let work = DispatchWorkItem { [weak self] in self?.rebuildLineIndex() }
+        // Large/medium buffers: scan newlines off the main thread, debounced, so
+        // typing stays smooth while Ln/Col in the status bar stay correct (even in
+        // large-file mode, where running this on the main actor would stall).
+        let snapshot = text
+        let revisionAtSchedule = revision
+        let work = DispatchWorkItem { [weak self] in
+            let offsets = TextDocument.computeLineStartOffsets(in: snapshot)
+            Task { @MainActor [weak self] in
+                guard let self, self.revision == revisionAtSchedule else { return }
+                self.lineStartOffsets = offsets
+            }
+        }
         lineIndexWork = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
     /// Points the document at a new on-disk location (e.g. after a rename)
@@ -123,9 +160,10 @@ final class TextDocument {
     func applyFormatted(_ newText: String) {
         guard newText != text else { return }
         text = newText
+        byteCount = newText.utf8.count
         revision &+= 1
         isDirty = true
-        rebuildLineIndex()
+        scheduleLineIndexRebuild()
     }
 
     /// Re-reads the file from disk after an external change. Bumps `revision`
@@ -139,12 +177,13 @@ final class TextDocument {
         }.value
         guard let loaded else { return }
         text = loaded.0
+        byteCount = loaded.0.utf8.count
         encoding = loaded.1
         revision &+= 1
         isDirty = false
         lastSavedRevision = revision
         externalChangePending = false
-        rebuildLineIndex()
+        scheduleLineIndexRebuild()
     }
 
     /// Asks the editor to scroll to and select `length` characters starting at a
@@ -187,19 +226,21 @@ final class TextDocument {
     func save() async throws {
         guard let url = fileURL else { throw CocoaError(.fileWriteUnknown) }
         let savedRevision = try await write(to: url, encoding: encoding)
-        lastSavedRevision = savedRevision
-        if revision == savedRevision {
-            isDirty = false
-        }
+        finishSave(revision: savedRevision)
     }
 
     func save(to url: URL) async throws {
         let savedRevision = try await write(to: url, encoding: encoding)
         fileURL = url
+        finishSave(revision: savedRevision)
+    }
+
+    private func finishSave(revision savedRevision: Int) {
         lastSavedRevision = savedRevision
         if revision == savedRevision {
             isDirty = false
         }
+        NotificationCenter.default.post(name: .gitDidChange, object: nil)
     }
 
     private func write(to url: URL, encoding: String.Encoding) async throws -> Int {
@@ -212,6 +253,11 @@ final class TextDocument {
     }
 
     private func rebuildLineIndex() {
+        lineStartOffsets = Self.computeLineStartOffsets(in: text)
+    }
+
+    /// Pure newline scan — safe to run off the main actor for large buffers.
+    nonisolated static func computeLineStartOffsets(in text: String) -> [Int] {
         var starts = [0]
         let nsString = text as NSString
         nsString.enumerateSubstrings(
@@ -223,7 +269,7 @@ final class TextDocument {
                 starts.append(next)
             }
         }
-        lineStartOffsets = starts
+        return starts
     }
 }
 
@@ -452,7 +498,15 @@ enum SourceLanguage: String, Sendable, CaseIterable, Identifiable {
             ["SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "ALTER", "DROP", "JOIN", "INNER", "LEFT", "GROUP BY", "ORDER BY", "LIMIT"]
         case .perl:
             ["use", "my", "our", "sub", "if", "elsif", "else", "unless", "foreach", "while", "return", "print"]
-        case .json, .yaml, .markdown, .php, .toml, .ini, .dart, .plainText:
+        case .php:
+            ["<?php", "echo", "function", "class", "public", "private", "protected", "static", "return", "namespace", "use", "if", "else", "elseif", "foreach", "while", "$this"]
+        case .dart:
+            ["import", "class", "extends", "implements", "void", "final", "const", "var", "late", "async", "await", "return", "if", "else", "for", "while", "Widget", "build", "override"]
+        case .toml:
+            ["true", "false"]
+        case .ini:
+            ["true", "false", "yes", "no"]
+        case .json, .yaml, .markdown, .plainText:
             []
         }
     }

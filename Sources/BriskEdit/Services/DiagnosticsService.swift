@@ -18,7 +18,7 @@ struct Diagnostic: Sendable, Hashable, Identifiable {
     let severity: Severity
     let message: String
     /// Server/tool that produced the finding (e.g. "clang", "swiftc"), shown in
-    /// the hover like VS Code's `C/C++(165)` source tag. Optional.
+    /// the hover as a `C/C++(165)` source tag. Optional.
     var source: String? = nil
 
     var id: String { "\(line):\(column):\(severity):\(message)" }

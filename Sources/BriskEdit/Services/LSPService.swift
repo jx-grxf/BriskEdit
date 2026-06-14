@@ -62,7 +62,7 @@ struct LSPCompletion: Sendable, Equatable {
 
 /// Signature-help results returned by a language server or synthesized from the
 /// current buffer. Parameter ranges index UTF-16 offsets inside each label so
-/// the editor can bold the active argument the way VS Code does.
+/// the editor can bold the active argument.
 struct LSPSignatureHelp: Sendable, Equatable {
     struct Parameter: Sendable, Equatable {
         let start: Int
@@ -652,7 +652,7 @@ private actor Server {
             }
             Task {
                 try? await Task.sleep(for: .seconds(5))
-                await self.timeout(id: id)
+                self.timeout(id: id)
             }
         }
     }

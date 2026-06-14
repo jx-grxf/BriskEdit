@@ -33,6 +33,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
     let theme: EditorTheme
     var showMinimap: Bool = true
     var showHoverTooltips: Bool = true
+    var highlightDebounce: TimeInterval = 0.08
+    var gitDiffDebounce: TimeInterval = 0.4
+    var showInlineGitBlame: Bool = true
     var workspaceRootURL: URL?
     /// Opens a (possibly different) file at a 1-based line/column — used for
     /// go-to-definition. Provided by the host view, which owns the workspace.
@@ -46,8 +49,13 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.textView = textView
         context.coordinator.document = document
         context.coordinator.theme = theme
+        context.coordinator.isLargeFile = document.isLargeFile
         context.coordinator.showHoverTooltips = showHoverTooltips
+        context.coordinator.highlightDebounce = highlightDebounce
+        context.coordinator.gitDiffDebounce = gitDiffDebounce
+        context.coordinator.showInlineBlame = showInlineGitBlame
         context.coordinator.workspaceRootURL = workspaceRootURL
+        context.coordinator.installBlameLabel(in: textView)
         textView.onResignFirstResponder = { [weak coordinator = context.coordinator] in
             coordinator?.dismissCompletions()
         }
@@ -121,7 +129,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         textView.textContentStorage?.delegate = folding
         gutter.folding = folding
         gutter.onFoldToggled = { [weak coordinator = context.coordinator] in
-            coordinator?.applyHighlight()
+            coordinator?.forceHighlightRefresh()
             coordinator?.gutter?.refresh()
             coordinator?.minimap?.refresh()
         }
@@ -146,9 +154,10 @@ struct TextKit2EditorHost: NSViewRepresentable {
         container.addSubview(gutter)
         container.addSubview(scrollView)
         container.addSubview(minimap)
-        let minimapWidth = minimap.widthAnchor.constraint(equalToConstant: showMinimap ? MinimapView.width : 0)
+        let minimapVisible = showMinimap && !document.isLargeFile
+        let minimapWidth = minimap.widthAnchor.constraint(equalToConstant: minimapVisible ? MinimapView.width : 0)
         context.coordinator.minimapWidthConstraint = minimapWidth
-        minimap.isHidden = !showMinimap
+        minimap.isHidden = !minimapVisible
         NSLayoutConstraint.activate([
             gutter.leadingAnchor.constraint(equalTo: container.leadingAnchor),
             gutter.topAnchor.constraint(equalTo: container.topAnchor),
@@ -187,10 +196,16 @@ struct TextKit2EditorHost: NSViewRepresentable {
         guard let textView = context.coordinator.textView else { return }
         let coordinator = context.coordinator
         coordinator.document = document
+        let largeFileModeChanged = coordinator.isLargeFile != document.isLargeFile
+        coordinator.isLargeFile = document.isLargeFile
         coordinator.openLocation = onOpenLocation
         coordinator.workspaceRootURL = workspaceRootURL
         coordinator.showHoverTooltips = showHoverTooltips
-        let themeChanged = coordinator.theme != theme
+        coordinator.highlightDebounce = highlightDebounce
+        coordinator.gitDiffDebounce = gitDiffDebounce
+        coordinator.updateInlineBlameEnabled(showInlineGitBlame)
+        let previousTheme = coordinator.theme
+        let themeChanged = previousTheme != theme
         coordinator.theme = theme
 
         // Re-applying the text view's static config (font, paragraph style,
@@ -210,12 +225,17 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         // Toggle the minimap without rebuilding the editor.
         if let minimap = coordinator.minimap, let width = coordinator.minimapWidthConstraint {
-            let target: CGFloat = showMinimap ? MinimapView.width : 0
+            let minimapVisible = showMinimap && !document.isLargeFile
+            let target: CGFloat = minimapVisible ? MinimapView.width : 0
             if width.constant != target {
                 width.constant = target
-                minimap.isHidden = !showMinimap
-                if showMinimap { minimap.invalidateContent() }
+                minimap.isHidden = !minimapVisible
+                if minimapVisible { minimap.invalidateContent() }
             }
+        }
+
+        if largeFileModeChanged, document.isLargeFile {
+            coordinator.disableExpensiveFeaturesForLargeFile()
         }
 
         // Only touch the (potentially huge) text when the change came from
@@ -236,7 +256,15 @@ struct TextKit2EditorHost: NSViewRepresentable {
         // (the user picked a different syntax in the status bar).
         let languageChanged = coordinator.lastLanguage != document.language
         coordinator.lastLanguage = document.language
-        if didReseed || themeChanged || languageChanged {
+        if FoldingRefreshPolicy.needsRecompute(
+            previousTheme: previousTheme,
+            theme: theme,
+            languageChanged: languageChanged,
+            documentReseeded: didReseed
+        ) {
+            coordinator.recomputeFoldRegions()
+        }
+        if didReseed || themeChanged || languageChanged || (largeFileModeChanged && !document.isLargeFile) {
             coordinator.applyHighlight()
         }
         coordinator.syncLSPIdentity()
@@ -319,9 +347,19 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var hoverWork: DispatchWorkItem?
         private let signaturePanel = SignatureHelpPanel()
         private var signatureWork: DispatchWorkItem?
+        private var treeSitterHighlighter: TreeSitterHighlighter?
+        private var treeSitterAttemptedLanguage: SourceLanguage?
         private var formatTask: Task<Void, Never>?
         private var hoverIndex = -1
         var showHoverTooltips = true
+        var isLargeFile = false
+        var highlightDebounce: TimeInterval = 0.08
+        var gitDiffDebounce: TimeInterval = 0.4
+        var showInlineBlame = true
+        private var blameLabel: InlineBlameLabel?
+        private var blameWork: DispatchWorkItem?
+        private var blameToken = 0
+        private var blameLine = -1
         private var completionRange: NSRange?
         private var ignoreNextSelectionChange = false
         private var lastRevealToken = 0
@@ -371,7 +409,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            document.applyEdit(text: textView.string)
+            let wasLargeFile = isLargeFile
+            document.applyEdit(text: textView.string, sizeHint: textView.textStorage?.length)
+            isLargeFile = document.isLargeFile
+            if !wasLargeFile, isLargeFile {
+                disableExpensiveFeaturesForLargeFile()
+            }
             lastSyncedRevision = document.revision
             // Keep the last check's markers visible until the debounced re-check
             // (LSP push or DiagnosticsService) replaces them wholesale. Clearing
@@ -386,6 +429,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
             refreshDiagnosticUnderlines()
             scheduleMinimapRebuild()
             hideHover()
+            // The line content shifted; hide the now-stale blame until the
+            // following selection change settles and re-queries.
+            hideInlineBlame()
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
@@ -401,6 +447,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             // Moving the caret between arguments should refresh the active
             // parameter; leaving the call dismisses the hint.
             scheduleSignatureHelp(in: textView)
+            scheduleInlineBlame()
         }
 
         func dismissCompletions() {
@@ -408,7 +455,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             textView?.needsDisplay = true
         }
 
-        /// VS Code-style ⌘D: with an empty caret, select the word under it; with a
+        /// ⌘D: with an empty caret, select the word under it; with a
         /// selection, add the next occurrence of that text as an additional cursor
         /// (NSTextView edits all selected ranges at once when you then type).
         func selectNextOccurrence() {
@@ -442,7 +489,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// type/docs in a floating panel. Cancelled by movement, edits and scroll.
         func scheduleHover(at point: NSPoint) {
             hoverWork?.cancel()
-            guard showHoverTooltips, let textView else { hoverPanel.hide(); return }
+            guard !isLargeFile, showHoverTooltips, let textView else { hoverPanel.hide(); return }
             // Hover works for diagnostics (squiggles) even without a language
             // server, so don't gate scheduling on the LSP config here.
             let work = DispatchWorkItem { [weak self] in self?.performHover(at: point, in: textView) }
@@ -462,7 +509,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             guard index >= 0, index < ns.length, index != hoverIndex else { return }
 
             // Diagnostics win: hovering an underlined error/warning shows its
-            // message right away (the VS Code error popover), no server needed.
+            // message right away (an inline error popover), no server needed.
             let diags = diagnostics(at: index)
             if !diags.isEmpty {
                 let rect = textView.firstRect(forCharacterRange: NSRange(location: index, length: 1), actualRange: nil)
@@ -509,11 +556,11 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         /// Debounced LSP signature help: while the caret sits inside a call's
         /// argument list, show the function signature with the active parameter
-        /// bolded (VS Code-style). Cheap local paren scan gates the request so we
+        /// bolded. Cheap local paren scan gates the request so we
         /// only hit the server when actually inside a call.
         private func scheduleSignatureHelp(in textView: NSTextView) {
             signatureWork?.cancel()
-            guard document.fileURL != nil, LSPService.config(for: document.language) != nil else { signaturePanel.hide(); return }
+            guard !isLargeFile, document.fileURL != nil, LSPService.config(for: document.language) != nil else { signaturePanel.hide(); return }
             let selection = textView.selectedRange()
             guard selection.length == 0,
                   Self.isInsideCall(textView.string as NSString, caret: selection.location) != nil else {
@@ -975,7 +1022,205 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         func applyHighlight() {
             guard let textView else { return }
+            guard !isLargeFile else {
+                treeSitterHighlighter = nil
+                treeSitterAttemptedLanguage = nil
+                TextKit2SyntaxHighlighter.clear(in: textView, theme: theme)
+                return
+            }
+            if useTreeSitterIfAvailable(in: textView) {
+                return
+            }
             TextKit2SyntaxHighlighter.apply(to: textView, language: document.language, theme: theme)
+        }
+
+        func forceHighlightRefresh() {
+            applyHighlight()
+            treeSitterHighlighter?.invalidate()
+        }
+
+        private func useTreeSitterIfAvailable(in textView: NSTextView) -> Bool {
+            let language = document.language
+            guard TreeSitterHighlighter.supports(language) else {
+                treeSitterHighlighter = nil
+                treeSitterAttemptedLanguage = language
+                return false
+            }
+
+            if treeSitterAttemptedLanguage != language {
+                treeSitterHighlighter = nil
+                treeSitterAttemptedLanguage = language
+
+                // Paint immediately with the cheap regex pass so the file is
+                // never shown uncolored, then let tree-sitter refine the visible
+                // region on top. The expensive part was the ~1.5s query compile
+                // (now cached/warmed), not this pass.
+                TextKit2SyntaxHighlighter.apply(to: textView, language: language, theme: theme)
+
+                if let config = TreeSitterHighlighter.cachedConfiguration(for: language) {
+                    treeSitterHighlighter = try? TreeSitterHighlighter(
+                        textView: textView,
+                        language: language,
+                        configuration: config,
+                        theme: theme
+                    )
+                }
+                if treeSitterHighlighter == nil {
+                    // Grammar still compiling (off-main): keep the regex colors
+                    // and swap in tree-sitter once `prepareConfiguration` lands.
+                    activateTreeSitterWhenReady(for: language)
+                }
+            }
+
+            guard let treeSitterHighlighter else { return false }
+            treeSitterHighlighter.updateTheme(theme)
+            return true
+        }
+
+        /// Compiles the grammar off the main thread, then installs the parser and
+        /// drops the regex highlighting — but only if the editor still shows the
+        /// same language and hasn't grown into large-file mode meanwhile.
+        private func activateTreeSitterWhenReady(for language: SourceLanguage) {
+            Task { @MainActor [weak self] in
+                guard let config = await TreeSitterHighlighter.prepareConfiguration(for: language) else { return }
+                guard let self,
+                      let textView = self.textView,
+                      self.document.language == language,
+                      self.treeSitterAttemptedLanguage == language,
+                      self.treeSitterHighlighter == nil,
+                      !self.isLargeFile else { return }
+                self.treeSitterHighlighter = try? TreeSitterHighlighter(
+                    textView: textView,
+                    language: language,
+                    configuration: config,
+                    theme: self.theme
+                )
+                self.treeSitterHighlighter?.updateTheme(self.theme)
+            }
+        }
+
+        func disableExpensiveFeaturesForLargeFile() {
+            highlightWork?.cancel()
+            gitWork?.cancel()
+            lspWork?.cancel()
+            minimapWork?.cancel()
+            hoverWork?.cancel()
+            signatureWork?.cancel()
+            popup.hide()
+            hoverPanel.hide()
+            signaturePanel.hide()
+            lspItems = []
+            treeSitterHighlighter = nil
+            treeSitterAttemptedLanguage = nil
+            if let uri = lspDiagnosticsURI {
+                LSPDiagnosticsBus.shared.removeHandler(uri: uri)
+                if let language = lspLanguage {
+                    Task { await LSPService.shared.didClose(language: language, uri: uri) }
+                }
+            }
+            lspDiagnosticsURI = nil
+            lspLanguage = nil
+            lspRoot = nil
+            folding.unfoldAll()
+            folding.updateRegions([])
+            gutter?.setGitDiff(nil)
+            document.diagnostics = []
+            hideInlineBlame()
+            if let textView {
+                TextKit2SyntaxHighlighter.clear(in: textView, theme: theme)
+                (textView as? BriskCodeTextView)?.setDiagnosticUnderlines([])
+            }
+        }
+
+        // MARK: - Inline git blame
+
+        /// Adds the faint trailing label that shows who last touched the caret's
+        /// line. Lives as a subview of the text view (document coordinates) so it
+        /// scrolls with the text.
+        func installBlameLabel(in textView: NSTextView) {
+            guard blameLabel == nil else { return }
+            let label = InlineBlameLabel()
+            label.isHidden = true
+            textView.addSubview(label)
+            blameLabel = label
+        }
+
+        func updateInlineBlameEnabled(_ enabled: Bool) {
+            guard showInlineBlame != enabled else { return }
+            showInlineBlame = enabled
+            if enabled {
+                scheduleInlineBlame()
+            } else {
+                hideInlineBlame()
+            }
+        }
+
+        func hideInlineBlame() {
+            blameWork?.cancel()
+            blameLine = -1
+            blameLabel?.isHidden = true
+        }
+
+        /// Debounced: looks up `git blame` for the caret's line and shows the
+        /// result as ghost text after the line. Skipped for large files, plain
+        /// buffers, multi-character selections, and outside a repo.
+        func scheduleInlineBlame() {
+            blameWork?.cancel()
+            guard showInlineBlame, !isLargeFile,
+                  let textView, let fileURL = document.fileURL,
+                  let root = workspaceRootURL else { hideInlineBlame(); return }
+            let selection = textView.selectedRange()
+            guard selection.length == 0 else { hideInlineBlame(); return }
+            // `document.cursorLine` is already maintained (binary search in
+            // `updateCursor`, called just before this), so avoid an O(n)
+            // substring+split of the whole prefix on every caret move.
+            let line = document.cursorLine
+            // Same line as the last shown blame: keep it (just reposition cheaply).
+            if line == blameLine, blameLabel?.isHidden == false {
+                positionInlineBlame()
+                return
+            }
+            blameToken &+= 1
+            let token = blameToken
+            let work = DispatchWorkItem { [weak self] in
+                guard let self else { return }
+                Task { @MainActor in
+                    guard token == self.blameToken else { return }
+                    let blame = await GitService.blame(file: fileURL, line: line, root: root)
+                    guard token == self.blameToken, let blame, let label = self.blameLabel else {
+                        self.blameLabel?.isHidden = true
+                        return
+                    }
+                    self.blameLine = line
+                    label.configure(text: blame.detailedLabel, color: self.theme.comment, font: self.theme.nsFont)
+                    self.positionInlineBlame()
+                }
+            }
+            blameWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.35, execute: work)
+        }
+
+        /// Places the blame label just past the end of the caret's line, vertically
+        /// centered on it, in the text view's (document) coordinate space.
+        private func positionInlineBlame() {
+            guard let textView, let label = blameLabel, !label.stringValue.isEmpty else { return }
+            let ns = textView.string as NSString
+            let caret = min(textView.selectedRange().location, ns.length)
+            let lineRange = ns.lineRange(for: NSRange(location: caret, length: 0))
+            var eol = NSMaxRange(lineRange)
+            while eol > lineRange.location {
+                let c = ns.character(at: eol - 1)
+                if c == 0x0A || c == 0x0D { eol -= 1 } else { break }
+            }
+            let screenRect = textView.firstRect(forCharacterRange: NSRange(location: eol, length: 0), actualRange: nil)
+            guard let window = textView.window, screenRect.height > 0 else { label.isHidden = true; return }
+            let winRect = window.convertFromScreen(screenRect)
+            let viewRect = textView.convert(winRect, from: nil)
+            label.sizeToFit()
+            let gap: CGFloat = 18
+            label.frame.origin = NSPoint(x: viewRect.minX + gap, y: viewRect.minY)
+            label.frame.size.height = viewRect.height
+            label.isHidden = false
         }
 
         /// Reformats the whole buffer with the language's external formatter.
@@ -1032,12 +1277,15 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         private func scheduleHighlight() {
             highlightWork?.cancel()
+            guard !isLargeFile else { return }
             let work = DispatchWorkItem { [weak self] in
                 self?.recomputeFoldRegions()
-                self?.applyHighlight()
+                if self?.treeSitterHighlighter == nil {
+                    self?.applyHighlight()
+                }
             }
             highlightWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + highlightDebounce, execute: work)
         }
 
         /// Re-detects foldable regions after an edit. The analysis is cheap
@@ -1046,7 +1294,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// untouched by the folding machinery.
         func recomputeFoldRegions() {
             guard let textView else { return }
-            guard theme.showCodeFolding, document.language.supportsFolding else {
+            guard !isLargeFile, theme.showCodeFolding, document.language.supportsFolding else {
                 folding.unfoldAll()
                 folding.updateRegions([])
                 gutter?.refresh()
@@ -1062,7 +1310,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// (each draw) is wasteful, so coalesce rapid typing into a single rebuild
         /// once edits settle — the overview can lag a beat without anyone noticing.
         private func scheduleMinimapRebuild() {
-            guard minimap != nil else { return }
+            guard !isLargeFile, minimap?.isHidden == false else { return }
             minimapWork?.cancel()
             let work = DispatchWorkItem { [weak self] in self?.minimap?.invalidateContent() }
             minimapWork = work
@@ -1074,6 +1322,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         func scheduleGitDiff() {
             gitWork?.cancel()
             guard gutter != nil else { return }
+            guard !isLargeFile else { gutter?.setGitDiff(nil); return }
             guard document.fileURL != nil else { gutter?.setGitDiff(nil); return }
             let work = DispatchWorkItem { [weak self] in
                 guard let self, let tv = self.textView, let url = self.document.fileURL else { return }
@@ -1084,13 +1333,13 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 }
             }
             gitWork = work
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.4, execute: work)
+            DispatchQueue.main.asyncAfter(deadline: .now() + gitDiffDebounce, execute: work)
         }
 
         /// Recomputes the suggestion list for the identifier at the caret and
         /// shows/updates the floating popup. Never mutates the document.
         private func updateCompletionPopup(in textView: NSTextView, minimumPrefix: Int = 2) {
-            guard document.language != .plainText else { popup.hide(); return }
+            guard !isLargeFile, document.language != .plainText else { popup.hide(); return }
             let selection = textView.selectedRange()
             guard selection.length == 0 else { popup.hide(); return }
 
@@ -1160,7 +1409,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// sent through `didChange`. Failures keep the local completion fallback.
         private func scheduleLSP(in textView: NSTextView) {
             let language = document.language
-            guard LSPService.config(for: language) != nil, let url = document.fileURL else {
+            guard !isLargeFile, LSPService.config(for: language) != nil, let url = document.fileURL else {
                 lspItems = []
                 return
             }
@@ -1194,7 +1443,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// for its diagnostics, and primes the first completion so the launch cost
         /// isn't paid mid-type.
         func warmUpLSP() {
-            guard let textView, let url = document.fileURL else { return }
+            guard !isLargeFile, let textView, let url = document.fileURL else { return }
             let language = document.language
             guard LSPService.config(for: language) != nil else { return }
             let uri = url.absoluteString
@@ -1214,6 +1463,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         func syncLSPIdentity() {
+            guard !isLargeFile else { return }
             let uri = document.fileURL?.absoluteString
             let language = document.language
             let root = document.fileURL.map(lspRootPath)
@@ -1254,6 +1504,10 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// buffer so the underlines track the text between LSP publishes.
         func refreshDiagnosticUnderlines() {
             guard let textView = textView as? BriskCodeTextView else { return }
+            guard !isLargeFile else {
+                textView.setDiagnosticUnderlines([])
+                return
+            }
             let ns = textView.string as NSString
             let underlines: [(range: NSRange, severity: Diagnostic.Severity)] = document.diagnostics.compactMap { d in
                 guard d.severity != .note, let range = Self.diagnosticRange(for: d, in: ns) else { return nil }
@@ -1421,4 +1675,35 @@ struct TextKit2EditorHost: NSViewRepresentable {
             return true
         }
     }
+}
+
+/// The faint trailing "author · when · summary" label rendered after the caret's
+/// line. Non-interactive: clicks pass straight through to the text view so it
+/// never blocks selection or the caret.
+final class InlineBlameLabel: NSTextField {
+    init() {
+        super.init(frame: .zero)
+        isEditable = false
+        isSelectable = false
+        isBordered = false
+        isBezeled = false
+        drawsBackground = false
+        refusesFirstResponder = true
+        lineBreakMode = .byTruncatingTail
+        cell?.usesSingleLineMode = true
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
+
+    func configure(text: String, color: NSColor, font baseFont: NSFont) {
+        stringValue = text
+        // A touch smaller than the editor font and dimmed, so it reads as a hint.
+        let size = max(9, baseFont.pointSize - 1.5)
+        font = NSFont(descriptor: baseFont.fontDescriptor.withSymbolicTraits(.italic), size: size)
+            ?? NSFont.systemFont(ofSize: size)
+        textColor = color.withAlphaComponent(0.55)
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }

@@ -20,6 +20,81 @@ final class Preferences {
         }
     }
 
+    /// How aggressively BriskEdit spends CPU/GPU/battery on the "live" editor
+    /// features (minimap, hover, animations, and — as wiring lands — highlight
+    /// and git-diff cadence). `adaptive` is the default and follows the system.
+    enum PerformanceMode: String, CaseIterable, Identifiable {
+        case lowPower
+        case adaptive
+        case power
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .lowPower: "Low Power"
+            case .adaptive: "Adaptive"
+            case .power: "Power"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .lowPower: "leaf"
+            case .adaptive: "gauge.with.dots.needle.50percent"
+            case .power: "bolt.fill"
+            }
+        }
+
+        var explanation: String {
+            switch self {
+            case .lowPower:
+                "Saves battery and CPU: hides the minimap, eases off hover docs and calms animations. Best on battery or when editing very large files."
+            case .adaptive:
+                "Default. Runs at full speed on power, and automatically eases off when macOS Low Power Mode is on or the Mac is under thermal pressure."
+            case .power:
+                "Everything immediate: minimap, hover documentation and full animations stay on regardless of power state. Also indexes syntax in the background so even the first open of a file is instantly highlighted. Best when plugged in."
+            }
+        }
+    }
+
+    /// The concrete knobs a resolved performance mode turns on or off.
+    struct PerformanceProfile {
+        let allowsMinimap: Bool
+        let allowsHover: Bool
+        let reduceMotion: Bool
+        let highlightDebounce: TimeInterval
+        let gitDiffDebounce: TimeInterval
+        let markdownPreviewDebounceMilliseconds: Int
+
+        init(mode: PerformanceMode) {
+            switch mode {
+            case .lowPower, .adaptive:
+                allowsMinimap = false
+                allowsHover = false
+                reduceMotion = true
+                highlightDebounce = 0.18
+                gitDiffDebounce = 0.8
+                markdownPreviewDebounceMilliseconds = 450
+            case .power:
+                allowsMinimap = true
+                allowsHover = true
+                reduceMotion = false
+                highlightDebounce = 0.08
+                gitDiffDebounce = 0.4
+                markdownPreviewDebounceMilliseconds = 180
+            }
+        }
+    }
+
+    var performanceMode: PerformanceMode {
+        didSet { persist() }
+    }
+    /// Live system signals the `adaptive` mode reacts to. Kept observable so
+    /// views reading the effective profile re-render when power/thermal changes.
+    private(set) var isLowPowerModeActive: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled
+    private(set) var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+
     var startupBehavior: StartupBehavior {
         didSet { persist() }
     }
@@ -54,7 +129,7 @@ final class Preferences {
     var showCodeFolding: Bool {
         didSet { persist() }
     }
-    /// Show the VS Code-style minimap (zoomed-out overview) at the right edge of
+    /// Show the minimap (a zoomed-out overview) at the right edge of
     /// the editor. On by default.
     var showMinimap: Bool {
         didSet { persist() }
@@ -87,7 +162,7 @@ final class Preferences {
         didSet { persist() }
     }
     /// Experimental: mirror the active file, language and workspace to Discord
-    /// as Rich Presence (vscord-style). Off by default; opt-in per machine.
+    /// as Rich Presence. Off by default; opt-in per machine.
     var discordRichPresence: Bool {
         didSet {
             persist()
@@ -107,10 +182,21 @@ final class Preferences {
     var discordShowElapsed: Bool {
         didSet { persist() }
     }
+    /// Whether the first-run onboarding has been completed. Replaying it from
+    /// Settings ▸ General flips this back to false so it shows again.
+    var hasCompletedOnboarding: Bool {
+        didSet { persist() }
+    }
+    /// Inline git blame: a faint author/commit label at the end of the caret's
+    /// line. On by default; the headline Source Control nicety.
+    var showInlineGitBlame: Bool {
+        didSet { persist() }
+    }
 
     init() {
         let defaults = UserDefaults.standard
         self.startupBehavior = StartupBehavior(rawValue: defaults.string(forKey: Keys.startupBehavior) ?? "") ?? .restoreLastWorkspace
+        self.performanceMode = PerformanceMode(rawValue: defaults.string(forKey: Keys.performanceMode) ?? "") ?? .adaptive
         self.fontSize = CGFloat(defaults.double(forKey: Keys.fontSize).nonZero ?? 13)
         self.fontName = defaults.string(forKey: Keys.fontName) ?? "SF Mono"
         self.tabWidth = defaults.integer(forKey: Keys.tabWidth).nonZero ?? 4
@@ -129,8 +215,56 @@ final class Preferences {
         self.discordShowFileName = defaults.object(forKey: Keys.discordShowFileName) as? Bool ?? true
         self.discordShowWorkspace = defaults.object(forKey: Keys.discordShowWorkspace) as? Bool ?? true
         self.discordShowElapsed = defaults.object(forKey: Keys.discordShowElapsed) as? Bool ?? true
+        self.hasCompletedOnboarding = defaults.bool(forKey: Keys.hasCompletedOnboarding)
+        self.showInlineGitBlame = defaults.object(forKey: Keys.showInlineGitBlame) as? Bool ?? true
         DiscordPresenceController.shared.configure(enabled: discordRichPresence)
+        observeSystemPowerState()
     }
+
+    /// Watches macOS Low Power Mode and thermal-pressure changes so `adaptive`
+    /// re-resolves live (views reading the effective profile re-render).
+    private func observeSystemPowerState() {
+        let center = NotificationCenter.default
+        center.addObserver(forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.refreshSystemPowerState() }
+        }
+        center.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.refreshSystemPowerState() }
+        }
+    }
+
+    private func refreshSystemPowerState() {
+        isLowPowerModeActive = ProcessInfo.processInfo.isLowPowerModeEnabled
+        thermalState = ProcessInfo.processInfo.thermalState
+    }
+
+    /// The mode actually in effect: explicit modes pass through; `adaptive`
+    /// drops to Low Power under OS Low Power Mode or serious thermal pressure.
+    var resolvedPerformanceMode: PerformanceMode {
+        guard performanceMode == .adaptive else { return performanceMode }
+        if isLowPowerModeActive || thermalState == .serious || thermalState == .critical {
+            return .lowPower
+        }
+        return .power
+    }
+
+    var performanceProfile: PerformanceProfile {
+        PerformanceProfile(mode: resolvedPerformanceMode)
+    }
+
+    /// Whether to proactively pre-compile syntax grammars in the background.
+    /// Only the explicit **Power** mode opts in — Adaptive and Low Power compile
+    /// lazily on first open to avoid spending energy speculatively.
+    var performsBackgroundIndexing: Bool { performanceMode == .power }
+
+    /// Minimap shown only when the user enabled it *and* the active profile
+    /// allows it — so Low Power hides it without losing the user's preference.
+    var effectiveShowMinimap: Bool { showMinimap && performanceProfile.allowsMinimap }
+    var effectiveShowHoverTooltips: Bool { showHoverTooltips && performanceProfile.allowsHover }
+    var reduceMotion: Bool { performanceProfile.reduceMotion }
+    var highlightDebounce: TimeInterval { performanceProfile.highlightDebounce }
+    var gitDiffDebounce: TimeInterval { performanceProfile.gitDiffDebounce }
+    var markdownPreviewDebounceMilliseconds: Int { performanceProfile.markdownPreviewDebounceMilliseconds }
 
     /// Resolves the configured terminal font, falling back to the system
     /// monospaced face when the named font isn't installed. Accepts both
@@ -179,6 +313,7 @@ final class Preferences {
     private func persist() {
         let defaults = UserDefaults.standard
         defaults.set(startupBehavior.rawValue, forKey: Keys.startupBehavior)
+        defaults.set(performanceMode.rawValue, forKey: Keys.performanceMode)
         defaults.set(Double(fontSize), forKey: Keys.fontSize)
         defaults.set(fontName, forKey: Keys.fontName)
         defaults.set(tabWidth, forKey: Keys.tabWidth)
@@ -197,10 +332,13 @@ final class Preferences {
         defaults.set(discordShowFileName, forKey: Keys.discordShowFileName)
         defaults.set(discordShowWorkspace, forKey: Keys.discordShowWorkspace)
         defaults.set(discordShowElapsed, forKey: Keys.discordShowElapsed)
+        defaults.set(hasCompletedOnboarding, forKey: Keys.hasCompletedOnboarding)
+        defaults.set(showInlineGitBlame, forKey: Keys.showInlineGitBlame)
     }
 
     private enum Keys {
         static let startupBehavior = "app.startupBehavior"
+        static let performanceMode = "app.performanceMode"
         static let fontSize = "editor.fontSize"
         static let fontName = "editor.fontName"
         static let tabWidth = "editor.tabWidth"
@@ -219,6 +357,8 @@ final class Preferences {
         static let discordShowFileName = "experimental.discordShowFileName"
         static let discordShowWorkspace = "experimental.discordShowWorkspace"
         static let discordShowElapsed = "experimental.discordShowElapsed"
+        static let hasCompletedOnboarding = "app.hasCompletedOnboarding"
+        static let showInlineGitBlame = "editor.showInlineGitBlame"
     }
 }
 

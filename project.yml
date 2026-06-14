@@ -16,7 +16,7 @@ settings:
     SWIFT_UPCOMING_FEATURE_REGION_BASED_ISOLATION: YES
     SWIFT_UPCOMING_FEATURE_INFERRED_SENDABLE_CAPTURES: YES
     ENABLE_USER_SCRIPT_SANDBOXING: NO
-    MARKETING_VERSION: "0.3.6"
+    MARKETING_VERSION: "0.4.0"
     CURRENT_PROJECT_VERSION: "1"
     # Sparkle EdDSA public key (NOT secret — it ships in every binary). This is
     # the project's canonical release key; the matching private key lives only in
@@ -29,10 +29,24 @@ settings:
 packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
-    from: "2.9.2"
+    exactVersion: "2.9.2"
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
-    from: "1.13.0"
+    exactVersion: "1.13.0"
+  Neon:
+    url: https://github.com/ChimeHQ/Neon
+    revision: 484d6fb9e0c4fb679a1d5f5ddaf2cac2ecf21165
+  SwiftTreeSitter:
+    url: https://github.com/ChimeHQ/SwiftTreeSitter
+    # Neon requires this branch. Config/Package.resolved locks it to a reviewed
+    # revision, and every build uses -onlyUsePackageVersionsFromResolvedFile.
+    branch: main
+  TreeSitterSwift:
+    url: https://github.com/alex-pinkus/tree-sitter-swift
+    revision: 31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5
+  TreeSitterJSON:
+    url: https://github.com/tree-sitter/tree-sitter-json
+    exactVersion: "0.24.8"
 
 targets:
   BriskEdit:
@@ -43,6 +57,10 @@ targets:
     dependencies:
       - package: Sparkle
       - package: SwiftTerm
+      - package: Neon
+      - package: SwiftTreeSitter
+      - package: TreeSitterSwift
+      - package: TreeSitterJSON
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.johannesgrof.briskedit
@@ -67,6 +85,7 @@ targets:
         # (BRISKEDIT_SIGN_IDENTITY) wieder an — was Notarization ohnehin verlangt.
         ENABLE_HARDENED_RUNTIME: NO
         COMBINE_HIDPI_IMAGES: YES
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "$(BRISKEDIT_WARNINGS_AS_ERRORS)"
 
   BriskEditTests:
     type: bundle.unit-test
@@ -79,3 +98,4 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.johannesgrof.briskedit.tests
         GENERATE_INFOPLIST_FILE: YES
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "$(BRISKEDIT_WARNINGS_AS_ERRORS)"

@@ -35,6 +35,11 @@ struct BriskEditApp: App {
                 .environment(updates)
                 .environment(ThemeStore.shared)
                 .frame(minWidth: 900, minHeight: 560)
+                // Power mode pre-compiles syntax grammars in the background so
+                // even the first open is instant. Re-checked when the mode flips.
+                .task(id: preferences.performanceMode) {
+                    BackgroundIndexer.startIfEnabled(preferences)
+                }
         } defaultValue: {
             .primary
         }
