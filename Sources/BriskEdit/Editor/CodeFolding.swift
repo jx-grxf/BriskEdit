@@ -234,7 +234,9 @@ final class FoldingController: NSObject, NSTextContentStorageDelegate, @unchecke
             storage.edited(.editedAttributes, range: NSRange(location: location, length: storage.length - location), changeInLength: 0)
         }
         contentStorage.primaryTextLayoutManager?.textViewportLayoutController.layoutViewport()
-        textView?.needsDisplay = true
+        DispatchQueue.main.async { [weak self] in
+            self?.textView?.needsDisplay = true
+        }
     }
 
     // MARK: - NSTextContentStorageDelegate

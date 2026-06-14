@@ -652,7 +652,7 @@ private actor Server {
             }
             Task {
                 try? await Task.sleep(for: .seconds(5))
-                await self.timeout(id: id)
+                self.timeout(id: id)
             }
         }
     }

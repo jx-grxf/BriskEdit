@@ -53,9 +53,9 @@ devicon() {
 label() {
   case "$1" in
     json) echo "JSON" ;; sql) echo "SQL" ;; toml) echo "TOML" ;;
-    xml)  echo "XML" ;;  ini) echo "INI" ;; text) echo "TXT" ;;
+    xml)  echo "XML" ;;  text) echo "TXT" ;;
     yaml) echo "YAML" ;; ini) echo "INI" ;;
-    *)    echo "$(echo "$1" | tr '[:lower:]' '[:upper:]' | cut -c1-4)" ;;
+    *)    echo "$1" | tr '[:lower:]' '[:upper:]' | cut -c1-4 ;;
   esac
 }
 
@@ -97,4 +97,4 @@ if [ -n "$LOGO" ]; then
   echo "  briskedit    app-logo"
 fi
 
-echo "Done. $(ls "$OUT" | wc -l | tr -d ' ') files in $OUT"
+echo "Done. $(find "$OUT" -mindepth 1 -maxdepth 1 -type f | wc -l | tr -d ' ') files in $OUT"

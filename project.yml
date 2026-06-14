@@ -85,6 +85,7 @@ targets:
         # (BRISKEDIT_SIGN_IDENTITY) wieder an — was Notarization ohnehin verlangt.
         ENABLE_HARDENED_RUNTIME: NO
         COMBINE_HIDPI_IMAGES: YES
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "$(BRISKEDIT_WARNINGS_AS_ERRORS)"
 
   BriskEditTests:
     type: bundle.unit-test
@@ -97,3 +98,4 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.johannesgrof.briskedit.tests
         GENERATE_INFOPLIST_FILE: YES
+        SWIFT_TREAT_WARNINGS_AS_ERRORS: "$(BRISKEDIT_WARNINGS_AS_ERRORS)"

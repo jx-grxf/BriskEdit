@@ -1,4 +1,4 @@
-import AppKit
+@preconcurrency import AppKit
 import SwiftUI
 
 struct WorkspaceWindow: View {
@@ -535,11 +535,18 @@ private struct WindowConfigurator: NSViewRepresentable {
 
         override func responds(to aSelector: Selector!) -> Bool {
             if super.responds(to: aSelector) { return true }
-            return forwardee?.responds(to: aSelector) ?? false
+            return MainActor.assumeIsolated {
+                forwardee?.responds(to: aSelector) ?? false
+            }
         }
 
         override func forwardingTarget(for aSelector: Selector!) -> Any? {
-            if let forwardee, forwardee.responds(to: aSelector) { return forwardee }
+            if let target = MainActor.assumeIsolated({ () -> NSWindowDelegate? in
+                guard let forwardee, forwardee.responds(to: aSelector) else { return nil }
+                return forwardee
+            }) {
+                return target
+            }
             return super.forwardingTarget(for: aSelector)
         }
     }
