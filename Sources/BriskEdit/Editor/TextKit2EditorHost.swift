@@ -126,7 +126,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         textView.textContentStorage?.delegate = folding
         gutter.folding = folding
         gutter.onFoldToggled = { [weak coordinator = context.coordinator] in
-            coordinator?.applyHighlight()
+            coordinator?.forceHighlightRefresh()
             coordinator?.gutter?.refresh()
             coordinator?.minimap?.refresh()
         }
@@ -343,6 +343,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var hoverWork: DispatchWorkItem?
         private let signaturePanel = SignatureHelpPanel()
         private var signatureWork: DispatchWorkItem?
+        private var treeSitterHighlighter: TreeSitterHighlighter?
+        private var treeSitterAttemptedLanguage: SourceLanguage?
         private var formatTask: Task<Void, Never>?
         private var hoverIndex = -1
         var showHoverTooltips = true
@@ -1008,10 +1010,47 @@ struct TextKit2EditorHost: NSViewRepresentable {
         func applyHighlight() {
             guard let textView else { return }
             guard !isLargeFile else {
+                treeSitterHighlighter = nil
+                treeSitterAttemptedLanguage = nil
                 TextKit2SyntaxHighlighter.clear(in: textView, theme: theme)
                 return
             }
+            if useTreeSitterIfAvailable(in: textView) {
+                return
+            }
             TextKit2SyntaxHighlighter.apply(to: textView, language: document.language, theme: theme)
+        }
+
+        func forceHighlightRefresh() {
+            applyHighlight()
+            treeSitterHighlighter?.invalidate()
+        }
+
+        private func useTreeSitterIfAvailable(in textView: NSTextView) -> Bool {
+            let language = document.language
+            guard TreeSitterHighlighter.supports(language) else {
+                treeSitterHighlighter = nil
+                treeSitterAttemptedLanguage = language
+                return false
+            }
+
+            if treeSitterAttemptedLanguage != language {
+                treeSitterHighlighter = nil
+                treeSitterAttemptedLanguage = language
+
+                // Keep the existing path visible until the parser's first token
+                // pass is ready, and retain it if initialization fails.
+                TextKit2SyntaxHighlighter.apply(to: textView, language: language, theme: theme)
+                treeSitterHighlighter = try? TreeSitterHighlighter(
+                    textView: textView,
+                    language: language,
+                    theme: theme
+                )
+            }
+
+            guard let treeSitterHighlighter else { return false }
+            treeSitterHighlighter.updateTheme(theme)
+            return true
         }
 
         func disableExpensiveFeaturesForLargeFile() {
@@ -1025,6 +1064,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
             hoverPanel.hide()
             signaturePanel.hide()
             lspItems = []
+            treeSitterHighlighter = nil
+            treeSitterAttemptedLanguage = nil
             if let uri = lspDiagnosticsURI {
                 LSPDiagnosticsBus.shared.removeHandler(uri: uri)
                 if let language = lspLanguage {
@@ -1101,7 +1142,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
             guard !isLargeFile else { return }
             let work = DispatchWorkItem { [weak self] in
                 self?.recomputeFoldRegions()
-                self?.applyHighlight()
+                if self?.treeSitterHighlighter == nil {
+                    self?.applyHighlight()
+                }
             }
             highlightWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + highlightDebounce, execute: work)

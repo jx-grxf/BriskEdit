@@ -33,6 +33,19 @@ packages:
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
     from: "1.13.0"
+  Neon:
+    url: https://github.com/ChimeHQ/Neon
+    revision: 484d6fb9e0c4fb679a1d5f5ddaf2cac2ecf21165
+  SwiftTreeSitter:
+    url: https://github.com/ChimeHQ/SwiftTreeSitter
+    # Neon's pinned revision requires this branch; verified at 0f40435cdb41673ce4194d731571cf2a2f7c3285.
+    branch: main
+  TreeSitterSwift:
+    url: https://github.com/alex-pinkus/tree-sitter-swift
+    revision: 31d17fe7e818a2048c808b5c6fdc2dc792f4f5b5
+  TreeSitterJSON:
+    url: https://github.com/tree-sitter/tree-sitter-json
+    exactVersion: "0.24.8"
 
 targets:
   BriskEdit:
@@ -43,6 +56,10 @@ targets:
     dependencies:
       - package: Sparkle
       - package: SwiftTerm
+      - package: Neon
+      - package: SwiftTreeSitter
+      - package: TreeSitterSwift
+      - package: TreeSitterJSON
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.johannesgrof.briskedit
