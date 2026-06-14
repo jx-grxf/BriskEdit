@@ -159,6 +159,7 @@ jobs:
       - name: Test tagged source
         run: |
           set -o pipefail
+          mkdir -p .build
           xcodebuild test \
             -project BriskEdit.xcodeproj \
             -scheme BriskEdit \
