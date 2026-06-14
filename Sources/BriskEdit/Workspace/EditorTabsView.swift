@@ -40,7 +40,7 @@ struct EditorTabsView: View {
                     VStack(spacing: 0) {
                         TabStrip(workspace: workspace)
                         Divider()
-                        if workspace.activeTab != nil {
+                        if let active = workspace.activeTab, active.special == nil {
                             BreadcrumbBar(workspace: workspace)
                             Divider()
                         }
@@ -190,7 +190,10 @@ struct EditorTabsView: View {
 
     @ViewBuilder
     private func editorSurface(for tab: EditorTab, availableWidth: CGFloat) -> some View {
-        if let previewKind = tab.previewKind {
+        if case .whatsNew(let version) = tab.special {
+            WhatsNewView(version: version)
+                .id(tab.id)
+        } else if let previewKind = tab.previewKind {
             previewSurface(for: previewKind)
                 .id(tab.id)
         } else if workspace.splitPreviewContent == nil,
@@ -522,13 +525,20 @@ private struct TabChip: View {
         // on top so it still gets its own clicks.
         Button(action: onSelect) {
             HStack(spacing: 6) {
-                FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
-                Text(tab.document.displayName)
+                if let special = tab.special {
+                    Image(systemName: special.symbol)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.tint)
+                        .frame(width: 14)
+                } else {
+                    FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
+                }
+                Text(tab.displayTitle)
                     .foregroundStyle(isActive ? .primary : .secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
-                if tab.document.isDirty {
+                if tab.special == nil, tab.document.isDirty {
                     Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
                 }
             }
@@ -538,7 +548,7 @@ private struct TabChip: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel("Select \(tab.document.displayName)")
+        .accessibilityLabel("Select \(tab.displayTitle)")
         .animation(.easeInOut(duration: 0.15), value: isActive)
         // Native "front tab" look: the active tab reads as a raised surface
         // (matching the editor area) instead of an accent wash, with a thin

@@ -27,6 +27,10 @@ struct WorkspaceWindow: View {
             didStartSession = true
             if kind.restoresSession {
                 await workspace.startPrimarySession(restoreLastWorkspace: preferences.startupBehavior == .restoreLastWorkspace)
+                // After an update (not first install), greet with What's New.
+                if let version = WhatsNew.versionToAnnounceAndMarkSeen() {
+                    workspace.showWhatsNew(version: version)
+                }
             }
             ExternalFileOpenCoordinator.shared.drainPending(into: workspace)
         }

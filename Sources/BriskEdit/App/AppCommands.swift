@@ -225,6 +225,10 @@ struct AppCommands: Commands {
         // Replace the default "BriskEdit Help" item (which only shows an
         // "Help isn't available" alert) with a link to the project on GitHub.
         CommandGroup(replacing: .help) {
+            Button("What's New in BriskEdit") {
+                workspace?.showWhatsNew(version: WhatsNew.currentVersion)
+            }
+            .disabled(workspace == nil)
             Button("BriskEdit on GitHub") {
                 if let url = URL(string: "https://github.com/jx-grxf/BriskEdit") {
                     NSWorkspace.shared.open(url)

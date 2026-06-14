@@ -71,6 +71,20 @@ extension WorkspaceModel {
         activeTabID = tab.id
     }
 
+    /// Opens (or re-focuses) the built-in "What's New" page as a tab.
+    func showWhatsNew(version: String) {
+        if let existing = tabs.first(where: {
+            if case .whatsNew = $0.special { return true }
+            return false
+        }) {
+            activeTabID = existing.id
+            return
+        }
+        let tab = EditorTab.whatsNew(version: version)
+        tabs.append(tab)
+        activeTabID = tab.id
+    }
+
     func closeTab(_ id: EditorTab.ID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         if splitPreviewContent == .markdown(id) {
