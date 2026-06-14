@@ -75,6 +75,31 @@ struct GitDecorations: Sendable {
     var isEmpty: Bool { files.isEmpty }
 }
 
+/// Author/commit info for a single buffer line, for inline blame.
+struct GitBlame: Sendable, Equatable {
+    let author: String
+    let summary: String
+    let timestamp: Date
+    let isUncommitted: Bool
+
+    /// "Johannes Grof · 3 days ago" style label (uncommitted lines read
+    /// "You · Uncommitted").
+    var label: String {
+        if isUncommitted { return "You · Uncommitted" }
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .full
+        let when = formatter.localizedString(for: timestamp, relativeTo: Date())
+        let who = author.isEmpty ? "Unknown" : author
+        return "\(who) · \(when)"
+    }
+
+    /// Full label including the commit summary, for the trailing ghost text.
+    var detailedLabel: String {
+        guard !isUncommitted, !summary.isEmpty else { return label }
+        return "\(label) · \(summary)"
+    }
+}
+
 /// Computes a git "gutter" diff by comparing the *current buffer* against the
 /// committed `HEAD` blob — so it reflects uncommitted edits live, not just what
 /// is saved. Shells out to the user's own `git`; returns nil outside a repo.
@@ -157,6 +182,45 @@ enum GitService {
                 }
             }
             return result
+        }.value
+    }
+
+    /// Blame for a single 1-based line of `file`, parsed from porcelain output.
+    /// Returns nil outside a repo or on error. Uncommitted (locally edited but
+    /// unstaged) lines come back with `isUncommitted == true`.
+    static func blame(file: URL, line: Int, root: URL) async -> GitBlame? {
+        guard line >= 1 else { return nil }
+        let filePath = file.path
+        let rootPath = root.path
+        return await Task.detached(priority: .utility) { () -> GitBlame? in
+            guard let out = run(["-C", rootPath, "blame", "-L", "\(line),\(line)", "--porcelain", "--", filePath]) else { return nil }
+            var author = ""
+            var summary = ""
+            var authorTime: TimeInterval = 0
+            var sha = ""
+            var isFirst = true
+            for raw in out.split(separator: "\n", omittingEmptySubsequences: false) {
+                let lineStr = String(raw)
+                if isFirst {
+                    sha = String(lineStr.prefix(40))
+                    isFirst = false
+                    continue
+                }
+                if lineStr.hasPrefix("author ") {
+                    author = String(lineStr.dropFirst("author ".count))
+                } else if lineStr.hasPrefix("author-time ") {
+                    authorTime = TimeInterval(lineStr.dropFirst("author-time ".count)) ?? 0
+                } else if lineStr.hasPrefix("summary ") {
+                    summary = String(lineStr.dropFirst("summary ".count))
+                }
+            }
+            let uncommitted = author == "Not Committed Yet" || sha.allSatisfy { $0 == "0" }
+            return GitBlame(
+                author: author,
+                summary: summary,
+                timestamp: Date(timeIntervalSince1970: authorTime),
+                isUncommitted: uncommitted
+            )
         }.value
     }
 

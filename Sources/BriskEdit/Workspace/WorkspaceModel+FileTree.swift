@@ -82,12 +82,27 @@ extension WorkspaceModel {
     }
 
     /// Recomputes the file-tree git badges for the current workspace root.
+    /// Coalesced: if a refresh is already running, this just flags a trailing
+    /// re-run so rapid window activations / saves never spawn parallel
+    /// `git status` scans.
     func refreshGitDecorations() async {
         guard let root = rootURL else {
             if !gitDecorations.isEmpty { gitDecorations = GitDecorations() }
             return
         }
-        gitDecorations = await GitService.decorations(root: root)
+        if isRefreshingGitDecorations {
+            gitDecorationsRefreshPending = true
+            return
+        }
+        isRefreshingGitDecorations = true
+        defer { isRefreshingGitDecorations = false }
+        repeat {
+            gitDecorationsRefreshPending = false
+            let decorations = await GitService.decorations(root: root)
+            // The root may have changed while we were off the main actor.
+            guard rootURL == root else { return }
+            gitDecorations = decorations
+        } while gitDecorationsRefreshPending
     }
 
     func loadChildren(of url: URL) async -> [FileNode] {

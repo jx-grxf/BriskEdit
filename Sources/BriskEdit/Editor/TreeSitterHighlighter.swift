@@ -19,12 +19,59 @@ final class TreeSitterHighlighter {
     private let highlighter: TextViewHighlighter
     private let themeBox: ThemeBox
 
-    init(textView: NSTextView, language: SourceLanguage, theme: EditorTheme) throws {
+    // Compiling the tree-sitter query for a grammar is expensive — the Swift
+    // highlights query costs ~1.5s with `ts_query_new`. We rebuild a highlighter
+    // on every file open and tab switch, so the compiled `LanguageConfiguration`
+    // (which is `Sendable`/immutable) is cached and reused across instances.
+    private static var configurationCache: [SourceLanguage: LanguageConfiguration] = [:]
+    private static var inFlightCompiles: [SourceLanguage: Task<LanguageConfiguration?, Never>] = [:]
+
+    /// Returns the already-compiled config for `language`, or nil if it hasn't
+    /// been compiled yet (callers should fall back and call `prepareConfiguration`).
+    static func cachedConfiguration(for language: SourceLanguage) -> LanguageConfiguration? {
+        configurationCache[language]
+    }
+
+    /// Compiles (off the main thread) and caches the config for `language`,
+    /// de-duplicating concurrent requests. Returns nil for unsupported grammars
+    /// or on failure.
+    @discardableResult
+    static func prepareConfiguration(for language: SourceLanguage) async -> LanguageConfiguration? {
+        if let cached = configurationCache[language] { return cached }
+        let task: Task<LanguageConfiguration?, Never>
+        if let existing = inFlightCompiles[language] {
+            task = existing
+        } else {
+            task = Task<LanguageConfiguration?, Never>.detached(priority: .userInitiated) {
+                try? Self.compileConfiguration(for: language)
+            }
+            inFlightCompiles[language] = task
+        }
+        let config = await task.value
+        // Every awaiter writes through to the cache (not just the task's original
+        // owner), so the moment any `prepare` returns non-nil the synchronous
+        // `cachedConfiguration` lookup is guaranteed to see it.
+        inFlightCompiles[language] = nil
+        if let config { configurationCache[language] = config }
+        return config
+    }
+
+    /// Warms the heavy grammars in the background so the first open doesn't pay
+    /// the ~1.5s query-compile cost on the main thread. Compiles **one grammar at
+    /// a time** (low priority) so the pre-warm itself never makes the UI stutter.
+    static func warmUp(_ languages: [SourceLanguage] = [.swift, .json]) {
+        Task(priority: .utility) {
+            for language in languages where supports(language) {
+                await prepareConfiguration(for: language)
+            }
+        }
+    }
+
+    init(textView: NSTextView, language: SourceLanguage, configuration: LanguageConfiguration, theme: EditorTheme) throws {
         guard Self.supports(language) else {
             throw TreeSitterHighlighterError.unsupportedLanguage
         }
 
-        let configuration = try Self.languageConfiguration(for: language)
         guard configuration.queries[.highlights] != nil else {
             throw TreeSitterHighlighterError.missingHighlightQuery
         }
@@ -97,7 +144,9 @@ final class TreeSitterHighlighter {
         return nil
     }
 
-    private static func languageConfiguration(for language: SourceLanguage) throws -> LanguageConfiguration {
+    /// Pure C grammar loading + query compilation — safe to run off the main
+    /// thread (no shared mutable state; the result is `Sendable`).
+    nonisolated private static func compileConfiguration(for language: SourceLanguage) throws -> LanguageConfiguration {
         switch language {
         case .swift:
             return try LanguageConfiguration(tree_sitter_swift(), name: "Swift")

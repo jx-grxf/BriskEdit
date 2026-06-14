@@ -81,6 +81,22 @@ private struct GeneralPreferencesView: View {
                     .animation(.easeInOut(duration: 0.15), value: cliWorking)
                 }
             }
+            Section("Welcome & Setup") {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Onboarding")
+                        Text("Replay the animated welcome to reconfigure the editor, performance and source-control basics.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    Button("Show Again") {
+                        prefs.hasCompletedOnboarding = false
+                        NSApp.keyWindow?.makeKeyAndOrderFront(nil)
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)

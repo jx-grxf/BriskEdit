@@ -35,18 +35,25 @@ final class TreeSitterHighlighterTests: XCTestCase {
     }
 
     @MainActor
-    func testSwiftAndJSONHighlightersInitializeOnTextKit2() throws {
+    func testSwiftAndJSONHighlightersInitializeOnTextKit2() async throws {
         let (swiftView, swiftScrollView) = makeTextView(text: "let value = 1")
         let (jsonView, jsonScrollView) = makeTextView(text: "{\"value\": 1}")
+
+        let preparedSwift = await TreeSitterHighlighter.prepareConfiguration(for: .swift)
+        let preparedJSON = await TreeSitterHighlighter.prepareConfiguration(for: .json)
+        let swiftConfig = try XCTUnwrap(preparedSwift)
+        let jsonConfig = try XCTUnwrap(preparedJSON)
 
         let swiftHighlighter = try TreeSitterHighlighter(
             textView: swiftView,
             language: .swift,
+            configuration: swiftConfig,
             theme: .default
         )
         let jsonHighlighter = try TreeSitterHighlighter(
             textView: jsonView,
             language: .json,
+            configuration: jsonConfig,
             theme: .default
         )
 

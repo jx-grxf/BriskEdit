@@ -53,7 +53,7 @@ final class Preferences {
             case .adaptive:
                 "Default. Runs at full speed on power, and automatically eases off when macOS Low Power Mode is on or the Mac is under thermal pressure."
             case .power:
-                "Everything immediate: minimap, hover documentation and full animations stay on regardless of power state. Best when plugged in."
+                "Everything immediate: minimap, hover documentation and full animations stay on regardless of power state. Also indexes syntax in the background so even the first open of a file is instantly highlighted. Best when plugged in."
             }
         }
     }
@@ -182,6 +182,16 @@ final class Preferences {
     var discordShowElapsed: Bool {
         didSet { persist() }
     }
+    /// Whether the first-run onboarding has been completed. Replaying it from
+    /// Settings ▸ General flips this back to false so it shows again.
+    var hasCompletedOnboarding: Bool {
+        didSet { persist() }
+    }
+    /// Inline git blame: a faint author/commit label at the end of the caret's
+    /// line. On by default; the headline Source Control nicety.
+    var showInlineGitBlame: Bool {
+        didSet { persist() }
+    }
 
     init() {
         let defaults = UserDefaults.standard
@@ -205,6 +215,8 @@ final class Preferences {
         self.discordShowFileName = defaults.object(forKey: Keys.discordShowFileName) as? Bool ?? true
         self.discordShowWorkspace = defaults.object(forKey: Keys.discordShowWorkspace) as? Bool ?? true
         self.discordShowElapsed = defaults.object(forKey: Keys.discordShowElapsed) as? Bool ?? true
+        self.hasCompletedOnboarding = defaults.bool(forKey: Keys.hasCompletedOnboarding)
+        self.showInlineGitBlame = defaults.object(forKey: Keys.showInlineGitBlame) as? Bool ?? true
         DiscordPresenceController.shared.configure(enabled: discordRichPresence)
         observeSystemPowerState()
     }
@@ -239,6 +251,11 @@ final class Preferences {
     var performanceProfile: PerformanceProfile {
         PerformanceProfile(mode: resolvedPerformanceMode)
     }
+
+    /// Whether to proactively pre-compile syntax grammars in the background.
+    /// Only the explicit **Power** mode opts in — Adaptive and Low Power compile
+    /// lazily on first open to avoid spending energy speculatively.
+    var performsBackgroundIndexing: Bool { performanceMode == .power }
 
     /// Minimap shown only when the user enabled it *and* the active profile
     /// allows it — so Low Power hides it without losing the user's preference.
@@ -315,6 +332,8 @@ final class Preferences {
         defaults.set(discordShowFileName, forKey: Keys.discordShowFileName)
         defaults.set(discordShowWorkspace, forKey: Keys.discordShowWorkspace)
         defaults.set(discordShowElapsed, forKey: Keys.discordShowElapsed)
+        defaults.set(hasCompletedOnboarding, forKey: Keys.hasCompletedOnboarding)
+        defaults.set(showInlineGitBlame, forKey: Keys.showInlineGitBlame)
     }
 
     private enum Keys {
@@ -338,6 +357,8 @@ final class Preferences {
         static let discordShowFileName = "experimental.discordShowFileName"
         static let discordShowWorkspace = "experimental.discordShowWorkspace"
         static let discordShowElapsed = "experimental.discordShowElapsed"
+        static let hasCompletedOnboarding = "app.hasCompletedOnboarding"
+        static let showInlineGitBlame = "editor.showInlineGitBlame"
     }
 }
 

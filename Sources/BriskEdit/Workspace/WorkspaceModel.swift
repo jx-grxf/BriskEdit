@@ -64,6 +64,12 @@ final class WorkspaceModel {
     /// change, after git operations (`.gitDidChange`) and when the window
     /// re-activates. Empty outside a repository.
     var gitDecorations = GitDecorations()
+    /// Coalesces decoration refreshes: the file tree triggers them on every
+    /// window activation and after every save, which otherwise spawns a pile of
+    /// concurrent `git status` processes. At most one runs; others fold into a
+    /// single trailing re-run.
+    @ObservationIgnored var isRefreshingGitDecorations = false
+    @ObservationIgnored var gitDecorationsRefreshPending = false
 
     init() {
         WorkspaceRegistry.register(self)

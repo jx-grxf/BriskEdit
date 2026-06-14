@@ -1,3 +1,4 @@
+import AppKit
 import Combine
 import SwiftUI
 
@@ -112,17 +113,22 @@ struct EditorTabsView: View {
     }
 
     private var emptyState: some View {
-        ContentUnavailableView {
-            Label("BriskEdit", systemImage: "text.cursor")
-        } description: {
-            Text("Open a file or drop files here.")
-        } actions: {
-            HStack {
-                Button("New File") { workspace.newUntitled() }
-                    .keyboardShortcut("n", modifiers: .command)
-                Button("Open File…") { onOpenFile() }
-            }
-        }
+        WelcomeView(
+            recents: RecentWorkspacesStore.shared.folders,
+            onNewFile: { workspace.newUntitled() },
+            onOpenFile: onOpenFile,
+            onOpenFolder: openFolderPanel,
+            onOpenRecent: { url in workspace.setWorkspaceRoot(url) }
+        )
+    }
+
+    @MainActor
+    private func openFolderPanel() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        workspace.setWorkspaceRoot(url)
     }
 
     private func clampedPreviewWidth(maxWidth: CGFloat) -> CGFloat {
@@ -192,7 +198,7 @@ struct EditorTabsView: View {
                   tab.document.language == .markdown,
                   availableWidth >= 760 {
             HStack(spacing: 0) {
-                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
+                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, showInlineGitBlame: preferences.showInlineGitBlame, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                     .id(tab.id)
@@ -210,7 +216,7 @@ struct EditorTabsView: View {
                 .layoutPriority(0)
             }
         } else {
-            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
+            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, showInlineGitBlame: preferences.showInlineGitBlame, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                 .id(tab.id)
