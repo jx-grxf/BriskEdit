@@ -151,6 +151,11 @@ jobs:
         run: ./script/prepare_xcode_project.sh
 
       - name: Run test suite
+        env:
+          # Forwarded into the xctest process (xcodebuild only propagates
+          # TEST_RUNNER_-prefixed vars); skips UI integration tests that are
+          # unstable on the headless CI VM.
+          TEST_RUNNER_CI: "1"
         run: |
           set -o pipefail
           mkdir -p .build
