@@ -46,11 +46,12 @@ jobs:
           xcodebuild \
             -project BriskEdit.xcodeproj \
             -scheme BriskEdit \
-            -configuration Release \
+            -configuration Debug \
             -destination 'platform=macOS' \
             -derivedDataPath .build/codeql \
             -onlyUsePackageVersionsFromResolvedFile \
             -skipPackageUpdates \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             build | tail -120
 
       - name: Analyze
