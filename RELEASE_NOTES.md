@@ -1,29 +1,49 @@
 # Release Notes
 
-## 0.3.6 — Terminal scroll in TUIs, Option-as-Meta, and editor indentation fixes
+## 0.4.0 - Faster editing, richer source control, and safer releases
 
-Builds on 0.3.5. Still an unsigned developer preview — on first launch, right-click
-`BriskEdit.app` → **Open** → confirm.
+BriskEdit 0.4.0 is a larger editor and tooling release. It remains an unsigned
+developer preview; on first launch, right-click `BriskEdit.app`, choose **Open**,
+and confirm.
 
 ### Added
 
-- **Scroll wheel now works inside full-screen terminal apps.** The wheel and
-  trackpad now scroll full-screen TUIs (Claude Code, htop, less) that run on the
-  alternate screen. Mouse-reporting apps receive proper wheel events; others get
-  cursor up/down. Normal-screen scrollback is unchanged.
-- **Optional "Use Option as Meta key" for the terminal.** A new terminal setting
-  (off by default) makes ⌥ act as the Meta modifier for Emacs-style shortcuts.
-  Left off, ⌥ keeps producing layout characters — needed for `@`, `{`, `}`, `|`,
-  `~` on international keyboards (e.g. German ⌥L = `@`).
+- **Tree-sitter highlighting for Swift and JSON.** Compiled grammar
+  configurations are cached, with instant fallback highlighting while a grammar
+  warms up.
+- **Low Power, Adaptive, and Power modes.** Background work responds to system
+  power and thermal state; Power mode can prepare grammars ahead of first use.
+- **A guided first-run experience.** Onboarding configures performance, theme,
+  editor basics, and source control. A new welcome screen surfaces recent folders
+  and common actions.
+- **Richer source control context.** Inline blame, file-tree status badges,
+  colored file icons, an activity-bar sidebar, and clickable breadcrumbs keep
+  repository state visible without leaving the editor.
+- **The `briskedit` command-line launcher.** An optional shorter `brisk` alias is
+  installed only when that name is available.
+- **An in-app What's New page** shown after updates.
 
-### Fixed
+### Improved
 
-- **Smart backspace in indented code.** In spaces mode, pressing Backspace inside
-  a line's leading whitespace now removes a whole indent level back to the
-  previous tab stop in one keystroke instead of one space at a time.
-- **No more phantom indentation on blank lines.** Pressing Return while leaving a
-  whitespace-only line trims its indentation, so blank lines no longer keep
-  trailing spaces or copy a stale indent downward.
+- **Large-file editing.** Expensive editor features ease off automatically above
+  4 MB, with accurate line numbers and file-size reporting preserved.
+- **Git refresh behavior.** Status scans are coalesced, paths with Unicode,
+  newlines, and renames are parsed safely, and decorations refresh after saves.
+- **Resource safety.** Formatter requests, subprocesses, watchers, debounce
+  tasks, and per-tab LSP state are bounded and released predictably.
+- **Reproducible builds.** Swift packages are locked to committed revisions and
+  package updates are disabled during CI and release builds.
+
+### Release Engineering
+
+- CI now runs warnings-as-errors tests, a real DMG smoke build, shell and workflow
+  linting, dependency review, Gitleaks history scanning, promo-tooling audit and
+  type checks, and CodeQL analysis.
+- Release jobs require a verified signed annotated tag reachable from `main`,
+  retest the tagged source, validate DMG/ZIP/appcast metadata and signatures,
+  publish SHA-256 checksums, and attach GitHub provenance attestations.
+- Third-party GitHub Actions are pinned to immutable commits. Dependabot security
+  updates, dependency review, secret scanning, and push protection are enabled.
 
 ### Compatibility
 
