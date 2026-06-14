@@ -187,19 +187,21 @@ final class TextDocument {
     func save() async throws {
         guard let url = fileURL else { throw CocoaError(.fileWriteUnknown) }
         let savedRevision = try await write(to: url, encoding: encoding)
-        lastSavedRevision = savedRevision
-        if revision == savedRevision {
-            isDirty = false
-        }
+        finishSave(revision: savedRevision)
     }
 
     func save(to url: URL) async throws {
         let savedRevision = try await write(to: url, encoding: encoding)
         fileURL = url
+        finishSave(revision: savedRevision)
+    }
+
+    private func finishSave(revision savedRevision: Int) {
         lastSavedRevision = savedRevision
         if revision == savedRevision {
             isDirty = false
         }
+        NotificationCenter.default.post(name: .gitDidChange, object: nil)
     }
 
     private func write(to url: URL, encoding: String.Encoding) async throws -> Int {
