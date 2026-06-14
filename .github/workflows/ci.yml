@@ -208,3 +208,31 @@ jobs:
           path: dist/BriskEdit-*.dmg
           if-no-files-found: error
           retention-days: 7
+
+  build:
+    name: build
+    # Aggregate gate for branch protection: the `main` ruleset requires a single
+    # `build` status check. This job reports green only when every CI job above
+    # has passed. `always()` lets it run even when an upstream job fails, and
+    # skipped jobs (dependency-review is pull-request only) are tolerated.
+    needs: [hygiene, secrets, dependency-review, promo, tests, package]
+    if: ${{ always() }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Confirm required jobs passed
+        env:
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+        run: |
+          set -euo pipefail
+          echo "Upstream job results: $RESULTS"
+          for result in $RESULTS; do
+            case "$result" in
+              success | skipped) ;;
+              *)
+                echo "error: a required CI job reported '$result'" >&2
+                exit 1
+                ;;
+            esac
+          done
+          echo "All required CI jobs passed."
