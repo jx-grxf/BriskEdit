@@ -89,8 +89,9 @@ The toolchain discovery and exec live in `RunService`. The Run button only ever 
 git clone https://github.com/jx-grxf/BriskEdit.git
 cd BriskEdit
 brew install xcodegen
-xcodegen
-xcodebuild -project BriskEdit.xcodeproj -scheme BriskEdit -configuration Debug build
+./script/prepare_xcode_project.sh
+xcodebuild -project BriskEdit.xcodeproj -scheme BriskEdit -configuration Debug \
+  -onlyUsePackageVersionsFromResolvedFile -skipPackageUpdates build
 open ~/Library/Developer/Xcode/DerivedData/BriskEdit-*/Build/Products/Debug/BriskEdit.app
 ```
 

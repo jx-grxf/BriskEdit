@@ -29,16 +29,17 @@ settings:
 packages:
   Sparkle:
     url: https://github.com/sparkle-project/Sparkle
-    from: "2.9.2"
+    exactVersion: "2.9.2"
   SwiftTerm:
     url: https://github.com/migueldeicaza/SwiftTerm
-    from: "1.13.0"
+    exactVersion: "1.13.0"
   Neon:
     url: https://github.com/ChimeHQ/Neon
     revision: 484d6fb9e0c4fb679a1d5f5ddaf2cac2ecf21165
   SwiftTreeSitter:
     url: https://github.com/ChimeHQ/SwiftTreeSitter
-    # Neon's pinned revision requires this branch; verified at 0f40435cdb41673ce4194d731571cf2a2f7c3285.
+    # Neon requires this branch. Config/Package.resolved locks it to a reviewed
+    # revision, and every build uses -onlyUsePackageVersionsFromResolvedFile.
     branch: main
   TreeSitterSwift:
     url: https://github.com/alex-pinkus/tree-sitter-swift

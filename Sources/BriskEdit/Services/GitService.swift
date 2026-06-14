@@ -104,6 +104,12 @@ struct GitBlame: Sendable, Equatable {
 /// committed `HEAD` blob — so it reflects uncommitted edits live, not just what
 /// is saved. Shells out to the user's own `git`; returns nil outside a repo.
 enum GitService {
+    struct PorcelainEntry: Equatable {
+        let index: Character
+        let worktree: Character
+        let path: String
+    }
+
     /// Working-tree status (branch + changed files) for the Source Control view.
     /// Returns nil when the folder isn't inside a git repository.
     static func status(root: URL) async -> GitStatus? {
@@ -123,19 +129,12 @@ enum GitService {
             }
             let hasRemote = !((run(["-C", top, "remote"])?.trimmingCharacters(in: .whitespacesAndNewlines)) ?? "").isEmpty
 
-            guard let out = run(["-C", top, "status", "--porcelain=v1"]) else {
+            guard let data = runData(["-C", top, "status", "--porcelain=v1", "-z", "--untracked-files=all"]) else {
                 return GitStatus(branch: branch, upstream: upstream, ahead: ahead, behind: behind, hasRemote: hasRemote, changes: [])
             }
             var changes: [GitFileChange] = []
-            for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
-                let line = String(raw)
-                guard line.count >= 4 else { continue }
-                let chars = Array(line)
-                let index = chars[0], worktree = chars[1]
-                var path = String(line.dropFirst(3))
-                // Renames render as "old -> new"; key on the new path.
-                if let arrow = path.range(of: " -> ") { path = String(path[arrow.upperBound...]) }
-                path = path.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            for entry in parsePorcelainV1Z(data) {
+                let index = entry.index, worktree = entry.worktree, path = entry.path
                 if index == "?" && worktree == "?" {
                     changes.append(GitFileChange(path: path, staged: false, status: "?"))
                 } else {
@@ -155,19 +154,12 @@ enum GitService {
         return await Task.detached(priority: .utility) { () -> GitDecorations in
             guard let top = run(["-C", rootPath, "rev-parse", "--show-toplevel"])?
                 .trimmingCharacters(in: .whitespacesAndNewlines), !top.isEmpty,
-                let out = run(["-C", top, "status", "--porcelain=v1"]) else { return GitDecorations() }
+                let data = runData(["-C", top, "status", "--porcelain=v1", "-z", "--untracked-files=all"]) else { return GitDecorations() }
             let topURL = URL(fileURLWithPath: top, isDirectory: true)
             let rootStd = URL(fileURLWithPath: rootPath, isDirectory: true).standardizedFileURL
             var result = GitDecorations()
-            for raw in out.split(separator: "\n", omittingEmptySubsequences: true) {
-                let line = String(raw)
-                guard line.count >= 4 else { continue }
-                let chars = Array(line)
-                let index = chars[0], worktree = chars[1]
-                var path = String(line.dropFirst(3))
-                // Renames render as "old -> new"; decorate the new path.
-                if let arrow = path.range(of: " -> ") { path = String(path[arrow.upperBound...]) }
-                path = path.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            for entry in parsePorcelainV1Z(data) {
+                let index = entry.index, worktree = entry.worktree, path = entry.path
                 guard !path.isEmpty else { continue }
                 let fileURL = topURL.appendingPathComponent(path).standardizedFileURL
                 result.files[fileURL] = decoration(index: index, worktree: worktree)
@@ -238,6 +230,34 @@ enum GitService {
         case "R", "C": return .renamed
         default: return .modified
         }
+    }
+
+    /// Parses Git's NUL-delimited porcelain format. Unlike the line-oriented
+    /// form, `-z` emits paths verbatim, so Unicode, quotes, tabs and newlines do
+    /// not require Git's C-style unescaping. Rename entries include the old path
+    /// as a second field; the first field is the destination path we display.
+    static func parsePorcelainV1Z(_ data: Data) -> [PorcelainEntry] {
+        let fields = data.split(separator: 0, omittingEmptySubsequences: true)
+        var entries: [PorcelainEntry] = []
+        var fieldIndex = 0
+        while fieldIndex < fields.count {
+            let field = fields[fieldIndex]
+            guard field.count >= 4 else {
+                fieldIndex += 1
+                continue
+            }
+            let bytes = Array(field)
+            let index = Character(UnicodeScalar(bytes[0]))
+            let worktree = Character(UnicodeScalar(bytes[1]))
+            let path = String(decoding: bytes.dropFirst(3), as: UTF8.self)
+            entries.append(PorcelainEntry(index: index, worktree: worktree, path: path))
+
+            fieldIndex += 1
+            if index == "R" || index == "C" || worktree == "R" || worktree == "C" {
+                fieldIndex += 1
+            }
+        }
+        return entries
     }
 
     @discardableResult
@@ -412,6 +432,11 @@ enum GitService {
     /// Runs `git` with the given args and returns stdout, or nil on failure
     /// (unless `allowFailure`, where stdout is returned regardless of exit code).
     private static func run(_ args: [String], allowFailure: Bool = false) -> String? {
+        guard let data = runData(args, allowFailure: allowFailure) else { return nil }
+        return String(data: data, encoding: .utf8)
+    }
+
+    private static func runData(_ args: [String], allowFailure: Bool = false) -> Data? {
         guard let result = BoundedProcessRunner.run(
             executableURL: URL(fileURLWithPath: "/usr/bin/env"),
             arguments: ["git"] + args,
@@ -420,6 +445,6 @@ enum GitService {
             maximumStandardErrorBytes: 2 * 1024 * 1024
         ), !result.timedOut, !result.outputLimitExceeded,
            allowFailure || result.terminationStatus == 0 else { return nil }
-        return String(data: result.stdout, encoding: .utf8)
+        return result.stdout
     }
 }

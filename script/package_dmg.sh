@@ -48,7 +48,7 @@ if [[ -z "$CREATE_DMG_BIN" ]]; then
   CREATE_DMG_BIN="$(command -v create-dmg 2>/dev/null || true)"
 fi
 
-xcodegen >/dev/null
+./script/prepare_xcode_project.sh
 
 # Use a stable derived-data path inside the repo (.build is gitignored) so the
 # Sparkle SPM artifacts (sign_update) survive for create_sparkle_assets.sh.
@@ -83,6 +83,8 @@ xcodebuild \
   -configuration Release \
   -destination 'platform=macOS' \
   -derivedDataPath "$DERIVED_DATA" \
+  -onlyUsePackageVersionsFromResolvedFile \
+  -skipPackageUpdates \
   "${EXTRA_SETTINGS[@]}" \
   build | tail -20
 
