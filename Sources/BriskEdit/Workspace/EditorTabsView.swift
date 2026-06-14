@@ -192,7 +192,7 @@ struct EditorTabsView: View {
                   tab.document.language == .markdown,
                   availableWidth >= 760 {
             HStack(spacing: 0) {
-                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, showHoverTooltips: preferences.showHoverTooltips, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
+                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                     .id(tab.id)
@@ -209,7 +209,7 @@ struct EditorTabsView: View {
                 .layoutPriority(0)
             }
         } else {
-            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.showMinimap, showHoverTooltips: preferences.showHoverTooltips, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
+            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                 .id(tab.id)

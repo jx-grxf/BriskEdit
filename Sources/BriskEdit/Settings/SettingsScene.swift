@@ -10,6 +10,8 @@ struct SettingsScene: View {
                 .tabItem { Label("Appearance", systemImage: "paintpalette") }
             EditorPreferencesView()
                 .tabItem { Label("Editor", systemImage: "text.cursor") }
+            PerformancePreferencesView()
+                .tabItem { Label("Performance", systemImage: "speedometer") }
             TerminalPreferencesView()
                 .tabItem { Label("Terminal", systemImage: "terminal") }
             UpdatePreferencesView()
@@ -298,6 +300,67 @@ private struct EditorPreferencesView: View {
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .padding()
+    }
+}
+
+// MARK: - Performance
+
+private struct PerformancePreferencesView: View {
+    @Environment(Preferences.self) private var preferences
+
+    var body: some View {
+        @Bindable var prefs = preferences
+        Form {
+            Section("Performance Mode") {
+                Picker("Mode", selection: $prefs.performanceMode) {
+                    ForEach(Preferences.PerformanceMode.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(Preferences.PerformanceMode.allCases) { mode in
+                        let isSelected = mode == preferences.performanceMode
+                        HStack(alignment: .top, spacing: 9) {
+                            Image(systemName: mode.systemImage)
+                                .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+                                .frame(width: 18)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(mode.title)
+                                    .font(.callout.weight(isSelected ? .semibold : .regular))
+                                Text(mode.explanation)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                    }
+                }
+                .padding(.top, 2)
+
+                if preferences.performanceMode == .adaptive {
+                    Label(
+                        "Right now: \(preferences.resolvedPerformanceMode.title) — \(adaptiveReason)",
+                        systemImage: preferences.resolvedPerformanceMode.systemImage
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .scrollContentBackground(.hidden)
+        .padding()
+    }
+
+    private var adaptiveReason: String {
+        if preferences.isLowPowerModeActive { return "macOS Low Power Mode is on." }
+        switch preferences.thermalState {
+        case .serious, .critical: return "the Mac is under thermal pressure."
+        default: return "running at full speed."
+        }
     }
 }
 

@@ -20,6 +20,59 @@ final class Preferences {
         }
     }
 
+    /// How aggressively BriskEdit spends CPU/GPU/battery on the "live" editor
+    /// features (minimap, hover, animations, and — as wiring lands — highlight
+    /// and git-diff cadence). `adaptive` is the default and follows the system.
+    enum PerformanceMode: String, CaseIterable, Identifiable {
+        case lowPower
+        case adaptive
+        case power
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .lowPower: "Low Power"
+            case .adaptive: "Adaptive"
+            case .power: "Power"
+            }
+        }
+
+        var systemImage: String {
+            switch self {
+            case .lowPower: "leaf"
+            case .adaptive: "gauge.with.dots.needle.50percent"
+            case .power: "bolt.fill"
+            }
+        }
+
+        var explanation: String {
+            switch self {
+            case .lowPower:
+                "Saves battery and CPU: hides the minimap, eases off hover docs and calms animations. Best on battery or when editing very large files."
+            case .adaptive:
+                "Default. Runs at full speed on power, and automatically eases off when macOS Low Power Mode is on or the Mac is under thermal pressure."
+            case .power:
+                "Everything immediate: minimap, hover documentation and full animations stay on regardless of power state. Best when plugged in."
+            }
+        }
+    }
+
+    /// The concrete knobs a resolved performance mode turns on or off.
+    struct PerformanceProfile {
+        let allowsMinimap: Bool
+        let allowsHover: Bool
+        let reduceMotion: Bool
+    }
+
+    var performanceMode: PerformanceMode {
+        didSet { persist() }
+    }
+    /// Live system signals the `adaptive` mode reacts to. Kept observable so
+    /// views reading the effective profile re-render when power/thermal changes.
+    private(set) var isLowPowerModeActive: Bool = ProcessInfo.processInfo.isLowPowerModeEnabled
+    private(set) var thermalState: ProcessInfo.ThermalState = ProcessInfo.processInfo.thermalState
+
     var startupBehavior: StartupBehavior {
         didSet { persist() }
     }
@@ -111,6 +164,7 @@ final class Preferences {
     init() {
         let defaults = UserDefaults.standard
         self.startupBehavior = StartupBehavior(rawValue: defaults.string(forKey: Keys.startupBehavior) ?? "") ?? .restoreLastWorkspace
+        self.performanceMode = PerformanceMode(rawValue: defaults.string(forKey: Keys.performanceMode) ?? "") ?? .adaptive
         self.fontSize = CGFloat(defaults.double(forKey: Keys.fontSize).nonZero ?? 13)
         self.fontName = defaults.string(forKey: Keys.fontName) ?? "SF Mono"
         self.tabWidth = defaults.integer(forKey: Keys.tabWidth).nonZero ?? 4
@@ -130,7 +184,50 @@ final class Preferences {
         self.discordShowWorkspace = defaults.object(forKey: Keys.discordShowWorkspace) as? Bool ?? true
         self.discordShowElapsed = defaults.object(forKey: Keys.discordShowElapsed) as? Bool ?? true
         DiscordPresenceController.shared.configure(enabled: discordRichPresence)
+        observeSystemPowerState()
     }
+
+    /// Watches macOS Low Power Mode and thermal-pressure changes so `adaptive`
+    /// re-resolves live (views reading the effective profile re-render).
+    private func observeSystemPowerState() {
+        let center = NotificationCenter.default
+        center.addObserver(forName: .NSProcessInfoPowerStateDidChange, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.refreshSystemPowerState() }
+        }
+        center.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in self?.refreshSystemPowerState() }
+        }
+    }
+
+    private func refreshSystemPowerState() {
+        isLowPowerModeActive = ProcessInfo.processInfo.isLowPowerModeEnabled
+        thermalState = ProcessInfo.processInfo.thermalState
+    }
+
+    /// The mode actually in effect: explicit modes pass through; `adaptive`
+    /// drops to Low Power under OS Low Power Mode or serious thermal pressure.
+    var resolvedPerformanceMode: PerformanceMode {
+        guard performanceMode == .adaptive else { return performanceMode }
+        if isLowPowerModeActive || thermalState == .serious || thermalState == .critical {
+            return .lowPower
+        }
+        return .power
+    }
+
+    var performanceProfile: PerformanceProfile {
+        switch resolvedPerformanceMode {
+        case .lowPower, .adaptive:
+            PerformanceProfile(allowsMinimap: false, allowsHover: false, reduceMotion: true)
+        case .power:
+            PerformanceProfile(allowsMinimap: true, allowsHover: true, reduceMotion: false)
+        }
+    }
+
+    /// Minimap shown only when the user enabled it *and* the active profile
+    /// allows it — so Low Power hides it without losing the user's preference.
+    var effectiveShowMinimap: Bool { showMinimap && performanceProfile.allowsMinimap }
+    var effectiveShowHoverTooltips: Bool { showHoverTooltips && performanceProfile.allowsHover }
+    var reduceMotion: Bool { performanceProfile.reduceMotion }
 
     /// Resolves the configured terminal font, falling back to the system
     /// monospaced face when the named font isn't installed. Accepts both
@@ -179,6 +276,7 @@ final class Preferences {
     private func persist() {
         let defaults = UserDefaults.standard
         defaults.set(startupBehavior.rawValue, forKey: Keys.startupBehavior)
+        defaults.set(performanceMode.rawValue, forKey: Keys.performanceMode)
         defaults.set(Double(fontSize), forKey: Keys.fontSize)
         defaults.set(fontName, forKey: Keys.fontName)
         defaults.set(tabWidth, forKey: Keys.tabWidth)
@@ -201,6 +299,7 @@ final class Preferences {
 
     private enum Keys {
         static let startupBehavior = "app.startupBehavior"
+        static let performanceMode = "app.performanceMode"
         static let fontSize = "editor.fontSize"
         static let fontName = "editor.fontName"
         static let tabWidth = "editor.tabWidth"

@@ -153,6 +153,15 @@ struct AppCommands: Commands {
                 .pickerStyle(.inline)
             }
 
+            Menu("Performance Mode") {
+                Picker("Performance Mode", selection: $preferences.performanceMode) {
+                    ForEach(Preferences.PerformanceMode.allCases) { mode in
+                        Label(mode.title, systemImage: mode.systemImage).tag(mode)
+                    }
+                }
+                .pickerStyle(.inline)
+            }
+
             Menu("Language") {
                 if let doc = workspace?.activeTab?.document {
                     LanguageMenuItems(document: doc)
