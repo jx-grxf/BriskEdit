@@ -153,9 +153,7 @@ final class ExternalFileOpenCoordinator {
     func open(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
         if let workspace = WorkspaceRegistry.models.first {
-            for url in urls {
-                Task { await workspace.openFile(at: url) }
-            }
+            route(urls, into: workspace)
         } else {
             pendingURLs.append(contentsOf: urls)
             NewWindowCoordinator.shared.openNewWindow()
@@ -166,8 +164,20 @@ final class ExternalFileOpenCoordinator {
         guard !pendingURLs.isEmpty else { return }
         let urls = pendingURLs
         pendingURLs.removeAll()
+        route(urls, into: workspace)
+    }
+
+    /// Directories become the workspace root (so `brisk .` / "Open With" on a
+    /// folder opens a project), files open as tabs.
+    private func route(_ urls: [URL], into workspace: WorkspaceModel) {
+        let fm = FileManager.default
         for url in urls {
-            Task { await workspace.openFile(at: url) }
+            var isDirectory: ObjCBool = false
+            if fm.fileExists(atPath: url.path, isDirectory: &isDirectory), isDirectory.boolValue {
+                workspace.setWorkspaceRoot(url)
+            } else {
+                Task { await workspace.openFile(at: url) }
+            }
         }
     }
 }

@@ -25,6 +25,8 @@ struct SettingsScene: View {
 
 private struct GeneralPreferencesView: View {
     @Environment(Preferences.self) private var preferences
+    @State private var cliInstalled = CLIInstaller.isInstalled
+    @State private var cliError: String?
 
     var body: some View {
         @Bindable var prefs = preferences
@@ -40,10 +42,56 @@ private struct GeneralPreferencesView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Command-Line Tool") {
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("Shell command: `brisk`")
+                        Text(cliInstalled
+                             ? "Installed. Run `brisk .` to open a folder, or `brisk file.swift` to open files."
+                             : "Install `brisk` to open files and folders from the terminal, like `code`.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    if cliInstalled {
+                        Button("Uninstall") { uninstallCLI() }
+                    } else {
+                        Button("Install") { installCLI() }
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .scrollContentBackground(.hidden)
         .padding()
+        .task { cliInstalled = CLIInstaller.isInstalled }
+        .alert("Couldn't install the command", isPresented: Binding(
+            get: { cliError != nil },
+            set: { if !$0 { cliError = nil } }
+        )) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(cliError ?? "")
+        }
+    }
+
+    private func installCLI() {
+        do {
+            try CLIInstaller.install()
+            cliInstalled = CLIInstaller.isInstalled
+        } catch {
+            cliError = error.localizedDescription
+        }
+    }
+
+    private func uninstallCLI() {
+        do {
+            try CLIInstaller.uninstall()
+            cliInstalled = CLIInstaller.isInstalled
+        } catch {
+            cliError = error.localizedDescription
+        }
     }
 }
 
