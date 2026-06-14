@@ -60,7 +60,7 @@ final class DiscordPresenceController {
     /// https://discord.com/developers/applications, copy its *Application ID*
     /// here, and upload the art assets (a `briskedit` logo plus one image per
     /// `SourceLanguage.discordAssetKey`) under Rich Presence ▸ Art Assets.
-    /// The id is public — it ships in the binary, exactly like vscord does.
+    /// The id is public — it ships in the binary.
     static let clientID = "1512848171825631242"
 
     /// Seconds the app has been open — used for the "elapsed" timer so it counts

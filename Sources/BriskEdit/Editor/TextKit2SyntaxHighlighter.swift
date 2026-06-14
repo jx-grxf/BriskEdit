@@ -165,7 +165,7 @@ enum TextKit2SyntaxHighlighter {
     }
 
     /// Returns (declaration/storage keywords, control-flow keywords) so each
-    /// group can be colored separately, mirroring VS Code's Dark+ scheme.
+    /// group can be colored separately.
     private static func keywordSets(for language: SourceLanguage) -> ([String], [String]) {
         let control: [String]
         let keywords: [String]

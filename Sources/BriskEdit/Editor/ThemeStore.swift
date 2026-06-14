@@ -2,7 +2,7 @@ import AppKit
 import Foundation
 import Observation
 
-/// Holds the editor color themes: the built-ins plus any VS Code themes the
+/// Holds the editor color themes: the built-ins plus any imported themes the
 /// user imported. Imported themes are persisted as small JSON snapshots under
 /// `Application Support/BriskEdit/Themes` and reloaded on launch.
 @MainActor
@@ -28,7 +28,7 @@ final class ThemeStore {
         themes.first { $0.id == id }
     }
 
-    /// Imports a VS Code `.json`/`.jsonc` color theme, persists it and returns
+    /// Imports a `.json`/`.jsonc` color theme, persists it and returns
     /// the parsed theme so callers can select it immediately.
     @discardableResult
     func importTheme(from url: URL) throws -> ColorTheme {

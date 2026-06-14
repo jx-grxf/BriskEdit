@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Project-wide "Find in Files" pane: a query/replace header with case, word and
 /// regex toggles, and a results list grouped by file. Clicking a match opens the
-/// file at that line. Mirrors VS Code's search sidebar.
+/// file at that line.
 struct SearchSidebarView: View {
     @Bindable var workspace: WorkspaceModel
     @FocusState private var queryFocused: Bool

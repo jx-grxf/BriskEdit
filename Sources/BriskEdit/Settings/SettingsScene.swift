@@ -27,6 +27,7 @@ private struct GeneralPreferencesView: View {
     @Environment(Preferences.self) private var preferences
     @State private var cliInstalled = CLIInstaller.isInstalled
     @State private var cliError: String?
+    @State private var cliWorking = false
 
     var body: some View {
         @Bindable var prefs = preferences
@@ -54,11 +55,23 @@ private struct GeneralPreferencesView: View {
                             .fixedSize(horizontal: false, vertical: true)
                     }
                     Spacer()
-                    if cliInstalled {
-                        Button("Uninstall") { uninstallCLI() }
-                    } else {
-                        Button("Install") { installCLI() }
+                    Button {
+                        Task {
+                            if cliInstalled { await uninstallCLI() } else { await installCLI() }
+                        }
+                    } label: {
+                        ZStack {
+                            // Keep the button width steady so it doesn't jump
+                            // when the label swaps for the spinner.
+                            Text(cliInstalled ? "Uninstall" : "Install").opacity(cliWorking ? 0 : 1)
+                            if cliWorking {
+                                ProgressView().controlSize(.small)
+                            }
+                        }
+                        .frame(minWidth: 64)
                     }
+                    .disabled(cliWorking)
+                    .animation(.easeInOut(duration: 0.15), value: cliWorking)
                 }
             }
         }
@@ -76,23 +89,43 @@ private struct GeneralPreferencesView: View {
         }
     }
 
-    private func installCLI() {
+    private func installCLI() async {
+        cliWorking = true
+        let start = Date()
         do {
-            try CLIInstaller.install()
+            try await CLIInstaller.install()
             cliInstalled = CLIInstaller.isInstalled
         } catch CLIInstallerError.authorizationCancelled {
             // The user dismissed the authorization dialog — nothing to report.
         } catch {
             cliError = error.localizedDescription
         }
+        await holdSpinner(since: start)
+        cliWorking = false
     }
 
-    private func uninstallCLI() {
+    private func uninstallCLI() async {
+        cliWorking = true
+        let start = Date()
         do {
-            try CLIInstaller.uninstall()
+            try await CLIInstaller.uninstall()
             cliInstalled = CLIInstaller.isInstalled
+        } catch CLIInstallerError.authorizationCancelled {
+            // The user dismissed the authorization dialog — nothing to report.
         } catch {
             cliError = error.localizedDescription
+        }
+        await holdSpinner(since: start)
+        cliWorking = false
+    }
+
+    /// Keeps the spinner on screen for at least a short beat so a near-instant
+    /// install still reads as an action rather than a flicker.
+    private func holdSpinner(since start: Date) async {
+        let minimum = 0.5
+        let elapsed = Date().timeIntervalSince(start)
+        if elapsed < minimum {
+            try? await Task.sleep(for: .seconds(minimum - elapsed))
         }
     }
 }

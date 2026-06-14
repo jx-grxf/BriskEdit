@@ -50,7 +50,7 @@ final class WorkspaceModel {
     var expandedDirectories: Set<URL> = []
     /// When set, a native or Markdown preview is shown beside the active editor.
     var splitPreviewContent: SplitPreviewContent?
-    /// Open terminal sessions (VS Code-style). Each stays alive while the panel
+    /// Open terminal sessions. Each stays alive while the panel
     /// is shown; the list lets the user add, switch and close them.
     var terminals: [TerminalController] = []
     var activeTerminalID: TerminalController.ID?

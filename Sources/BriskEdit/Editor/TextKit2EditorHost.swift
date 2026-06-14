@@ -417,7 +417,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             textView?.needsDisplay = true
         }
 
-        /// VS Code-style ⌘D: with an empty caret, select the word under it; with a
+        /// ⌘D: with an empty caret, select the word under it; with a
         /// selection, add the next occurrence of that text as an additional cursor
         /// (NSTextView edits all selected ranges at once when you then type).
         func selectNextOccurrence() {
@@ -471,7 +471,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             guard index >= 0, index < ns.length, index != hoverIndex else { return }
 
             // Diagnostics win: hovering an underlined error/warning shows its
-            // message right away (the VS Code error popover), no server needed.
+            // message right away (an inline error popover), no server needed.
             let diags = diagnostics(at: index)
             if !diags.isEmpty {
                 let rect = textView.firstRect(forCharacterRange: NSRange(location: index, length: 1), actualRange: nil)
@@ -518,7 +518,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         /// Debounced LSP signature help: while the caret sits inside a call's
         /// argument list, show the function signature with the active parameter
-        /// bolded (VS Code-style). Cheap local paren scan gates the request so we
+        /// bolded. Cheap local paren scan gates the request so we
         /// only hit the server when actually inside a call.
         private func scheduleSignatureHelp(in textView: NSTextView) {
             signatureWork?.cancel()

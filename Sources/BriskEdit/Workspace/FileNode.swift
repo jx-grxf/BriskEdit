@@ -87,7 +87,7 @@ struct FileNode: Identifiable, Hashable, Sendable {
         if alwaysHiddenNames.contains(name) { return true }
         // "Hidden" toggle = show everything else: dotfiles *and* heavy build /
         // dependency output (.build, build, dist, node_modules, …), mirroring
-        // how VS Code surfaces (greyed) git-ignored entries.
+        // git-ignored entries are commonly surfaced (greyed).
         if includeHidden { return false }
         // Default view: keep meaningful dotfiles (.github, .gitignore, …) but
         // suppress generated / dependency directories and build noise.

@@ -1,7 +1,7 @@
 import AppKit
 
 /// Floating panel that shows the signature of the function call being typed,
-/// with the active parameter bolded — the VS Code "parameter hints" experience.
+/// with the active parameter bolded — the "parameter hints" experience.
 /// Borderless and non-activating so it never steals focus from the editor.
 @MainActor
 final class SignatureHelpPanel {

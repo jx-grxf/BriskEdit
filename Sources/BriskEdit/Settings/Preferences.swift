@@ -54,7 +54,7 @@ final class Preferences {
     var showCodeFolding: Bool {
         didSet { persist() }
     }
-    /// Show the VS Code-style minimap (zoomed-out overview) at the right edge of
+    /// Show the minimap (a zoomed-out overview) at the right edge of
     /// the editor. On by default.
     var showMinimap: Bool {
         didSet { persist() }
@@ -87,7 +87,7 @@ final class Preferences {
         didSet { persist() }
     }
     /// Experimental: mirror the active file, language and workspace to Discord
-    /// as Rich Presence (vscord-style). Off by default; opt-in per machine.
+    /// as Rich Presence. Off by default; opt-in per machine.
     var discordRichPresence: Bool {
         didSet {
             persist()

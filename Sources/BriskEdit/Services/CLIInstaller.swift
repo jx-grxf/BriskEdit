@@ -23,7 +23,6 @@ enum CLIInstallerError: LocalizedError {
 /// already on the user's `PATH` — preferring a home-owned directory so the
 /// common case needs no privileges at all. Only when nothing on `PATH` is
 /// writable do we fall back to a native admin prompt for `/usr/local/bin`.
-@MainActor
 enum CLIInstaller {
     static let bundleIdentifier = "com.johannesgrof.briskedit"
     /// Privileged fallback location, used only when nothing on PATH is writable.
@@ -80,49 +79,79 @@ enum CLIInstaller {
     }
 
     /// Writes the launcher script and links it into a writable `PATH` directory.
-    /// No privileges are needed when such a directory exists (e.g. `~/.local/bin`
-    /// or Homebrew's `bin`); otherwise a native admin prompt installs it into
-    /// `/usr/local/bin`.
-    static func install() throws {
+    /// Runs off the main actor; the privileged fallback hops back to the main
+    /// actor for the authorization dialog.
+    static func install() async throws {
+        switch unprivilegedInstall() {
+        case .installed:
+            return
+        case let .failed(message):
+            throw CLIInstallerError.failed(message)
+        case let .needsAdmin(scriptPath):
+            try await runAdminInstall(scriptPath: scriptPath)
+        }
+    }
+
+    /// Removes every symlink that points at our launcher script.
+    static func uninstall() async throws {
+        let privileged = unprivilegedUninstall()
+        if !privileged.isEmpty {
+            let command = privileged.map { "rm -f '\($0)'" }.joined(separator: " && ")
+            try await runWithAdminPrivileges(command)
+        }
+        UserDefaults.standard.removeObject(forKey: installedPathKey)
+    }
+
+    // MARK: - Unprivileged work (off the main actor)
+
+    private enum InstallOutcome {
+        case installed
+        case needsAdmin(scriptPath: String)
+        case failed(String)
+    }
+
+    private static func unprivilegedInstall() -> InstallOutcome {
         let fm = FileManager.default
         let scriptURL = launcherScriptURL
-        try fm.createDirectory(at: scriptURL.deletingLastPathComponent(), withIntermediateDirectories: true)
-        try launcherScript.write(to: scriptURL, atomically: true, encoding: .utf8)
-        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        do {
+            try fm.createDirectory(at: scriptURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try launcherScript.write(to: scriptURL, atomically: true, encoding: .utf8)
+            try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
+        } catch {
+            return .failed(error.localizedDescription)
+        }
 
-        if let dir = writableDirectoryOnPath() {
-            let link = dir.appendingPathComponent("brisk").path
+        guard let dir = writableDirectoryOnPath() else {
+            return .needsAdmin(scriptPath: scriptURL.path)
+        }
+        let link = dir.appendingPathComponent("brisk").path
+        do {
             if (try? fm.destinationOfSymbolicLink(atPath: link)) != nil || fm.fileExists(atPath: link) {
                 try? fm.removeItem(atPath: link)
             }
             try fm.createSymbolicLink(atPath: link, withDestinationPath: scriptURL.path)
-            UserDefaults.standard.set(link, forKey: installedPathKey)
-            return
+        } catch {
+            return .needsAdmin(scriptPath: scriptURL.path)
         }
-
-        try installWithAdminPrivileges(scriptPath: scriptURL.path)
-        UserDefaults.standard.set(fallbackSymlinkPath, forKey: installedPathKey)
+        UserDefaults.standard.set(link, forKey: installedPathKey)
+        return .installed
     }
 
-    /// Removes every symlink that points at our launcher script.
-    static func uninstall() throws {
+    /// Removes writable symlinks immediately and returns any that need elevation.
+    private static func unprivilegedUninstall() -> [String] {
         let fm = FileManager.default
         let target = launcherScriptURL.standardizedFileURL
-        var privilegedToRemove: [String] = []
+        var privileged: [String] = []
         for path in knownSymlinkPaths() {
             guard let destination = try? fm.destinationOfSymbolicLink(atPath: path),
                   URL(fileURLWithPath: destination).standardizedFileURL == target else { continue }
             if fm.isWritableFile(atPath: (path as NSString).deletingLastPathComponent) {
                 try? fm.removeItem(atPath: path)
             } else {
-                privilegedToRemove.append(path)
+                privileged.append(path)
             }
         }
-        if !privilegedToRemove.isEmpty {
-            let command = privilegedToRemove.map { "rm -f '\($0)'" }.joined(separator: " && ")
-            try runWithAdminPrivileges(command)
-        }
-        UserDefaults.standard.removeObject(forKey: installedPathKey)
+        return privileged
     }
 
     // MARK: - Locations
@@ -157,11 +186,9 @@ enum CLIInstaller {
                 && isDirectory.boolValue
                 && fm.isWritableFile(atPath: path)
         }
-        // Prefer directories under the user's home (always unprivileged).
         for dir in dirs where dir.hasPrefix(home) && isWritableDirectory(dir) {
             return URL(fileURLWithPath: dir)
         }
-        // Then any other writable PATH directory (e.g. Homebrew's bin).
         for dir in dirs where isWritableDirectory(dir) {
             return URL(fileURLWithPath: dir)
         }
@@ -192,15 +219,18 @@ enum CLIInstaller {
             .map(String.init)
     }
 
-    // MARK: - Privileged fallback
+    // MARK: - Privileged fallback (main actor)
 
-    private static func installWithAdminPrivileges(scriptPath: String) throws {
+    @MainActor
+    private static func runAdminInstall(scriptPath: String) throws {
         let dir = (fallbackSymlinkPath as NSString).deletingLastPathComponent
         try runWithAdminPrivileges("mkdir -p '\(dir)' && ln -sf '\(scriptPath)' '\(fallbackSymlinkPath)'")
+        UserDefaults.standard.set(fallbackSymlinkPath, forKey: installedPathKey)
     }
 
     /// Runs a shell command via the native macOS authorization dialog (password
     /// or Touch ID) — no Terminal `sudo` required.
+    @MainActor
     private static func runWithAdminPrivileges(_ command: String) throws {
         let escaped = command.replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "\"", with: "\\\"")

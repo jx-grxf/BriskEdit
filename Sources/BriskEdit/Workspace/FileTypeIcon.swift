@@ -1,7 +1,7 @@
 import AppKit
 import SwiftUI
 
-/// Shows a colorful, Nova-style glyph for each file. Recognized code/markup
+/// Shows a colorful glyph for each file. Recognized code/markup
 /// files render as a tinted SF Symbol per language (so the tree reads at a
 /// glance and feels native, instead of the flat grey document icons the system
 /// hands back); genuine media files (images, PDFs, binaries) keep their real
@@ -20,7 +20,7 @@ struct FileTypeIcon: View {
                 .font(.system(size: size * 0.95))
                 .frame(width: size, height: size)
         } else if language != .plainText {
-            // A recognized language → colored glyph, the Nova look.
+            // A recognized language → colored glyph.
             Image(systemName: language.iconName)
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(Self.tint(language))

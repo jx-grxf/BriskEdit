@@ -177,8 +177,8 @@ private struct WorkspaceSidebar: View {
     }
 }
 
-/// A flat icon row for switching sidebar panes — the IDE "activity bar" idiom
-/// (VS Code / Nova). Replaces the chunky segmented control, which read as a
+/// A flat icon row for switching sidebar panes — the IDE "activity bar" idiom.
+/// Replaces the chunky segmented control, which read as a
 /// form widget rather than navigation chrome. The active pane gets the accent
 /// tint over a soft rounded fill; the rest stay quiet and monochrome.
 private struct SidebarActivityBar: View {

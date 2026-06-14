@@ -407,8 +407,8 @@ private struct TabStrip: View {
     }
 }
 
-/// Path breadcrumb under the tab strip: workspace ▸ folders ▸ file (the Nova /
-/// VS Code idiom). Folder segments reveal that folder in the file tree; the
+/// Path breadcrumb under the tab strip: workspace ▸ folders ▸ file.
+/// Folder segments reveal that folder in the file tree; the
 /// file segment reveals the current document. Falls back to just the name for
 /// untitled buffers or files outside the workspace root.
 private struct BreadcrumbBar: View {
@@ -599,7 +599,7 @@ private struct DiagnosticSummary: View {
     }
 }
 
-/// Nova-style clickable language label in the status bar: opens a menu of every
+/// Clickable language label in the status bar: opens a menu of every
 /// supported syntax, with an "Auto-detect" option that clears the manual choice.
 private struct LanguagePicker: View {
     let document: TextDocument

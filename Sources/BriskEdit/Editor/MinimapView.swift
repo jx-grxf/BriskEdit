@@ -1,6 +1,6 @@
 import AppKit
 
-/// VS Code-style minimap: a zoomed-out overview of the whole document drawn as
+/// Minimap: a zoomed-out overview of the whole document drawn as
 /// small per-line word bars, with a translucent overlay marking the visible
 /// region. Click or drag to scroll the editor. A standalone sibling view (like
 /// the gutter) that only *reads* the text view — it never mutates the editor's

@@ -1,7 +1,7 @@
 import AppKit
 
 /// A named editor color palette. Built-ins ship with the app; users can import
-/// VS Code `.json` color themes which are stored alongside them. Holds *only*
+/// `.json` color themes which are stored alongside them. Holds *only*
 /// colors — font, tab width and the other per-user editor knobs live in
 /// `Preferences` and are layered on top when an `EditorTheme` is built.
 struct ColorTheme: Identifiable, Equatable, Sendable {
@@ -58,7 +58,7 @@ struct ColorTheme: Identifiable, Equatable, Sendable {
 // MARK: - Built-in themes
 
 extension ColorTheme {
-    /// The default appearance-following palette (VS Code "Dark+"/"Light+").
+    /// The default appearance-following palette.
     static let systemDefault = ColorTheme(
         id: "system",
         name: "System",

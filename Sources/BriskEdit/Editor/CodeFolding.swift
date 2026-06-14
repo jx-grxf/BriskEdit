@@ -1,7 +1,7 @@
 import AppKit
 
 /// One foldable region, detected purely from indentation (zero-config, language
-/// agnostic — mirrors VS Code's indentation folding provider). Lines are 0-based
+/// agnostic — a plain indentation folding provider). Lines are 0-based
 /// indices into the document's line list.
 struct FoldRegion: Equatable {
     /// The line whose chevron toggles the fold (the "header"); stays visible.
