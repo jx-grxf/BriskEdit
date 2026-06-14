@@ -61,7 +61,7 @@ extension ColorTheme {
     /// The default appearance-following palette (VS Code "Dark+"/"Light+").
     static let systemDefault = ColorTheme(
         id: "system",
-        name: "System (VS Code)",
+        name: "System",
         isDark: true,
         background: adaptive(dark: hex(0x1E1E1E), light: hex(0xFFFFFF)),
         foreground: adaptive(dark: hex(0xD4D4D4), light: hex(0x1F1F1F)),

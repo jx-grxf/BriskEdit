@@ -48,7 +48,7 @@ private struct GeneralPreferencesView: View {
                         Text("Shell command: `brisk`")
                         Text(cliInstalled
                              ? "Installed. Run `brisk .` to open a folder, or `brisk file.swift` to open files."
-                             : "Install `brisk` to open files and folders from the terminal, like `code`.")
+                             : "Install `brisk` to open files and folders straight from the terminal.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -80,6 +80,8 @@ private struct GeneralPreferencesView: View {
         do {
             try CLIInstaller.install()
             cliInstalled = CLIInstaller.isInstalled
+        } catch CLIInstallerError.authorizationCancelled {
+            // The user dismissed the authorization dialog — nothing to report.
         } catch {
             cliError = error.localizedDescription
         }
@@ -117,7 +119,7 @@ private struct AppearancePreferencesView: View {
                         .listRowSeparator(.hidden)
                 }
                 HStack {
-                    Button("Import VS Code Theme…") { importTheme() }
+                    Button("Import Theme…") { importTheme() }
                     Spacer()
                     if let theme = themeStore.theme(id: prefs.themeID), !theme.isBuiltIn {
                         Button("Remove", role: .destructive) {
@@ -126,7 +128,7 @@ private struct AppearancePreferencesView: View {
                         }
                     }
                 }
-                Text("Bring any VS Code `.json` color theme over — keywords, types, strings, comments and git colors are mapped automatically.")
+                Text("Bring any `.json` color theme over — keywords, types, strings, comments and git colors are mapped automatically.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -175,7 +177,7 @@ private struct AppearancePreferencesView: View {
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
         panel.allowedContentTypes = [.json]
-        panel.message = "Choose a VS Code color theme (.json)"
+        panel.message = "Choose a color theme (.json)"
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {
             let theme = try themeStore.importTheme(from: url)
@@ -387,7 +389,7 @@ private struct ExperimentalPreferencesView: View {
                 ExperimentalCard(
                     title: "Discord Rich Presence",
                     systemImage: "gamecontroller",
-                    summary: "Show what you're working on — the file, its language and the workspace — on your Discord profile, just like the VS Code integration.",
+                    summary: "Show what you're working on — the file, its language and the workspace — on your Discord profile.",
                     isOn: $prefs.discordRichPresence
                 ) {
                     Toggle("Show file name", isOn: $prefs.discordShowFileName)

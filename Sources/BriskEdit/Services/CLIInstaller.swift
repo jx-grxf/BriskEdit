@@ -1,34 +1,35 @@
 import Foundation
 
 enum CLIInstallerError: LocalizedError {
-    /// `/usr/local/bin` is missing or not writable without elevated rights — we
-    /// surface the exact one-liner the user can paste into Terminal instead.
-    case binDirectoryUnwritable(symlink: String, target: String)
+    /// The user dismissed the macOS authorization dialog.
+    case authorizationCancelled
+    /// Couldn't link into any writable location and the privileged fallback
+    /// failed too.
+    case failed(String)
 
     var errorDescription: String? {
         switch self {
-        case let .binDirectoryUnwritable(symlink, target):
-            let dir = (symlink as NSString).deletingLastPathComponent
-            return """
-            Couldn't write to \(dir). Run this once in Terminal to finish installing:
-
-            sudo mkdir -p \(dir) && sudo ln -sf "\(target)" "\(symlink)"
-            """
+        case .authorizationCancelled:
+            return "Installation was cancelled."
+        case let .failed(message):
+            return message
         }
     }
 }
 
-/// Installs a `brisk` command-line launcher (the `code .` equivalent) so a
-/// folder or files can be opened in BriskEdit straight from the terminal. We
-/// keep a tiny launcher script in Application Support and symlink it into
-/// `/usr/local/bin`; the script normalizes its arguments to absolute paths and
-/// hands them to Launch Services, which routes them into the app.
+/// Installs a `brisk` command-line launcher so a folder or files can be opened
+/// in BriskEdit straight from the terminal. We keep a tiny launcher script in
+/// Application Support and symlink it into the first writable directory that is
+/// already on the user's `PATH` — preferring a home-owned directory so the
+/// common case needs no privileges at all. Only when nothing on `PATH` is
+/// writable do we fall back to a native admin prompt for `/usr/local/bin`.
 @MainActor
 enum CLIInstaller {
-    static let symlinkPath = "/usr/local/bin/brisk"
     static let bundleIdentifier = "com.johannesgrof.briskedit"
+    /// Privileged fallback location, used only when nothing on PATH is writable.
+    static let fallbackSymlinkPath = "/usr/local/bin/brisk"
 
-    /// Where the launcher script itself lives (the symlink points here).
+    /// Where the launcher script itself lives (every symlink points here).
     static var launcherScriptURL: URL {
         let support = FileManager.default
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
@@ -65,48 +66,154 @@ enum CLIInstaller {
     exec open -b "$bundle_id" "${paths[@]}"
     """
 
-    /// True when the symlink exists and points at our current launcher script.
+    /// Cheap, shell-free check: is any known location a symlink to our script?
     static var isInstalled: Bool {
         let fm = FileManager.default
-        guard let destination = try? fm.destinationOfSymbolicLink(atPath: symlinkPath) else { return false }
-        let resolved = URL(fileURLWithPath: destination).standardizedFileURL
-        return resolved == launcherScriptURL.standardizedFileURL
+        let target = launcherScriptURL.standardizedFileURL
+        for path in knownSymlinkPaths() {
+            if let destination = try? fm.destinationOfSymbolicLink(atPath: path),
+               URL(fileURLWithPath: destination).standardizedFileURL == target {
+                return true
+            }
+        }
+        return false
     }
 
-    /// Writes the launcher script and (re)creates the `/usr/local/bin/brisk`
-    /// symlink. Throws `CLIInstallerError.binDirectoryUnwritable` with a copyable
-    /// `sudo` command when `/usr/local/bin` can't be written without admin.
+    /// Writes the launcher script and links it into a writable `PATH` directory.
+    /// No privileges are needed when such a directory exists (e.g. `~/.local/bin`
+    /// or Homebrew's `bin`); otherwise a native admin prompt installs it into
+    /// `/usr/local/bin`.
     static func install() throws {
         let fm = FileManager.default
         let scriptURL = launcherScriptURL
-
         try fm.createDirectory(at: scriptURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try launcherScript.write(to: scriptURL, atomically: true, encoding: .utf8)
         try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: scriptURL.path)
 
-        let binDir = (symlinkPath as NSString).deletingLastPathComponent
-        var isDirectory: ObjCBool = false
-        let binExists = fm.fileExists(atPath: binDir, isDirectory: &isDirectory)
-        guard binExists, isDirectory.boolValue, fm.isWritableFile(atPath: binDir) else {
-            throw CLIInstallerError.binDirectoryUnwritable(symlink: symlinkPath, target: scriptURL.path)
+        if let dir = writableDirectoryOnPath() {
+            let link = dir.appendingPathComponent("brisk").path
+            if (try? fm.destinationOfSymbolicLink(atPath: link)) != nil || fm.fileExists(atPath: link) {
+                try? fm.removeItem(atPath: link)
+            }
+            try fm.createSymbolicLink(atPath: link, withDestinationPath: scriptURL.path)
+            UserDefaults.standard.set(link, forKey: installedPathKey)
+            return
         }
 
-        // Replace any stale symlink/file left from a previous install.
-        if (try? fm.destinationOfSymbolicLink(atPath: symlinkPath)) != nil || fm.fileExists(atPath: symlinkPath) {
-            try? fm.removeItem(atPath: symlinkPath)
-        }
-        do {
-            try fm.createSymbolicLink(atPath: symlinkPath, withDestinationPath: scriptURL.path)
-        } catch {
-            throw CLIInstallerError.binDirectoryUnwritable(symlink: symlinkPath, target: scriptURL.path)
-        }
+        try installWithAdminPrivileges(scriptPath: scriptURL.path)
+        UserDefaults.standard.set(fallbackSymlinkPath, forKey: installedPathKey)
     }
 
-    /// Removes the symlink (the script in Application Support is harmless to keep).
+    /// Removes every symlink that points at our launcher script.
     static func uninstall() throws {
         let fm = FileManager.default
-        if (try? fm.destinationOfSymbolicLink(atPath: symlinkPath)) != nil {
-            try fm.removeItem(atPath: symlinkPath)
+        let target = launcherScriptURL.standardizedFileURL
+        var privilegedToRemove: [String] = []
+        for path in knownSymlinkPaths() {
+            guard let destination = try? fm.destinationOfSymbolicLink(atPath: path),
+                  URL(fileURLWithPath: destination).standardizedFileURL == target else { continue }
+            if fm.isWritableFile(atPath: (path as NSString).deletingLastPathComponent) {
+                try? fm.removeItem(atPath: path)
+            } else {
+                privilegedToRemove.append(path)
+            }
         }
+        if !privilegedToRemove.isEmpty {
+            let command = privilegedToRemove.map { "rm -f '\($0)'" }.joined(separator: " && ")
+            try runWithAdminPrivileges(command)
+        }
+        UserDefaults.standard.removeObject(forKey: installedPathKey)
+    }
+
+    // MARK: - Locations
+
+    private static let installedPathKey = "cli.installedPath"
+
+    /// Candidate symlink locations checked without spawning a shell: the path we
+    /// recorded at install time plus the conventional dev `bin` directories.
+    private static func knownSymlinkPaths() -> [String] {
+        let home = NSHomeDirectory()
+        var paths = [
+            "/opt/homebrew/bin/brisk",
+            "/usr/local/bin/brisk",
+            "\(home)/.local/bin/brisk",
+            "\(home)/bin/brisk",
+        ]
+        if let recorded = UserDefaults.standard.string(forKey: installedPathKey) {
+            paths.insert(recorded, at: 0)
+        }
+        return paths
+    }
+
+    /// The first directory on the login-shell `PATH` we can write to, preferring
+    /// home-owned directories so no privilege escalation is required.
+    private static func writableDirectoryOnPath() -> URL? {
+        let fm = FileManager.default
+        let home = NSHomeDirectory()
+        let dirs = loginShellPathDirectories()
+        func isWritableDirectory(_ path: String) -> Bool {
+            var isDirectory: ObjCBool = false
+            return fm.fileExists(atPath: path, isDirectory: &isDirectory)
+                && isDirectory.boolValue
+                && fm.isWritableFile(atPath: path)
+        }
+        // Prefer directories under the user's home (always unprivileged).
+        for dir in dirs where dir.hasPrefix(home) && isWritableDirectory(dir) {
+            return URL(fileURLWithPath: dir)
+        }
+        // Then any other writable PATH directory (e.g. Homebrew's bin).
+        for dir in dirs where isWritableDirectory(dir) {
+            return URL(fileURLWithPath: dir)
+        }
+        return nil
+    }
+
+    /// The login shell's `PATH`, so we link into a directory the user's terminal
+    /// will actually search (a GUI app's own `PATH` is just `/usr/bin:/bin:…`).
+    private static func loginShellPathDirectories() -> [String] {
+        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: shell)
+        process.arguments = ["-lic", "echo $PATH"]
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = Pipe()
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            return []
+        }
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let output = String(data: data, encoding: .utf8) else { return [] }
+        return output
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: ":")
+            .map(String.init)
+    }
+
+    // MARK: - Privileged fallback
+
+    private static func installWithAdminPrivileges(scriptPath: String) throws {
+        let dir = (fallbackSymlinkPath as NSString).deletingLastPathComponent
+        try runWithAdminPrivileges("mkdir -p '\(dir)' && ln -sf '\(scriptPath)' '\(fallbackSymlinkPath)'")
+    }
+
+    /// Runs a shell command via the native macOS authorization dialog (password
+    /// or Touch ID) — no Terminal `sudo` required.
+    private static func runWithAdminPrivileges(_ command: String) throws {
+        let escaped = command.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let source = "do shell script \"\(escaped)\" with administrator privileges"
+        var errorInfo: NSDictionary?
+        guard let script = NSAppleScript(source: source) else {
+            throw CLIInstallerError.failed("Couldn't build the install command.")
+        }
+        script.executeAndReturnError(&errorInfo)
+        guard let errorInfo else { return }
+        let code = errorInfo[NSAppleScript.errorNumber] as? Int ?? 0
+        if code == -128 { throw CLIInstallerError.authorizationCancelled }
+        let message = errorInfo[NSAppleScript.errorMessage] as? String ?? "Installation failed."
+        throw CLIInstallerError.failed(message)
     }
 }
