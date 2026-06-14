@@ -52,7 +52,7 @@ enum WhatsNew {
         ]),
         Section(name: "Getting started", highlights: [
             Highlight(symbol: "sparkles", title: "Guided setup", detail: "A quick onboarding configures performance, theme and source control — replay it any time from Settings.", tint: .purple),
-            Highlight(symbol: "terminal", title: "The brisk command", detail: "Open files and folders from the terminal with brisk . — installs without sudo.", tint: .pink),
+            Highlight(symbol: "terminal", title: "The briskedit command", detail: "Open files and folders with briskedit . — plus a shorter brisk alias when that name is available.", tint: .pink),
         ]),
     ]
 }

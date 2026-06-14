@@ -168,7 +168,7 @@ final class ExternalFileOpenCoordinator {
         route(urls, into: workspace)
     }
 
-    /// Directories become the workspace root (so `brisk .` / "Open With" on a
+    /// Directories become the workspace root (so `briskedit .` / "Open With" on a
     /// folder opens a project), files open as tabs.
     private func route(_ urls: [URL], into workspace: WorkspaceModel) {
         let fm = FileManager.default

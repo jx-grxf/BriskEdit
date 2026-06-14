@@ -17,16 +17,19 @@ enum CLIInstallerError: LocalizedError {
     }
 }
 
-/// Installs a `brisk` command-line launcher so a folder or files can be opened
-/// in BriskEdit straight from the terminal. We keep a tiny launcher script in
+/// Installs a `briskedit` command-line launcher and, when available, the shorter
+/// `brisk` alias so folders and files can be opened from the terminal. We keep a
+/// tiny launcher script in
 /// Application Support and symlink it into the first writable directory that is
 /// already on the user's `PATH` — preferring a home-owned directory so the
 /// common case needs no privileges at all. Only when nothing on `PATH` is
 /// writable do we fall back to a native admin prompt for `/usr/local/bin`.
 enum CLIInstaller {
     static let bundleIdentifier = "com.johannesgrof.briskedit"
+    static let primaryCommandName = "briskedit"
+    static let aliasCommandName = "brisk"
     /// Privileged fallback location, used only when nothing on PATH is writable.
-    static let fallbackSymlinkPath = "/usr/local/bin/brisk"
+    static let fallbackSymlinkPath = "/usr/local/bin/\(primaryCommandName)"
 
     /// Where the launcher script itself lives (every symlink points here).
     static var launcherScriptURL: URL {
@@ -35,7 +38,7 @@ enum CLIInstaller {
             .first ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return support
             .appendingPathComponent("BriskEdit", isDirectory: true)
-            .appendingPathComponent("brisk")
+            .appendingPathComponent(primaryCommandName)
     }
 
     /// The launcher shell script. Resolves each argument to an absolute path so
@@ -56,7 +59,7 @@ enum CLIInstaller {
         dir=$(cd "$(dirname "$arg")" >/dev/null 2>&1 && pwd)
         paths+=("$dir/$(basename "$arg")")
       else
-        echo "brisk: no such file or directory: $arg" >&2
+        echo "briskedit: no such file or directory: $arg" >&2
       fi
     done
     if [ "${#paths[@]}" -eq 0 ]; then
@@ -65,17 +68,20 @@ enum CLIInstaller {
     exec open -b "$bundle_id" "${paths[@]}"
     """
 
-    /// Cheap, shell-free check: is any known location a symlink to our script?
+    /// Cheap, shell-free check: is the canonical command linked to our script?
     static var isInstalled: Bool {
-        let fm = FileManager.default
-        let target = launcherScriptURL.standardizedFileURL
-        for path in knownSymlinkPaths() {
-            if let destination = try? fm.destinationOfSymbolicLink(atPath: path),
-               URL(fileURLWithPath: destination).standardizedFileURL == target {
-                return true
-            }
+        knownCommandPaths(named: primaryCommandName).contains(where: isOwnedCommand)
+    }
+
+    static var installedCommandNames: [String] {
+        var names: [String] = []
+        if knownCommandPaths(named: primaryCommandName).contains(where: isOwnedCommand) {
+            names.append(primaryCommandName)
         }
-        return false
+        if knownCommandPaths(named: aliasCommandName).contains(where: isOwnedCommand) {
+            names.append(aliasCommandName)
+        }
+        return names
     }
 
     /// Writes the launcher script and links it into a writable `PATH` directory.
@@ -99,7 +105,7 @@ enum CLIInstaller {
             let command = privileged.map { "rm -f '\($0)'" }.joined(separator: " && ")
             try await runWithAdminPrivileges(command)
         }
-        UserDefaults.standard.removeObject(forKey: installedPathKey)
+        UserDefaults.standard.removeObject(forKey: installedPathsKey)
     }
 
     // MARK: - Unprivileged work (off the main actor)
@@ -121,30 +127,39 @@ enum CLIInstaller {
             return .failed(error.localizedDescription)
         }
 
-        guard let dir = writableDirectoryOnPath() else {
-            return .needsAdmin(scriptPath: scriptURL.path)
-        }
-        let link = dir.appendingPathComponent("brisk").path
-        do {
-            if (try? fm.destinationOfSymbolicLink(atPath: link)) != nil || fm.fileExists(atPath: link) {
-                try? fm.removeItem(atPath: link)
+        var conflicts: [String] = []
+        for dir in writableDirectoriesOnPath() {
+            let primaryLink = dir.appendingPathComponent(primaryCommandName).path
+            let aliasLink = dir.appendingPathComponent(aliasCommandName).path
+            guard commandCanBeInstalled(at: primaryLink) else {
+                conflicts.append(primaryLink)
+                continue
             }
-            try fm.createSymbolicLink(atPath: link, withDestinationPath: scriptURL.path)
-        } catch {
-            return .needsAdmin(scriptPath: scriptURL.path)
+            do {
+                try replaceOwnedCommand(at: primaryLink, destination: scriptURL.path)
+                var installedPaths = [primaryLink]
+                if commandCanBeInstalled(at: aliasLink),
+                   (try? replaceOwnedCommand(at: aliasLink, destination: scriptURL.path)) != nil {
+                    installedPaths.append(aliasLink)
+                }
+                UserDefaults.standard.set(installedPaths, forKey: installedPathsKey)
+                return .installed
+            } catch {
+                continue
+            }
         }
-        UserDefaults.standard.set(link, forKey: installedPathKey)
-        return .installed
+        if !conflicts.isEmpty {
+            return .failed("A different command already exists at \(conflicts.joined(separator: ", ")). BriskEdit did not replace it.")
+        }
+        return .needsAdmin(scriptPath: scriptURL.path)
     }
 
     /// Removes writable symlinks immediately and returns any that need elevation.
     private static func unprivilegedUninstall() -> [String] {
         let fm = FileManager.default
-        let target = launcherScriptURL.standardizedFileURL
         var privileged: [String] = []
         for path in knownSymlinkPaths() {
-            guard let destination = try? fm.destinationOfSymbolicLink(atPath: path),
-                  URL(fileURLWithPath: destination).standardizedFileURL == target else { continue }
+            guard isOwnedCommand(path) else { continue }
             if fm.isWritableFile(atPath: (path as NSString).deletingLastPathComponent) {
                 try? fm.removeItem(atPath: path)
             } else {
@@ -156,27 +171,51 @@ enum CLIInstaller {
 
     // MARK: - Locations
 
-    private static let installedPathKey = "cli.installedPath"
+    private static let installedPathsKey = "cli.installedPaths"
 
     /// Candidate symlink locations checked without spawning a shell: the path we
     /// recorded at install time plus the conventional dev `bin` directories.
     private static func knownSymlinkPaths() -> [String] {
+        let recorded = UserDefaults.standard.stringArray(forKey: installedPathsKey) ?? []
+        return Array(Set(recorded
+            + knownCommandPaths(named: primaryCommandName)
+            + knownCommandPaths(named: aliasCommandName)))
+    }
+
+    private static func knownCommandPaths(named command: String) -> [String] {
         let home = NSHomeDirectory()
-        var paths = [
-            "/opt/homebrew/bin/brisk",
-            "/usr/local/bin/brisk",
-            "\(home)/.local/bin/brisk",
-            "\(home)/bin/brisk",
+        return [
+            "/opt/homebrew/bin/\(command)",
+            "/usr/local/bin/\(command)",
+            "\(home)/.local/bin/\(command)",
+            "\(home)/bin/\(command)",
         ]
-        if let recorded = UserDefaults.standard.string(forKey: installedPathKey) {
-            paths.insert(recorded, at: 0)
+    }
+
+    static func commandCanBeInstalled(at path: String) -> Bool {
+        let fm = FileManager.default
+        return !fm.fileExists(atPath: path) && (try? fm.destinationOfSymbolicLink(atPath: path)) == nil
+            || isOwnedCommand(path)
+    }
+
+    private static func isOwnedCommand(_ path: String) -> Bool {
+        guard let destination = try? FileManager.default.destinationOfSymbolicLink(atPath: path) else {
+            return false
         }
-        return paths
+        return URL(fileURLWithPath: destination).standardizedFileURL == launcherScriptURL.standardizedFileURL
+    }
+
+    private static func replaceOwnedCommand(at path: String, destination: String) throws {
+        let fm = FileManager.default
+        if isOwnedCommand(path) {
+            try fm.removeItem(atPath: path)
+        }
+        try fm.createSymbolicLink(atPath: path, withDestinationPath: destination)
     }
 
     /// The first directory on the login-shell `PATH` we can write to, preferring
     /// home-owned directories so no privilege escalation is required.
-    private static func writableDirectoryOnPath() -> URL? {
+    private static func writableDirectoriesOnPath() -> [URL] {
         let fm = FileManager.default
         let home = NSHomeDirectory()
         let dirs = loginShellPathDirectories()
@@ -186,13 +225,10 @@ enum CLIInstaller {
                 && isDirectory.boolValue
                 && fm.isWritableFile(atPath: path)
         }
-        for dir in dirs where dir.hasPrefix(home) && isWritableDirectory(dir) {
-            return URL(fileURLWithPath: dir)
-        }
-        for dir in dirs where isWritableDirectory(dir) {
-            return URL(fileURLWithPath: dir)
-        }
-        return nil
+        let writable = dirs.filter(isWritableDirectory)
+        let homeOwned = writable.filter { $0.hasPrefix(home) }
+        let system = writable.filter { !$0.hasPrefix(home) }
+        return (homeOwned + system).map { URL(fileURLWithPath: $0) }
     }
 
     /// The login shell's `PATH`, so we link into a directory the user's terminal
@@ -224,8 +260,12 @@ enum CLIInstaller {
     @MainActor
     private static func runAdminInstall(scriptPath: String) throws {
         let dir = (fallbackSymlinkPath as NSString).deletingLastPathComponent
-        try runWithAdminPrivileges("mkdir -p '\(dir)' && ln -sf '\(scriptPath)' '\(fallbackSymlinkPath)'")
-        UserDefaults.standard.set(fallbackSymlinkPath, forKey: installedPathKey)
+        guard commandCanBeInstalled(at: fallbackSymlinkPath) else {
+            throw CLIInstallerError.failed("A different command already exists at \(fallbackSymlinkPath). BriskEdit did not replace it.")
+        }
+        let command = "mkdir -p '\(dir)' && rm -f '\(fallbackSymlinkPath)' && ln -s '\(scriptPath)' '\(fallbackSymlinkPath)'"
+        try runWithAdminPrivileges(command)
+        UserDefaults.standard.set([fallbackSymlinkPath], forKey: installedPathsKey)
     }
 
     /// Runs a shell command via the native macOS authorization dialog (password

@@ -12,7 +12,7 @@ final class CLIInstallerTests: XCTestCase {
     func testLauncherScriptResolvesRelativeArgumentsToAbsolutePaths() {
         let script = CLIInstaller.launcherScript
         // cd into each argument's directory + `pwd` yields an absolute path, so
-        // `brisk .` and relative paths work from any working directory.
+        // `briskedit .` and relative paths work from any working directory.
         XCTAssertTrue(script.contains(#"cd "$(dirname "$arg")""#))
         XCTAssertTrue(script.contains("pwd"))
     }
@@ -22,7 +22,33 @@ final class CLIInstallerTests: XCTestCase {
     }
 
     func testLauncherScriptLivesUnderApplicationSupport() {
-        XCTAssertEqual(CLIInstaller.launcherScriptURL.lastPathComponent, "brisk")
+        XCTAssertEqual(CLIInstaller.launcherScriptURL.lastPathComponent, "briskedit")
         XCTAssertTrue(CLIInstaller.launcherScriptURL.path.contains("Application Support/BriskEdit"))
+    }
+
+    func testInstallerDoesNotReplaceForeignCommands() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let command = directory.appendingPathComponent("briskedit")
+        try "foreign".write(to: command, atomically: true, encoding: .utf8)
+
+        XCTAssertFalse(CLIInstaller.commandCanBeInstalled(at: command.path))
+        XCTAssertEqual(try String(contentsOf: command, encoding: .utf8), "foreign")
+    }
+
+    func testInstallerCanRefreshItsOwnSymlink() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let command = directory.appendingPathComponent("briskedit")
+        try FileManager.default.createSymbolicLink(
+            atPath: command.path,
+            withDestinationPath: CLIInstaller.launcherScriptURL.path
+        )
+
+        XCTAssertTrue(CLIInstaller.commandCanBeInstalled(at: command.path))
     }
 }

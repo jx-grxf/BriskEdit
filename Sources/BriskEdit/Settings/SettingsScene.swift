@@ -53,10 +53,10 @@ private struct GeneralPreferencesView: View {
             Section("Command-Line Tool") {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Shell command: `brisk`")
+                        Text("Shell command: `briskedit`")
                         Text(cliInstalled
-                             ? "Installed. Run `brisk .` to open a folder, or `brisk file.swift` to open files."
-                             : "Install `brisk` to open files and folders straight from the terminal.")
+                             ? "Installed. Run `briskedit .` to open a folder. The shorter `brisk` alias is added when that name is free."
+                             : "Install `briskedit` to open files and folders from the terminal without replacing existing commands.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
