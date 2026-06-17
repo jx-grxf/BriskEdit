@@ -66,6 +66,20 @@ struct AppCommands: Commands {
                 workspace?.requestCloseAllTabs()
             }
             .disabled(workspace?.tabs.isEmpty != false)
+
+            Divider()
+
+            Button("Move Tab Left") {
+                workspace?.moveActiveTab(by: -1)
+            }
+            .keyboardShortcut(.leftArrow, modifiers: [.command, .control])
+            .disabled((workspace?.tabs.count ?? 0) < 2)
+
+            Button("Move Tab Right") {
+                workspace?.moveActiveTab(by: 1)
+            }
+            .keyboardShortcut(.rightArrow, modifiers: [.command, .control])
+            .disabled((workspace?.tabs.count ?? 0) < 2)
         }
 
         CommandGroup(after: .saveItem) {
@@ -137,6 +151,7 @@ struct AppCommands: Commands {
             Toggle("Show Code Folding Controls", isOn: $preferences.showCodeFolding)
 
             Toggle("Show Git Change Bars", isOn: $preferences.showGitGutter)
+                .disabled(!preferences.sourceControlEnabled)
 
             Button("Toggle Markdown Preview") {
                 workspace?.showMarkdownPreview.toggle()

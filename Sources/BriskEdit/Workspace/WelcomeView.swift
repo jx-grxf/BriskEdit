@@ -41,9 +41,12 @@ struct WelcomeView: View {
                 .padding(.bottom, 18)
             Text(appName)
                 .font(.system(size: 34, weight: .bold))
-            Text(versionLabel)
+            Text("Johannes Grof · MIT")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+            Text(versionLabel)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
                 .padding(.bottom, 26)
 
             VStack(alignment: .leading, spacing: 10) {

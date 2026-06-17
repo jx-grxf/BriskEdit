@@ -20,6 +20,9 @@ enum WindowKind: Hashable, Codable {
 final class NewWindowCoordinator {
     static let shared = NewWindowCoordinator()
     var open: (() -> Void)?
+    /// Opens a window for a specific `WindowKind` (used by tab tear-off to spawn
+    /// the window that adopts a dragged-out tab). Wired to `openWindow(value:)`.
+    var openValue: ((WindowKind) -> Void)?
 
     private init() {}
 

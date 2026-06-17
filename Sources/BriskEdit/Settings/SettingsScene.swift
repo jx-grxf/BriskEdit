@@ -20,8 +20,12 @@ struct SettingsScene: View {
                 .tabItem { Label("Updates", systemImage: "arrow.triangle.2.circlepath") }
             ExperimentalPreferencesView()
                 .tabItem { Label("Experimental", systemImage: "flask") }
+            AboutPreferencesView()
+                .tabItem { Label("About", systemImage: "info.circle") }
         }
-        .frame(width: 520, height: 480)
+        // Wide enough that all tab items fit on one row; otherwise macOS collapses
+        // the overflow into a \"»\" popover whose items don't reliably click.
+        .frame(width: 720, height: 480)
         .transaction { transaction in
             if preferences.reduceMotion { transaction.disablesAnimations = true }
         }
@@ -206,10 +210,16 @@ private struct AppearancePreferencesView: View {
                 Text("A zoomed-out overview of the file at the right edge of the editor. Click or drag it to scroll.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Toggle("Show git change bars in gutter", isOn: $prefs.showGitGutter)
-                Text("The colored bars next to the line numbers mark lines added, modified or deleted since the last commit.")
+            }
+            Section("Source Control") {
+                Toggle("Enable source control", isOn: $prefs.sourceControlEnabled)
+                Text("Shows the Source Control sidebar, gutter change bars and inline blame. Turn this off if you don't work in a Git repository.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                Toggle("Show git change bars in gutter", isOn: $prefs.showGitGutter)
+                    .disabled(!prefs.sourceControlEnabled)
+                Toggle("Show inline blame", isOn: $prefs.showInlineGitBlame)
+                    .disabled(!prefs.sourceControlEnabled)
             }
         }
         .formStyle(.grouped)
@@ -245,8 +255,9 @@ private struct AppearancePreferencesView: View {
 }
 
 /// A one-line code-ish preview that renders the palette's syntax colors so the
-/// user sees what a theme looks like before committing to it.
-private struct ThemePreview: View {
+/// user sees what a theme looks like before committing to it. Reused by the
+/// onboarding editor step.
+struct ThemePreview: View {
     let theme: ColorTheme
 
     var body: some View {
@@ -568,5 +579,81 @@ private struct ExperimentalCard<Options: View>: View {
         }
         .padding(4)
         .animation(.easeInOut(duration: 0.15), value: isOn)
+    }
+}
+
+// MARK: - About
+
+/// App identity: icon, name, author + license, version, and links back to the
+/// project. The credit and license mirror the welcome screen and the `LICENSE`
+/// file (MIT, © Johannes Grof).
+private struct AboutPreferencesView: View {
+    private static let repoURL = "https://github.com/jx-grxf/BriskEdit"
+    private static let issuesURL = "https://github.com/jx-grxf/BriskEdit/issues"
+
+    private var versionLabel: String {
+        let info = Bundle.main.infoDictionary
+        let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
+        let build = info?["CFBundleVersion"] as? String ?? "1"
+        return "Version \(short) (\(build))"
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 0)
+
+            Image(nsImage: NSApplication.shared.applicationIconImage)
+                .resizable()
+                .frame(width: 96, height: 96)
+                .accessibilityHidden(true)
+
+            Text("BriskEdit")
+                .font(.system(size: 26, weight: .bold))
+                .padding(.top, 10)
+            Text("Johannes Grof · MIT")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.top, 2)
+            Text(versionLabel)
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.top, 2)
+
+            Text("A native macOS code editor — no Electron, no extension runtime, zero-config.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 16)
+                .padding(.horizontal, 50)
+
+            HStack(spacing: 10) {
+                Button {
+                    open(Self.repoURL)
+                } label: {
+                    Label("GitHub Repository", systemImage: "chevron.left.forwardslash.chevron.right")
+                }
+                Button {
+                    open(Self.issuesURL)
+                } label: {
+                    Label("Report an Issue", systemImage: "ladybug")
+                }
+            }
+            .buttonStyle(.link)
+            .padding(.top, 20)
+
+            Text("© 2026 Johannes Grof")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.top, 18)
+
+            Spacer(minLength: 0)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+    }
+
+    private func open(_ string: String) {
+        if let url = URL(string: string) { NSWorkspace.shared.open(url) }
     }
 }

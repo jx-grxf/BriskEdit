@@ -192,6 +192,12 @@ final class Preferences {
     var showInlineGitBlame: Bool {
         didSet { persist() }
     }
+    /// Master switch for all source-control UI (the Source Control sidebar pane,
+    /// gutter change bars and inline blame). On by default; users who don't work
+    /// in a repo can turn the whole thing off in onboarding or settings.
+    var sourceControlEnabled: Bool {
+        didSet { persist() }
+    }
 
     init() {
         let defaults = UserDefaults.standard
@@ -217,6 +223,7 @@ final class Preferences {
         self.discordShowElapsed = defaults.object(forKey: Keys.discordShowElapsed) as? Bool ?? true
         self.hasCompletedOnboarding = defaults.bool(forKey: Keys.hasCompletedOnboarding)
         self.showInlineGitBlame = defaults.object(forKey: Keys.showInlineGitBlame) as? Bool ?? true
+        self.sourceControlEnabled = defaults.object(forKey: Keys.sourceControlEnabled) as? Bool ?? true
         DiscordPresenceController.shared.configure(enabled: discordRichPresence)
         observeSystemPowerState()
     }
@@ -297,6 +304,12 @@ final class Preferences {
         fontSize = 13
     }
 
+    /// Gutter change bars / inline blame respect both their own toggle and the
+    /// source-control master switch, so turning source control off hides
+    /// everything without losing the individual preferences.
+    var effectiveShowGitGutter: Bool { sourceControlEnabled && showGitGutter }
+    var effectiveShowInlineGitBlame: Bool { sourceControlEnabled && showInlineGitBlame }
+
     var editorTheme: EditorTheme {
         let palette = ThemeStore.shared.theme(id: themeID) ?? .systemDefault
         return EditorTheme.make(
@@ -305,7 +318,7 @@ final class Preferences {
             fontName: fontName,
             tabWidth: tabWidth,
             usesSpacesForTabs: usesSpacesForTabs,
-            showGitGutter: showGitGutter,
+            showGitGutter: effectiveShowGitGutter,
             showCodeFolding: showCodeFolding
         )
     }
@@ -334,6 +347,7 @@ final class Preferences {
         defaults.set(discordShowElapsed, forKey: Keys.discordShowElapsed)
         defaults.set(hasCompletedOnboarding, forKey: Keys.hasCompletedOnboarding)
         defaults.set(showInlineGitBlame, forKey: Keys.showInlineGitBlame)
+        defaults.set(sourceControlEnabled, forKey: Keys.sourceControlEnabled)
     }
 
     private enum Keys {
@@ -359,6 +373,7 @@ final class Preferences {
         static let discordShowElapsed = "experimental.discordShowElapsed"
         static let hasCompletedOnboarding = "app.hasCompletedOnboarding"
         static let showInlineGitBlame = "editor.showInlineGitBlame"
+        static let sourceControlEnabled = "editor.sourceControlEnabled"
     }
 }
 
