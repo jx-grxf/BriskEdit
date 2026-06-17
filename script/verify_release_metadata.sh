@@ -8,6 +8,8 @@ cd "$(dirname "$0")/.."
 PROJECT_VERSION="$(awk -F'"' '/MARKETING_VERSION:/ { print $2; exit }' project.yml)"
 PROJECT_BUILD="$(awk -F'"' '/CURRENT_PROJECT_VERSION:/ { print $2; exit }' project.yml)"
 NOTES_VERSION="$(awk '/^## / { print $2; exit }' RELEASE_NOTES.md)"
+WHATSNEW_FILE="Sources/BriskEdit/Onboarding/WhatsNew.swift"
+WHATSNEW_VERSION="$(awk -F'"' '/static let highlightsVersion/ { print $2; exit }' "$WHATSNEW_FILE")"
 
 fail() {
   echo "error: $*" >&2
@@ -20,6 +22,14 @@ fail() {
   || fail "CURRENT_PROJECT_VERSION '$PROJECT_BUILD' must be a positive integer"
 [[ "$NOTES_VERSION" == "$PROJECT_VERSION" ]] \
   || fail "top release-notes version '$NOTES_VERSION' does not match project version '$PROJECT_VERSION'"
+# The in-app What's New highlights must be refreshed for the release: its
+# `highlightsVersion` stamp has to match the project version, so an update can't
+# ship the previous release's highlights (RELEASE_NOTES.md and WhatsNew.swift
+# move together).
+[[ -n "$WHATSNEW_VERSION" ]] \
+  || fail "could not read 'highlightsVersion' from $WHATSNEW_FILE"
+[[ "$WHATSNEW_VERSION" == "$PROJECT_VERSION" ]] \
+  || fail "What's New highlightsVersion '$WHATSNEW_VERSION' does not match project version '$PROJECT_VERSION' — update WhatsNew.sections and bump highlightsVersion"
 
 if [[ -n "${BRISKEDIT_VERSION:-}" && "$BRISKEDIT_VERSION" != "$PROJECT_VERSION" ]]; then
   fail "requested version '$BRISKEDIT_VERSION' does not match project version '$PROJECT_VERSION'"
@@ -62,4 +72,4 @@ if any(not pins[name] for name in required):
     raise SystemExit("error: every required package must be locked to a revision")
 PY
 
-echo "release metadata ok (version $PROJECT_VERSION, project build $PROJECT_BUILD)"
+echo "release metadata ok (version $PROJECT_VERSION, project build $PROJECT_BUILD, what's-new $WHATSNEW_VERSION)"

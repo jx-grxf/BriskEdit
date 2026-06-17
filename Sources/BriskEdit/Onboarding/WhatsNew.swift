@@ -39,6 +39,12 @@ enum WhatsNew {
     /// The headline subtitle shown under the version.
     static let tagline = "A native macOS editor that opens instantly and uses the tools already on your Mac."
 
+    /// The release whose highlights `sections` describe. Must equal
+    /// `MARKETING_VERSION`; `script/verify_release_metadata.sh` enforces it in CI
+    /// so the in-app What's New page can't silently ship the previous release's
+    /// highlights. Bump this together with `sections` (and the release notes).
+    static let highlightsVersion = "0.5.0"
+
     /// The latest release's curated highlights. **Update this for each release**
     /// (mirrors the top section of RELEASE_NOTES.md) — see the release recipe in
     /// the project notes so it doesn't get missed.
