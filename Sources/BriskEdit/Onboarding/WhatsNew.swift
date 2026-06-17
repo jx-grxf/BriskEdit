@@ -39,20 +39,28 @@ enum WhatsNew {
     /// The headline subtitle shown under the version.
     static let tagline = "A native macOS editor that opens instantly and uses the tools already on your Mac."
 
-    /// The latest release's curated highlights. Update this for each release.
+    /// The release whose highlights `sections` describe. Must equal
+    /// `MARKETING_VERSION`; `script/verify_release_metadata.sh` enforces it in CI
+    /// so the in-app What's New page can't silently ship the previous release's
+    /// highlights. Bump this together with `sections` (and the release notes).
+    static let highlightsVersion = "0.5.0"
+
+    /// The latest release's curated highlights. **Update this for each release**
+    /// (mirrors the top section of RELEASE_NOTES.md) — see the release recipe in
+    /// the project notes so it doesn't get missed.
     static let sections: [Section] = [
-        Section(name: "Performance", highlights: [
-            Highlight(symbol: "bolt.fill", title: "Instant syntax highlighting", detail: "Tree-sitter highlighting for Swift and JSON with cached grammars — code files open immediately instead of stalling.", tint: .yellow),
-            Highlight(symbol: "speedometer", title: "Performance modes", detail: "Low Power, Adaptive and Power — with background syntax indexing in Power mode so even the first open is instant.", tint: .green),
-            Highlight(symbol: "doc.text.magnifyingglass", title: "Large-file aware", detail: "Heavy features ease off automatically above a few megabytes to keep editing smooth.", tint: .teal),
+        Section(name: "Tabs", highlights: [
+            Highlight(symbol: "arrow.left.and.right", title: "Rearrange tabs by dragging", detail: "Drag tabs to reorder them, with a smooth spring and a clear drop indicator.", tint: .blue),
+            Highlight(symbol: "macwindow.on.rectangle", title: "Tear off and move tabs", detail: "Drag a tab onto the desktop to open it in a new window, or onto another window to move it there — unsaved edits and the language server come along.", tint: .teal),
+            Highlight(symbol: "keyboard", title: "Keyboard and overflow controls", detail: "Move the active tab with ⌃⌘← / ⌃⌘→, and jump to any tab from the overflow menu when the strip is full.", tint: .indigo),
         ]),
-        Section(name: "Source control", highlights: [
-            Highlight(symbol: "text.alignleft", title: "Inline git blame", detail: "See who last changed the current line, right where your cursor is.", tint: .orange),
-            Highlight(symbol: "circle.grid.2x2", title: "File-tree git badges", detail: "Modified, added and untracked files are marked in the sidebar at a glance.", tint: .blue),
+        Section(name: "Setup", highlights: [
+            Highlight(symbol: "wrench.and.screwdriver.fill", title: "Set up your toolchains", detail: "Onboarding detects the compilers, language servers and formatters on your Mac and installs the missing ones with one click.", tint: .green),
+            Highlight(symbol: "arrow.triangle.branch", title: "Optional source control", detail: "Turn the whole Source Control UI on or off with a single switch — for when you're not working in a repository.", tint: .orange),
         ]),
-        Section(name: "Getting started", highlights: [
-            Highlight(symbol: "sparkles", title: "Guided setup", detail: "A quick onboarding configures performance, theme and source control — replay it any time from Settings.", tint: .purple),
-            Highlight(symbol: "terminal", title: "The briskedit command", detail: "Open files and folders with briskedit . — plus a shorter brisk alias when that name is available.", tint: .pink),
+        Section(name: "Polish", highlights: [
+            Highlight(symbol: "info.circle", title: "About page", detail: "Version, license and project links, now in Settings.", tint: .purple),
+            Highlight(symbol: "clock.arrow.circlepath", title: "Tidier Recent folders", detail: "The welcome screen's Recent list no longer keeps temporary or deleted directories.", tint: .pink),
         ]),
     ]
 }
