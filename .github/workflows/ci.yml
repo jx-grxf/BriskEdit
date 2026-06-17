@@ -159,17 +159,37 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p .build
-          xcodebuild test \
-            -project BriskEdit.xcodeproj \
-            -scheme BriskEdit \
-            -destination 'platform=macOS' \
-            -derivedDataPath .build/ci-tests \
-            -onlyUsePackageVersionsFromResolvedFile \
-            -skipPackageUpdates \
-            -retry-tests-on-failure \
-            -test-iterations 3 \
-            BRISKEDIT_WARNINGS_AS_ERRORS=YES \
-            | tee .build/ci-tests.log | tail -120
+          # The app-hosted test runner intermittently crashes in AppKit/WebKit on
+          # the headless macOS VM — exit code 65 with zero test failures, after the
+          # whole suite has already passed. xcodebuild's own -retry-tests-on-failure
+          # only re-runs individual failing tests, not a full-process crash, so we
+          # also retry the entire invocation. A genuine failure fails every attempt.
+          run_tests() {
+            xcodebuild test \
+              -project BriskEdit.xcodeproj \
+              -scheme BriskEdit \
+              -destination 'platform=macOS' \
+              -derivedDataPath .build/ci-tests \
+              -onlyUsePackageVersionsFromResolvedFile \
+              -skipPackageUpdates \
+              -retry-tests-on-failure \
+              -test-iterations 3 \
+              BRISKEDIT_WARNINGS_AS_ERRORS=YES \
+              | tee .build/ci-tests.log | tail -120
+          }
+          attempts=3
+          for attempt in $(seq 1 "$attempts"); do
+            echo "::group::Test attempt ${attempt}/${attempts}"
+            if run_tests; then
+              echo "::endgroup::"
+              echo "Tests passed on attempt ${attempt}."
+              exit 0
+            fi
+            echo "::endgroup::"
+            echo "::warning::Test attempt ${attempt}/${attempts} failed (likely the headless-VM crash); retrying."
+          done
+          echo "::error::Tests failed after ${attempts} attempts."
+          exit 1
 
       - name: Upload test diagnostics
         if: failure()
