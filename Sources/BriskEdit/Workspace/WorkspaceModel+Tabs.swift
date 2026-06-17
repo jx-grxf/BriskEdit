@@ -100,9 +100,116 @@ extension WorkspaceModel {
         persistSession()
     }
 
+    /// Detaches a tab so it can be re-mounted in another window, keeping the
+    /// **live document** — and its unsaved edits, dirty state and language-server
+    /// registration — intact. Unlike `closeTab`, it neither prompts to save nor
+    /// sends `didClose`: the document is moving, not closing.
+    func detachTabForMove(_ id: EditorTab.ID) -> EditorTab? {
+        guard let index = tabs.firstIndex(where: { $0.id == id }) else { return nil }
+        let tab = tabs[index]
+        if splitPreviewContent == .markdown(id) { splitPreviewContent = nil }
+        stopWatching(id)
+        tabs.remove(at: index)
+        if activeTabID == id {
+            let fallback = tabs.indices.contains(index) ? tabs[index] : tabs.last
+            activeTabID = fallback?.id
+        }
+        persistSession()
+        return tab
+    }
+
+    /// Adopts a tab torn off another window: inherits that window's folder so the
+    /// sidebar and breadcrumbs still resolve, then makes the tab the sole, active
+    /// tab. The document object (with any unsaved edits) is reused as-is.
+    func adoptTornOffTab(_ tab: EditorTab, rootURL: URL?) {
+        if let rootURL {
+            self.rootURL = rootURL
+            expandedDirectories = [rootURL]
+            RecentWorkspacesStore.shared.record(rootURL)
+        }
+        tabs = [tab]
+        activeTabID = tab.id
+        startWatching(tab)
+    }
+
+    /// Accepts a tab moved in from another window: replaces a lone pristine
+    /// "Untitled"/welcome tab if present (so dropping onto an empty window doesn't
+    /// leave a stray blank tab), otherwise appends. Becomes the active tab.
+    func acceptMovedTab(_ tab: EditorTab) {
+        if tabs.count == 1,
+           let current = tabs.first,
+           current.previewKind == nil,
+           current.special == nil,
+           current.document.fileURL == nil,
+           current.document.text.isEmpty,
+           !current.document.isDirty {
+            tabs = [tab]
+        } else {
+            tabs.append(tab)
+        }
+        activeTabID = tab.id
+        startWatching(tab)
+        persistSession()
+    }
+
     func selectTab(_ id: EditorTab.ID) {
         activeTabID = id
         selectedSidebarURL = tabs.first { $0.id == id }?.document.fileURL
+        persistSession()
+    }
+
+    /// Reorders an open tab so it lands at the slot held by `targetID` — the
+    /// in-strip drag-to-reorder action. Dragging a tab rightwards drops it *after*
+    /// the target, leftwards *before* it, matching the visual "this tab takes that
+    /// slot" expectation. No-op if either id is unknown or they're the same.
+    func moveTab(_ id: EditorTab.ID, toPositionOf targetID: EditorTab.ID) {
+        guard id != targetID,
+              let from = tabs.firstIndex(where: { $0.id == id }),
+              let target = tabs.firstIndex(where: { $0.id == targetID }) else { return }
+        let movingRight = from < target
+        let tab = tabs.remove(at: from)
+        // The target shifted left if it sat after the removed tab; re-resolve it.
+        guard let newTarget = tabs.firstIndex(where: { $0.id == targetID }) else {
+            tabs.insert(tab, at: min(from, tabs.count))
+            return
+        }
+        let insertionIndex = movingRight ? newTarget + 1 : newTarget
+        tabs.insert(tab, at: min(max(insertionIndex, 0), tabs.count))
+        persistSession()
+    }
+
+    /// Shifts the active tab one slot left (`-1`) or right (`+1`) — the keyboard
+    /// equivalent of dragging it. No-op at the respective end.
+    func moveActiveTab(by offset: Int) {
+        guard let id = activeTabID,
+              let from = tabs.firstIndex(where: { $0.id == id }) else { return }
+        let to = from + offset
+        guard tabs.indices.contains(to) else { return }
+        let tab = tabs.remove(at: from)
+        tabs.insert(tab, at: to)
+        persistSession()
+    }
+
+    /// Inserts a tab moved in from another window *at* the slot held by `targetID`
+    /// (the chip it was dropped on), so a cross-window drop honors the drop
+    /// position instead of always appending. Replaces a lone pristine Untitled
+    /// tab if that's all the target holds. Becomes the active tab.
+    func insertMovedTab(_ tab: EditorTab, before targetID: EditorTab.ID) {
+        if tabs.count == 1,
+           let current = tabs.first,
+           current.previewKind == nil,
+           current.special == nil,
+           current.document.fileURL == nil,
+           current.document.text.isEmpty,
+           !current.document.isDirty {
+            tabs = [tab]
+        } else if let index = tabs.firstIndex(where: { $0.id == targetID }) {
+            tabs.insert(tab, at: index)
+        } else {
+            tabs.append(tab)
+        }
+        activeTabID = tab.id
+        startWatching(tab)
         persistSession()
     }
 

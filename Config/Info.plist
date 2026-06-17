@@ -34,6 +34,21 @@
 	</array>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.johannesgrof.briskedit.tab</string>
+			<key>UTTypeDescription</key>
+			<string>BriskEdit Editor Tab</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict/>
+		</dict>
+	</array>
 	<key>SUFeedURL</key>
 	<string>https://github.com/jx-grxf/BriskEdit/releases/latest/download/appcast.xml</string>
 	<key>SUPublicEDKey</key>

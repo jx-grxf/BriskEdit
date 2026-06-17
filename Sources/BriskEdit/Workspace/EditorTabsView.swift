@@ -201,7 +201,7 @@ struct EditorTabsView: View {
                   tab.document.language == .markdown,
                   availableWidth >= 760 {
             HStack(spacing: 0) {
-                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, showInlineGitBlame: preferences.showInlineGitBlame, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
+                TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, showInlineGitBlame: preferences.effectiveShowInlineGitBlame, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                     .id(tab.id)
@@ -219,7 +219,7 @@ struct EditorTabsView: View {
                 .layoutPriority(0)
             }
         } else {
-            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, showInlineGitBlame: preferences.showInlineGitBlame, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
+            TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, showInlineGitBlame: preferences.effectiveShowInlineGitBlame, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
                 })
                 .id(tab.id)
@@ -383,39 +383,134 @@ private struct TerminalResizeHandle: View {
     }
 }
 
+private struct TabStripWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat { 0 }
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct TabContentWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat { 0 }
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 private struct TabStrip: View {
+    @Bindable var workspace: WorkspaceModel
+    @State private var contentWidth: CGFloat = 0
+    @State private var viewportWidth: CGFloat = 0
+
+    /// The tabs don't fit the visible strip, so offer the overflow menu. The
+    /// menu's own width keeps this stable near the boundary (showing it shrinks
+    /// the viewport, which keeps the condition true).
+    private var isOverflowing: Bool { contentWidth > viewportWidth + 1 }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(spacing: 0) {
+                        ForEach(workspace.tabs) { tab in
+                            TabChip(
+                                tab: tab,
+                                isActive: tab.id == workspace.activeTabID,
+                                onSelect: { workspace.selectTab(tab.id) },
+                                onClose: { workspace.requestCloseTab(tab.id) },
+                                onCloseOthers: { workspace.requestCloseOtherTabs(keeping: tab.id) },
+                                onCloseRight: { workspace.requestCloseTabsToRight(of: tab.id) },
+                                onCloseAll: { workspace.requestCloseAllTabs() },
+                                onOpenSplitPreview: {
+                                    if let url = tab.document.fileURL {
+                                        Task { await workspace.openInSplitScreen(url) }
+                                    }
+                                },
+                                makeTransfer: { makeTabTransfer(tabID: tab.id, source: workspace) },
+                                onReorder: { draggedID in reorder(draggedID, toPositionOf: tab.id) }
+                            )
+                            .id(tab.id)
+                            Divider().frame(height: 18)
+                        }
+                    }
+                    // Glide tabs into their new slot on reorder instead of snapping.
+                    // Keyed on the id-order so it only fires when the sequence changes.
+                    .animation(.spring(response: 0.3, dampingFraction: 0.82), value: workspace.tabs.map(\.id))
+                    .background(GeometryReader { geo in
+                        Color.clear.preference(key: TabContentWidthKey.self, value: geo.size.width)
+                    })
+                }
+                // Hard scroll edge so tabs are cut crisply at the strip's bounds
+                // instead of the macOS 26 soft fade, which let them bleed *under*
+                // the translucent sidebar when scrolled.
+                .scrollEdgeEffectStyle(.hard, for: .horizontal)
+                .background(GeometryReader { geo in
+                    Color.clear.preference(key: TabStripWidthKey.self, value: geo.size.width)
+                })
+                // Keep the active tab visible when it's selected from the keyboard,
+                // the overflow menu, or moved with ⌃⌘←/→.
+                .onChange(of: workspace.activeTabID) { _, id in
+                    guard let id else { return }
+                    withAnimation(.easeOut(duration: 0.2)) { proxy.scrollTo(id, anchor: .center) }
+                }
+            }
+
+            if isOverflowing {
+                TabOverflowMenu(workspace: workspace)
+                    .transition(.opacity)
+            }
+        }
+        .frame(height: DesignTokens.Chrome.tabStripHeight)
+        .onPreferenceChange(TabContentWidthKey.self) { contentWidth = $0 }
+        .onPreferenceChange(TabStripWidthKey.self) { viewportWidth = $0 }
+        .animation(.easeInOut(duration: 0.15), value: isOverflowing)
+        .background(.thinMaterial)
+        .clipped()
+        .background(WindowAccessor { window in
+            // Register so a tab dropped on this window (from any window) routes here.
+            if let window { TabTearOffCoordinator.shared.register(window: window, workspace: workspace) }
+        })
+    }
+
+    /// A drop onto a chip: an in-window tab reorders to that slot; a tab dragged
+    /// from *another* window is inserted at that slot (cross-window move honoring
+    /// the drop position).
+    private func reorder(_ draggedID: UUID, toPositionOf targetID: UUID) {
+        if workspace.tabs.contains(where: { $0.id == draggedID }) {
+            workspace.moveTab(draggedID, toPositionOf: targetID)
+        } else {
+            TabTearOffCoordinator.shared.moveInFlightTab(toPositionOf: targetID, into: workspace)
+        }
+    }
+}
+
+/// A chevron menu shown at the trailing edge of the tab strip when the tabs
+/// overflow the visible width, listing every open tab so any can be jumped to.
+private struct TabOverflowMenu: View {
     @Bindable var workspace: WorkspaceModel
 
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 0) {
-                ForEach(workspace.tabs) { tab in
-                    TabChip(
-                        tab: tab,
-                        isActive: tab.id == workspace.activeTabID,
-                        onSelect: { workspace.selectTab(tab.id) },
-                        onClose: { workspace.requestCloseTab(tab.id) },
-                        onCloseOthers: { workspace.requestCloseOtherTabs(keeping: tab.id) },
-                        onCloseRight: { workspace.requestCloseTabsToRight(of: tab.id) },
-                        onCloseAll: { workspace.requestCloseAllTabs() },
-                        onOpenSplitPreview: {
-                            if let url = tab.document.fileURL {
-                                Task { await workspace.openInSplitScreen(url) }
-                            }
-                        }
+        Menu {
+            ForEach(workspace.tabs) { tab in
+                Button {
+                    workspace.selectTab(tab.id)
+                } label: {
+                    Label(
+                        tab.displayTitle + (tab.document.isDirty ? " ●" : ""),
+                        systemImage: tab.id == workspace.activeTabID ? "checkmark" : "doc"
                     )
-                    Divider().frame(height: 18)
                 }
             }
+        } label: {
+            Image(systemName: "chevron.down")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 30, height: DesignTokens.Chrome.tabStripHeight)
+                .contentShape(Rectangle())
         }
-        // Hard scroll edge so tabs are cut crisply at the strip's bounds instead
-        // of the macOS 26 soft fade, which let them bleed *under* the translucent
-        // sidebar when scrolled. `.clipped()` backs it up so nothing renders past
-        // the leading (sidebar) edge.
-        .scrollEdgeEffectStyle(.hard, for: .horizontal)
-        .frame(height: DesignTokens.Chrome.tabStripHeight)
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .frame(width: 30)
         .background(.thinMaterial)
-        .clipped()
+        .overlay(alignment: .leading) { Divider() }
+        .help("Show all tabs")
+        .accessibilityLabel("Show all tabs")
     }
 }
 
@@ -516,39 +611,46 @@ private struct TabChip: View {
     let onCloseRight: () -> Void
     let onCloseAll: () -> Void
     let onOpenSplitPreview: () -> Void
+    /// Builds the `.draggable` payload for the tab (registers the in-flight drag
+    /// with the coordinator).
+    let makeTransfer: () -> TabTransfer
+    /// Reorders the dragged tab (its id) to this chip's slot — in-strip reorder.
+    let onReorder: (UUID) -> Void
+    @State private var isDropTargeted = false
 
     var body: some View {
-        // The whole chip selects the tab: the button wraps the full content
-        // (incl. padding and the trailing reserve), and `contentShape` makes that
-        // entire area hittable — clicking anywhere on the tab, not just the file
-        // name, now switches to it. The close button overlays the trailing reserve
-        // on top so it still gets its own clicks.
-        Button(action: onSelect) {
-            HStack(spacing: 6) {
-                if let special = tab.special {
-                    Image(systemName: special.symbol)
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.tint)
-                        .frame(width: 14)
-                } else {
-                    FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
-                }
-                Text(tab.displayTitle)
-                    .foregroundStyle(isActive ? .primary : .secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
-                if tab.special == nil, tab.document.isDirty {
-                    Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
-                }
+        // The chip is a plain hittable surface (not a `Button`): a SwiftUI
+        // `Button` swallows drag events. Selection is a simultaneous `TapGesture`;
+        // the drag is `.draggable` — the exact native drag path the file tree uses
+        // (`.draggable(node.url)`), which is the only mechanism that fires inside
+        // the tab strip's `ScrollView` (`.onDrag` and a `DragGesture` both stayed
+        // inert there). `contentShape` makes the whole area (incl. padding and the
+        // trailing reserve) hittable; the close button overlays the reserve on top
+        // so it still gets its own clicks.
+        HStack(spacing: 6) {
+            if let special = tab.special {
+                Image(systemName: special.symbol)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.tint)
+                    .frame(width: 14)
+            } else {
+                FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
             }
-            .padding(.leading, 10)
-            .padding(.trailing, 28)
-            .frame(height: DesignTokens.Chrome.tabStripHeight)
-            .contentShape(Rectangle())
+            Text(tab.displayTitle)
+                .foregroundStyle(isActive ? .primary : .secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
+            if tab.special == nil, tab.document.isDirty {
+                Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
+            }
         }
-        .buttonStyle(.plain)
+        .padding(.leading, 10)
+        .padding(.trailing, 28)
+        .frame(height: DesignTokens.Chrome.tabStripHeight)
+        .contentShape(Rectangle())
         .accessibilityLabel("Select \(tab.displayTitle)")
+        .accessibilityAddTraits(.isButton)
         .animation(.easeInOut(duration: 0.15), value: isActive)
         // Native "front tab" look: the active tab reads as a raised surface
         // (matching the editor area) instead of an accent wash, with a thin
@@ -570,6 +672,34 @@ private struct TabChip: View {
             .help("Close \(tab.document.displayName)")
             .accessibilityLabel("Close \(tab.document.displayName)")
         }
+        // Drag pulls the tab out (native `.draggable`, fires in the ScrollView).
+        // The drag image is a small chip with the tab's name.
+        .draggable(makeTransfer()) {
+            TabDragPreview(tab: tab)
+        }
+        // Selection is a *simultaneous* TapGesture, NOT `.onTapGesture`: on macOS
+        // `.onTapGesture` wins the mouse-down arbitration and blocks the drag from
+        // ever starting. A simultaneous tap runs alongside the drag instead.
+        .simultaneousGesture(TapGesture().onEnded { onSelect() })
+        // Dropping a tab onto this chip reorders it into this slot (in-strip
+        // reorder). A drop within the same window no-ops in `finishDrag`, so the
+        // reorder and tear-off paths don't fight. The leading bar shows where the
+        // dragged tab will land.
+        .dropDestination(for: TabTransfer.self) { items, _ in
+            guard let draggedID = items.first?.tabID else { return false }
+            onReorder(draggedID)
+            return true
+        } isTargeted: { targeted in
+            withAnimation(.easeOut(duration: 0.12)) { isDropTargeted = targeted }
+        }
+        .overlay(alignment: .leading) {
+            Capsule()
+                .fill(.tint)
+                .frame(width: 3)
+                .padding(.vertical, 5)
+                .opacity(isDropTargeted ? 1 : 0)
+                .scaleEffect(y: isDropTargeted ? 1 : 0.4, anchor: .center)
+        }
         .contextMenu {
             Button("Close") { onClose() }
             Button("Close Other Tabs") { onCloseOthers() }
@@ -580,6 +710,30 @@ private struct TabChip: View {
                 Button("Open in Split Preview") { onOpenSplitPreview() }
             }
         }
+    }
+}
+
+/// The drag image shown under the cursor while a tab is dragged. Mirrors the
+/// chip's leading content (file-type icon + title).
+private struct TabDragPreview: View {
+    let tab: EditorTab
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let special = tab.special {
+                Image(systemName: special.symbol)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.tint)
+            } else {
+                FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
+            }
+            Text(tab.displayTitle)
+                .font(.callout)
+                .lineLimit(1)
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 30)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 }
 

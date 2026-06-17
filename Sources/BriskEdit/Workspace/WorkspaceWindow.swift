@@ -31,11 +31,16 @@ struct WorkspaceWindow: View {
                 if let version = WhatsNew.versionToAnnounceAndMarkSeen() {
                     workspace.showWhatsNew(version: version)
                 }
+            } else if case .secondary(let windowID) = kind,
+                      let payload = TabTearOffCoordinator.shared.takePayload(for: windowID) {
+                // A tab dragged out of another window: adopt the live document.
+                workspace.adoptTornOffTab(payload.tab, rootURL: payload.rootURL)
             }
             ExternalFileOpenCoordinator.shared.drainPending(into: workspace)
         }
         .onAppear {
             NewWindowCoordinator.shared.open = { openWindow(value: WindowKind.secondary(UUID())) }
+            NewWindowCoordinator.shared.openValue = { kind in openWindow(value: kind) }
         }
         .onOpenURL { url in
             Task { await workspace.openFile(at: url) }
@@ -45,6 +50,7 @@ struct WorkspaceWindow: View {
             isDocumentEdited: workspace.hasUnsavedChanges,
             hasUnsavedChanges: workspace.hasUnsavedChanges,
             wantsFullSize: kind.restoresSession ? preferences.hasCompletedOnboarding : true,
+            tearOffWindowID: tearOffWindowID,
             saveAll: { await workspace.saveAllForQuit() }
         ))
         .overlay(alignment: .top) {
@@ -83,7 +89,7 @@ struct WorkspaceWindow: View {
             get: { kind.restoresSession && !preferences.hasCompletedOnboarding },
             set: { _ in }
         )) {
-            OnboardingView(preferences: preferences, onFinish: {})
+            OnboardingView(preferences: preferences, onFinish: {}, onOpenFolder: openFolder)
                 .interactiveDismissDisabled()
         }
         .toolbar {
@@ -130,6 +136,12 @@ struct WorkspaceWindow: View {
         } message: {
             Text(workspace.lastError ?? "")
         }
+    }
+
+    /// The new window's UUID when this is a secondary window — lets the
+    /// configurator look up a stashed tear-off frame so it opens at the drop point.
+    private var tearOffWindowID: UUID? {
+        if case .secondary(let id) = kind { id } else { nil }
     }
 
     /// Current Discord Rich Presence snapshot for this window. Computed in the
@@ -201,6 +213,7 @@ private struct WorkspaceSidebar: View {
 /// tint over a soft rounded fill; the rest stay quiet and monochrome.
 private struct SidebarActivityBar: View {
     @Binding var selection: SidebarTab
+    @Environment(Preferences.self) private var preferences
 
     private struct Item: Identifiable {
         let tab: SidebarTab
@@ -216,9 +229,15 @@ private struct SidebarActivityBar: View {
         Item(tab: .sourceControl, symbol: "arrow.triangle.branch", label: "Source Control"),
     ]
 
+    /// Drop the Source Control pane entirely when the user has turned source
+    /// control off.
+    private var visibleItems: [Item] {
+        preferences.sourceControlEnabled ? items : items.filter { $0.tab != .sourceControl }
+    }
+
     var body: some View {
         HStack(spacing: 2) {
-            ForEach(items) { item in
+            ForEach(visibleItems) { item in
                 let isActive = selection == item.tab
                 Button {
                     selection = item.tab
@@ -244,6 +263,9 @@ private struct SidebarActivityBar: View {
         .animation(.easeInOut(duration: 0.12), value: selection)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
+        .onChange(of: preferences.sourceControlEnabled) { _, enabled in
+            if !enabled, selection == .sourceControl { selection = .files }
+        }
     }
 }
 
@@ -292,6 +314,9 @@ private struct WindowConfigurator: NSViewRepresentable {
     let hasUnsavedChanges: Bool
     /// Full-size when true; a centered medium frame while onboarding is showing.
     let wantsFullSize: Bool
+    /// When this is a torn-off secondary window, its UUID — used to look up the
+    /// drop-point frame stashed by the source window.
+    let tearOffWindowID: UUID?
     let saveAll: () async -> Bool
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -307,9 +332,10 @@ private struct WindowConfigurator: NSViewRepresentable {
             let hasUnsaved = hasUnsavedChanges
             let isPrimary = isPrimaryWindow
             let fullSize = wantsFullSize
+            let tearOffID = tearOffWindowID
             let save = saveAll
             DispatchQueue.main.async {
-                coordinator?.configure(window: window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, saveAll: save)
+                coordinator?.configure(window: window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, tearOffWindowID: tearOffID, saveAll: save)
             }
         }
         return view
@@ -321,9 +347,10 @@ private struct WindowConfigurator: NSViewRepresentable {
         let hasUnsaved = hasUnsavedChanges
         let isPrimary = isPrimaryWindow
         let fullSize = wantsFullSize
+        let tearOffID = tearOffWindowID
         let save = saveAll
         DispatchQueue.main.async {
-            coordinator.configure(window: nsView.window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, saveAll: save)
+            coordinator.configure(window: nsView.window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, tearOffWindowID: tearOffID, saveAll: save)
         }
     }
 
@@ -336,9 +363,20 @@ private struct WindowConfigurator: NSViewRepresentable {
         /// nil until the first frame is applied; then tracks whether we last sized
         /// the window full or to the medium onboarding frame.
         private var appliedFullSize: Bool?
+        /// For a torn-off window: the screen frame it should open at, captured once
+        /// (sticky) so the enforcement burst and later re-renders keep using it
+        /// rather than falling back to full-size.
+        private var tearOffFrame: CGRect?
 
-        func configure(window: NSWindow?, isPrimaryWindow: Bool, isEdited: Bool, hasUnsaved: Bool, wantsFullSize: Bool, saveAll: @escaping () async -> Bool) {
+        func configure(window: NSWindow?, isPrimaryWindow: Bool, isEdited: Bool, hasUnsaved: Bool, wantsFullSize: Bool, tearOffWindowID: UUID?, saveAll: @escaping () async -> Bool) {
             guard let window else { return }
+            // Capture the drop-point frame once; clear it from the coordinator so it
+            // can't leak, but keep our sticky copy for the enforcement burst.
+            if tearOffFrame == nil, let tearOffWindowID,
+               let frame = TabTearOffCoordinator.shared.frame(for: tearOffWindowID) {
+                tearOffFrame = frame
+                TabTearOffCoordinator.shared.clearFrame(for: tearOffWindowID)
+            }
             // We restore the folder + open tabs ourselves (startPrimarySession).
             // Letting AppKit *also* persist/restore this window produces a second,
             // duplicate window on cold start ("a new empty one + the old folder").
@@ -447,7 +485,9 @@ private struct WindowConfigurator: NSViewRepresentable {
 
         private func applyFullSizeFrame(to window: NSWindow) {
             guard let screen = window.screen ?? NSScreen.main ?? NSScreen.screens.first else { return }
-            let target = screen.visibleFrame
+            // A torn-off window opens at the drop point and fills the free desktop
+            // area there; everything else goes full-size.
+            let target = tearOffFrame ?? screen.visibleFrame
             // Already flush full-size — don't fight a settled (or user-resized)
             // window. Compare *origin too*: `defaultSize` can match the size while
             // SwiftUI centers the window, so a size-only check skipped the

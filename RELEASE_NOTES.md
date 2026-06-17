@@ -1,49 +1,40 @@
 # Release Notes
 
-## 0.4.0 - Faster editing, richer source control, and safer releases
+## 0.5.0 - Movable tabs, smarter setup, optional source control
 
-BriskEdit 0.4.0 is a larger editor and tooling release. It remains an unsigned
-developer preview; on first launch, right-click `BriskEdit.app`, choose **Open**,
-and confirm.
+BriskEdit 0.5.0 makes the window your own and smooths first-run setup. It remains
+an unsigned developer preview; on first launch, right-click `BriskEdit.app`,
+choose **Open**, and confirm.
 
 ### Added
 
-- **Tree-sitter highlighting for Swift and JSON.** Compiled grammar
-  configurations are cached, with instant fallback highlighting while a grammar
-  warms up.
-- **Low Power, Adaptive, and Power modes.** Background work responds to system
-  power and thermal state; Power mode can prepare grammars ahead of first use.
-- **A guided first-run experience.** Onboarding configures performance, theme,
-  editor basics, and source control. A new welcome screen surfaces recent folders
-  and common actions.
-- **Richer source control context.** Inline blame, file-tree status badges,
-  colored file icons, an activity-bar sidebar, and clickable breadcrumbs keep
-  repository state visible without leaving the editor.
-- **The `briskedit` command-line launcher.** An optional shorter `brisk` alias is
-  installed only when that name is available.
-- **An in-app What's New page** shown after updates.
+- **Drag tabs anywhere.** Reorder tabs within the strip, tear one off onto the
+  desktop to open it in a new window, or drop it on another window to move it
+  there — keeping unsaved edits and the language server intact. Dropping onto a
+  specific tab inserts it at that position.
+- **Keyboard and overflow tab controls.** Move the active tab with `⌃⌘←` / `⌃⌘→`
+  (also in the File menu), and jump to any open tab from the overflow menu that
+  appears when the strip is full.
+- **Onboarding that sets up your tools.** The first-run flow now detects the
+  compilers, language servers, and formatters already on your Mac and offers to
+  install the missing ones — Xcode Command Line Tools, Homebrew packages, and
+  more — with one click. It also previews your theme live, installs the optional
+  command-line launcher, and can open your first folder.
+- **An About page** in Settings with the version, license, and project links.
 
 ### Improved
 
-- **Large-file editing.** Expensive editor features ease off automatically above
-  4 MB, with accurate line numbers and file-size reporting preserved.
-- **Git refresh behavior.** Status scans are coalesced, paths with Unicode,
-  newlines, and renames are parsed safely, and decorations refresh after saves.
-- **Resource safety.** Formatter requests, subprocesses, watchers, debounce
-  tasks, and per-tab LSP state are bounded and released predictably.
-- **Reproducible builds.** Swift packages are locked to committed revisions and
-  package updates are disabled during CI and release builds.
+- **Smoother tab reordering.** Tabs glide into place with a spring and a clear
+  drop indicator.
+- **Optional source control.** A single switch turns the Source Control sidebar,
+  gutter change bars, and inline blame on or off — for when you're not working in
+  a repository. Available in onboarding and Settings.
+- **Tidier Settings and welcome screen.** All preference tabs fit on one row
+  without an overflow menu, and the welcome header shows the author and version.
 
-### Release Engineering
+### Fixed
 
-- CI now runs warnings-as-errors tests, a real DMG smoke build, shell and workflow
-  linting, dependency review, Gitleaks history scanning, promo-tooling audit and
-  type checks, and CodeQL analysis.
-- Release jobs require a verified signed annotated tag reachable from `main`,
-  retest the tagged source, validate DMG/ZIP/appcast metadata and signatures,
-  publish SHA-256 checksums, and attach GitHub provenance attestations.
-- Third-party GitHub Actions are pinned to immutable commits. Dependabot security
-  updates, dependency review, secret scanning, and push protection are enabled.
+- The Recent folders list no longer keeps temporary or deleted directories.
 
 ### Compatibility
 
