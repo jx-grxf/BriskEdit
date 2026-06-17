@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Which pane the workspace sidebar shows.
@@ -43,6 +44,22 @@ struct GitSidebarView: View {
             content
         }
         .task(id: workspace.reloadToken) { await reload() }
+        // The sidebar panes are kept mounted in a ZStack, so `.task` doesn't
+        // re-run when the user switches *to* Source Control — reload explicitly so
+        // a change made before opening the pane is already there, not only after a
+        // manual refresh.
+        .onChange(of: workspace.sidebarTab) { _, tab in
+            if tab == .sourceControl { Task { await reload() } }
+        }
+        // Reflect changes made elsewhere: a git op from another component, or a
+        // save/commit in another app while we were away (window re-activates).
+        // Guarded to the visible pane so background windows don't scan needlessly.
+        .onReceive(NotificationCenter.default.publisher(for: .gitDidChange)) { _ in
+            if workspace.sidebarTab == .sourceControl { Task { await reload() } }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            if workspace.sidebarTab == .sourceControl { Task { await reload() } }
+        }
         .alert("New Branch", isPresented: $showNewBranch) {
             TextField("Branch name", text: $newBranchName)
             Button("Create") {
