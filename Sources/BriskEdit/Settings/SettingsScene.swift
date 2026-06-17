@@ -89,7 +89,7 @@ private struct GeneralPreferencesView: View {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Onboarding")
-                        Text("Restart the welcome screen to easily reconfigure the editor, performance and source-control basics.")
+                        Text("Replay the welcome screen to reconfigure the editor, performance and source-control basics.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
