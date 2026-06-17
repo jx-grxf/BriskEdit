@@ -7,6 +7,12 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    # Collapse minor/patch bumps into one PR; majors stay separate for review.
+    groups:
+      swift-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
@@ -15,6 +21,10 @@ updates:
     labels:
       - "dependencies"
       - "ci"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
   - package-ecosystem: "npm"
     directory: "/promo"
     schedule:
@@ -22,3 +32,8 @@ updates:
     open-pull-requests-limit: 5
     labels:
       - "dependencies"
+    groups:
+      promo-minor-patch:
+        update-types:
+          - "minor"
+          - "patch"

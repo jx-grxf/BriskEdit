@@ -1,0 +1,27 @@
+name: Dependabot auto-merge
+
+# Auto-merges Dependabot minor/patch updates once all required checks pass.
+# Major bumps are left open for manual review. Uses pull_request_target so the
+# token has the write access Dependabot-triggered runs otherwise lack; no PR code
+# is checked out or executed here, only metadata is read and auto-merge enabled.
+on: pull_request_target
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch Dependabot metadata
+        id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+
+      - name: Enable auto-merge for minor and patch updates
+        if: steps.meta.outputs.update-type == 'version-update:semver-minor' || steps.meta.outputs.update-type == 'version-update:semver-patch'
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
