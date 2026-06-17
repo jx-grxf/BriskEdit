@@ -140,3 +140,4 @@ Issues and focused pull requests welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md
 ## License
 
 MIT. See [LICENSE](LICENSE).
+Johannes Grof - 2026
