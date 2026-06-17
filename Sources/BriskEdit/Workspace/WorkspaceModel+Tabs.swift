@@ -323,6 +323,9 @@ extension WorkspaceModel {
         do {
             try await tab.document.save()
             await checkActiveDocument()
+            // Saving changes the working tree — refresh git decorations + the
+            // Source Control pane so the new modified/added state shows at once.
+            NotificationCenter.default.post(name: .gitDidChange, object: nil)
         } catch {
             NSLog("BriskEdit: save failed: %@", String(describing: error))
             lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"
@@ -343,6 +346,7 @@ extension WorkspaceModel {
             startWatching(tab)
             persistSession()
             await checkActiveDocument()
+            NotificationCenter.default.post(name: .gitDidChange, object: nil)
         } catch {
             NSLog("BriskEdit: save-as failed: %@", String(describing: error))
             lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"

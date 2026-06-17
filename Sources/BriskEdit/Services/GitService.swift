@@ -41,6 +41,20 @@ struct GitStatus: Sendable {
     var isClean: Bool { changes.isEmpty }
 }
 
+/// One entry in the recent-commit history shown in the Source Control pane.
+struct GitCommit: Sendable, Identifiable, Hashable {
+    let hash: String
+    let shortHash: String
+    let subject: String
+    let author: String
+    /// Human "2 hours ago" string from `git log %cr`.
+    let relativeDate: String
+    /// Not yet on the upstream branch (ahead of `@{u}`, or no upstream at all).
+    let isUnpushed: Bool
+
+    var id: String { hash }
+}
+
 /// Outcome of a git command that can fail in a way worth surfacing (push, pull,
 /// checkout). `output` carries the combined stdout+stderr for the error banner.
 struct GitResult: Sendable {
@@ -314,6 +328,40 @@ enum GitService {
             return out.split(separator: "\n")
                 .map { $0.trimmingCharacters(in: .whitespaces) }
                 .filter { !$0.isEmpty }
+        }.value
+    }
+
+    /// Recent commits on the current branch, newest first, each flagged with
+    /// whether it has been pushed to the upstream yet.
+    static func recentCommits(root: URL, limit: Int = 30) async -> [GitCommit] {
+        let rootPath = root.path
+        return await Task.detached(priority: .utility) { () -> [GitCommit] in
+            guard let top = run(["-C", rootPath, "rev-parse", "--show-toplevel"])?
+                .trimmingCharacters(in: .whitespacesAndNewlines), !top.isEmpty else { return [] }
+
+            // Hashes not yet on the upstream. With no upstream, every listed
+            // commit counts as unpushed (the branch has never been pushed).
+            var unpushed = Set<String>()
+            let hasUpstream = !((run(["-C", top, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], allowFailure: true) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            if hasUpstream, let revs = run(["-C", top, "rev-list", "@{u}..HEAD"], allowFailure: true) {
+                for line in revs.split(separator: "\n") { unpushed.insert(String(line)) }
+            }
+
+            // %x1f = unit separator between fields; one commit per line (%s is
+            // already a single line).
+            let format = "%H%x1f%h%x1f%s%x1f%an%x1f%cr"
+            guard let out = run(["-C", top, "log", "-n", String(limit), "--pretty=format:\(format)"], allowFailure: true) else { return [] }
+            var commits: [GitCommit] = []
+            for line in out.split(separator: "\n") {
+                let f = line.components(separatedBy: "\u{1f}")
+                guard f.count == 5 else { continue }
+                commits.append(GitCommit(
+                    hash: f[0], shortHash: f[1], subject: f[2], author: f[3], relativeDate: f[4],
+                    isUnpushed: !hasUpstream || unpushed.contains(f[0])
+                ))
+            }
+            return commits
         }.value
     }
 

@@ -177,31 +177,46 @@ enum MarkdownRenderer {
         :root { color-scheme: light dark; }
         body {
           font: -apple-system-body;
-          line-height: 1.55;
-          max-width: 860px;
-          margin: 24px auto;
-          padding: 0 28px 48px;
+          font-size: 15px;
+          line-height: 1.6;
+          max-width: 820px;
+          margin: 0 auto;
+          padding: 28px 32px 64px;
           color: CanvasText;
           background: Canvas;
+          -webkit-text-size-adjust: 100%;
+          word-wrap: break-word;
         }
-        pre, code {
-          font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-          background: color-mix(in srgb, CanvasText 8%, transparent);
-          border-radius: 5px;
-        }
-        code { padding: 2px 4px; }
-        pre { padding: 12px; overflow-x: auto; }
-        img { max-width: 100%; height: auto; }
-        table { border-collapse: collapse; width: 100%; margin: 12px 0; }
-        th, td { border: 1px solid color-mix(in srgb, CanvasText 18%, transparent); padding: 6px 8px; text-align: left; }
-        th { background: color-mix(in srgb, CanvasText 8%, transparent); }
+        h1, h2, h3, h4, h5, h6 { font-weight: 600; line-height: 1.25; margin: 24px 0 16px; }
+        h1 { font-size: 1.9em; padding-bottom: .3em; border-bottom: 1px solid color-mix(in srgb, CanvasText 14%, transparent); }
+        h2 { font-size: 1.5em; padding-bottom: .3em; border-bottom: 1px solid color-mix(in srgb, CanvasText 12%, transparent); }
+        h3 { font-size: 1.25em; }
+        h4 { font-size: 1.05em; }
+        h5, h6 { font-size: .92em; color: color-mix(in srgb, CanvasText 62%, transparent); }
+        p { margin: 0 0 14px; }
+        ul, ol { margin: 0 0 14px; padding-left: 1.7em; }
+        li { margin: 4px 0; }
+        li.task { list-style: none; margin-left: -1.5em; }
+        li.task input { margin: 0 8px 0 0; vertical-align: middle; }
+        pre, code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .88em; }
+        code { background: color-mix(in srgb, CanvasText 9%, transparent); padding: .18em .4em; border-radius: 5px; }
+        pre { background: color-mix(in srgb, CanvasText 7%, transparent); padding: 14px 16px; border-radius: 8px; overflow-x: auto; line-height: 1.5; }
+        pre code { background: none; padding: 0; border-radius: 0; }
+        img { max-width: 100%; height: auto; border-radius: 6px; }
+        table { border-collapse: collapse; margin: 0 0 16px; display: block; width: max-content; max-width: 100%; overflow-x: auto; }
+        th, td { border: 1px solid color-mix(in srgb, CanvasText 16%, transparent); padding: 7px 12px; text-align: left; }
+        th { background: color-mix(in srgb, CanvasText 8%, transparent); font-weight: 600; }
+        tr:nth-child(even) td { background: color-mix(in srgb, CanvasText 4%, transparent); }
         blockquote {
-          border-left: 3px solid color-mix(in srgb, CanvasText 28%, transparent);
-          margin-left: 0;
-          padding-left: 14px;
-          color: color-mix(in srgb, CanvasText 70%, transparent);
+          border-left: 3px solid color-mix(in srgb, CanvasText 22%, transparent);
+          margin: 0 0 14px;
+          padding: 2px 0 2px 16px;
+          color: color-mix(in srgb, CanvasText 65%, transparent);
         }
-        a { color: LinkText; }
+        hr { border: none; height: 1px; background: color-mix(in srgb, CanvasText 14%, transparent); margin: 24px 0; }
+        a { color: LinkText; text-decoration: none; }
+        a:hover { text-decoration: underline; }
+        del { opacity: .7; }
         </style>
         </head>
         <body>
@@ -227,13 +242,23 @@ enum MarkdownRenderer {
                 }
                 let className = language.isEmpty ? "" : " class=\"language-\(language)\""
                 html.append("<pre><code\(className)>\(escape(code.joined(separator: "\n")))</code></pre>")
-            } else if line.hasPrefix("- ") {
+            } else if isHorizontalRule(line) {
+                html.append("<hr>")
+            } else if line.hasPrefix("- ") || line.hasPrefix("* ") {
                 var items: [String] = []
-                while index < lines.count, lines[index].hasPrefix("- ") {
-                    items.append("<li>\(inline(lines[index].dropFirst(2)))</li>")
+                while index < lines.count, lines[index].hasPrefix("- ") || lines[index].hasPrefix("* ") {
+                    items.append(listItem(lines[index].dropFirst(2)))
                     index += 1
                 }
                 html.append("<ul>\(items.joined())</ul>")
+                continue
+            } else if orderedMarkerLength(line) != nil {
+                var items: [String] = []
+                while index < lines.count, let marker = orderedMarkerLength(lines[index]) {
+                    items.append("<li>\(inline(lines[index].dropFirst(marker)))</li>")
+                    index += 1
+                }
+                html.append("<ol>\(items.joined())</ol>")
                 continue
             } else if isTableHeader(at: index, lines: lines) {
                 let headers = tableCells(lines[index]).map { "<th>\(inline($0))</th>" }.joined()
@@ -245,6 +270,12 @@ enum MarkdownRenderer {
                 }
                 html.append("<table><thead><tr>\(headers)</tr></thead><tbody>\(rows.joined())</tbody></table>")
                 continue
+            } else if line.hasPrefix("###### ") {
+                html.append("<h6>\(inline(line.dropFirst(7)))</h6>")
+            } else if line.hasPrefix("##### ") {
+                html.append("<h5>\(inline(line.dropFirst(6)))</h5>")
+            } else if line.hasPrefix("#### ") {
+                html.append("<h4>\(inline(line.dropFirst(5)))</h4>")
             } else if line.hasPrefix("### ") {
                 html.append("<h3>\(inline(line.dropFirst(4)))</h3>")
             } else if line.hasPrefix("## ") {
@@ -254,7 +285,7 @@ enum MarkdownRenderer {
             } else if line.hasPrefix("> ") {
                 html.append("<blockquote>\(inline(line.dropFirst(2)))</blockquote>")
             } else if line.trimmingCharacters(in: .whitespaces).isEmpty {
-                html.append("<br>")
+                // Blank line: block margins handle the spacing; no <br> needed.
             } else {
                 html.append("<p>\(inline(Substring(line)))</p>")
             }
@@ -282,8 +313,43 @@ enum MarkdownRenderer {
             .replacingOccurrences(of: #"!\[([^\]]*)\]\(([^)]+)\)"#, with: "<img src=\"$2\" alt=\"$1\">", options: .regularExpression)
             .replacingOccurrences(of: #"\[([^\]]+)\]\(([^)]+)\)"#, with: "<a href=\"$2\">$1</a>", options: .regularExpression)
             .replacingOccurrences(of: "**([^*]+)**", with: "<strong>$1</strong>", options: .regularExpression)
+            .replacingOccurrences(of: "~~([^~]+)~~", with: "<del>$1</del>", options: .regularExpression)
+            // Italic runs after bold, so any remaining single `*` pairs are emphasis.
+            .replacingOccurrences(of: #"\*([^*]+)\*"#, with: "<em>$1</em>", options: .regularExpression)
             .replacingOccurrences(of: "`([^`]+)`", with: "<code>$1</code>", options: .regularExpression)
         )
+    }
+
+    /// `---`, `***` or `___` on their own line → a horizontal rule.
+    private static func isHorizontalRule(_ line: String) -> Bool {
+        let t = line.trimmingCharacters(in: .whitespaces)
+        guard t.count >= 3 else { return false }
+        return t.allSatisfy { $0 == "-" } || t.allSatisfy { $0 == "*" } || t.allSatisfy { $0 == "_" }
+    }
+
+    /// Length of an ordered-list marker like `1. ` (incl. the trailing space), or
+    /// nil if the line doesn't start one.
+    private static func orderedMarkerLength(_ line: String) -> Int? {
+        let chars = Array(line)
+        var digits = 0
+        while digits < chars.count, chars[digits].isNumber { digits += 1 }
+        guard digits > 0, digits + 1 < chars.count, chars[digits] == ".", chars[digits + 1] == " " else { return nil }
+        return digits + 2
+    }
+
+    /// A list item, rendering `[ ]` / `[x]` as a (disabled) task checkbox.
+    private static func listItem(_ raw: Substring) -> String {
+        let s = String(raw)
+        let lower = s.lowercased()
+        if lower.hasPrefix("[ ]") {
+            let rest = s.dropFirst(3).drop(while: { $0 == " " })
+            return "<li class=\"task\"><input type=\"checkbox\" disabled>\(inline(rest))</li>"
+        }
+        if lower.hasPrefix("[x]") {
+            let rest = s.dropFirst(3).drop(while: { $0 == " " })
+            return "<li class=\"task\"><input type=\"checkbox\" checked disabled>\(inline(rest))</li>"
+        }
+        return "<li>\(inline(raw))</li>"
     }
 
     private static func renderWikiLinks(_ text: String) -> String {

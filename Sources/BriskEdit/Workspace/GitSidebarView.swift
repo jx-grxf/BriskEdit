@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Which pane the workspace sidebar shows.
@@ -28,6 +29,7 @@ struct GitSidebarView: View {
 
     @State private var status: GitStatus?
     @State private var branches: [String] = []
+    @State private var commits: [GitCommit] = []
     @State private var commitMessage = ""
     @State private var isWorking = false
     @State private var feedback: GitFeedback?
@@ -43,6 +45,22 @@ struct GitSidebarView: View {
             content
         }
         .task(id: workspace.reloadToken) { await reload() }
+        // The sidebar panes are kept mounted in a ZStack, so `.task` doesn't
+        // re-run when the user switches *to* Source Control — reload explicitly so
+        // a change made before opening the pane is already there, not only after a
+        // manual refresh.
+        .onChange(of: workspace.sidebarTab) { _, tab in
+            if tab == .sourceControl { Task { await reload() } }
+        }
+        // Reflect changes made elsewhere: a git op from another component, or a
+        // save/commit in another app while we were away (window re-activates).
+        // Guarded to the visible pane so background windows don't scan needlessly.
+        .onReceive(NotificationCenter.default.publisher(for: .gitDidChange)) { _ in
+            if workspace.sidebarTab == .sourceControl { Task { await reload() } }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+            if workspace.sidebarTab == .sourceControl { Task { await reload() } }
+        }
         .alert("New Branch", isPresented: $showNewBranch) {
             TextField("Branch name", text: $newBranchName)
             Button("Create") {
@@ -144,39 +162,115 @@ struct GitSidebarView: View {
 
     @ViewBuilder
     private var content: some View {
-        if let status, !status.isClean {
-            List {
-                if !status.staged.isEmpty {
-                    Section("Staged Changes") {
-                        ForEach(status.staged) { change in
-                            row(change, action: "minus.circle", help: "Unstage") {
-                                perform { await GitService.unstage(change.path, root: root) }
-                            }
-                        }
-                    }
-                }
-                Section(status.staged.isEmpty ? "Changes" : "Unstaged Changes") {
-                    ForEach(status.unstaged) { change in
-                        row(change, action: "plus.circle", help: "Stage") {
-                            perform { await GitService.stage(change.path, root: root) }
-                        }
-                    }
-                }
-            }
-            .listStyle(.sidebar)
-            commitBox(canCommit: !status.staged.isEmpty)
-        } else {
+        if status == nil {
             ContentUnavailableView {
-                Label(status == nil ? "Not a Git Repository" : "No Changes", systemImage: "checkmark.seal")
+                Label("Not a Git Repository", systemImage: "checkmark.seal")
             } description: {
-                Text(status == nil ? "This folder isn't tracked by git." : "Your working tree is clean.")
+                Text("This folder isn't tracked by git.")
             }
             // Fill the column so the header stays pinned to the top. Without an
             // explicit greedy frame the empty-state view only claims its
             // intrinsic height, the whole sidebar VStack collapses, and the
             // split view centers it — leaving a large gap above the header.
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+        } else if let status {
+            VStack(spacing: 0) {
+                List {
+                    if status.isClean {
+                        Section {
+                            Label("Working tree clean", systemImage: "checkmark.seal")
+                                .foregroundStyle(.secondary)
+                                .font(.callout)
+                        }
+                    }
+                    if !status.staged.isEmpty {
+                        Section("Staged Changes") {
+                            ForEach(status.staged) { change in
+                                row(change, action: "minus.circle", help: "Unstage") {
+                                    perform { await GitService.unstage(change.path, root: root) }
+                                }
+                            }
+                        }
+                    }
+                    if !status.unstaged.isEmpty {
+                        Section(status.staged.isEmpty ? "Changes" : "Unstaged Changes") {
+                            ForEach(status.unstaged) { change in
+                                row(change, action: "plus.circle", help: "Stage") {
+                                    perform { await GitService.stage(change.path, root: root) }
+                                }
+                            }
+                        }
+                    }
+                    if !commits.isEmpty {
+                        Section(commitsSectionTitle) {
+                            ForEach(commits) { commit in commitRow(commit) }
+                        }
+                    }
+                }
+                .listStyle(.sidebar)
+                if !status.isClean {
+                    commitBox(canCommit: !status.staged.isEmpty)
+                }
+            }
         }
+    }
+
+    private var commitsSectionTitle: String {
+        let unpushed = commits.filter(\.isUnpushed).count
+        return unpushed > 0 ? "Commits · \(unpushed) unpushed" : "Commits"
+    }
+
+    /// A commit in the history list: a graph lane (accent dot = not yet pushed),
+    /// the subject, short hash, relative time and author.
+    private func commitRow(_ commit: GitCommit) -> some View {
+        HStack(alignment: .top, spacing: 9) {
+            // Single-lane graph: a full-height hairline so consecutive rows read
+            // as one timeline, with a dot marking this commit.
+            ZStack {
+                Rectangle()
+                    .fill(Color.secondary.opacity(0.25))
+                    .frame(width: 1.5)
+                Circle()
+                    .fill(commit.isUnpushed ? Color.accentColor : Color.secondary)
+                    .frame(width: 9, height: 9)
+                    .overlay(Circle().stroke(Color(nsColor: .controlBackgroundColor), lineWidth: 2))
+            }
+            .frame(width: 14)
+            .frame(maxHeight: .infinity)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(commit.subject)
+                    .font(.callout)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                HStack(spacing: 6) {
+                    Text(commit.shortHash)
+                        .font(.caption2.monospaced())
+                        .foregroundStyle(commit.isUnpushed ? AnyShapeStyle(.tint) : AnyShapeStyle(.secondary))
+                    Text("·").foregroundStyle(.tertiary)
+                    Text(commit.relativeDate).foregroundStyle(.secondary)
+                    Text("·").foregroundStyle(.tertiary)
+                    Text(commit.author).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                }
+                .font(.caption2)
+            }
+            Spacer(minLength: 0)
+            if commit.isUnpushed {
+                Image(systemName: "arrow.up.circle")
+                    .font(.caption)
+                    .foregroundStyle(.tint)
+                    .help("Not pushed yet")
+            }
+        }
+        .padding(.vertical, 2)
+        .contextMenu {
+            Button("Copy Commit SHA") { copy(commit.hash) }
+            Button("Copy Message") { copy(commit.subject) }
+        }
+    }
+
+    private func copy(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
     }
 
     private func row(_ change: GitFileChange, action: String, help: String, perform action2: @escaping () -> Void) -> some View {
@@ -264,8 +358,10 @@ struct GitSidebarView: View {
     private func reload() async {
         async let status = GitService.status(root: root)
         async let branches = GitService.branches(root: root)
+        async let commits = GitService.recentCommits(root: root)
         self.status = await status
         self.branches = await branches
+        self.commits = await commits
     }
 
     /// Boolean git op (stage/commit/…), then refresh + broadcast.
