@@ -25,6 +25,9 @@ struct ToolHealthItem: Identifiable, Sendable, Hashable {
 }
 
 enum ToolHealthService {
+    private static let javaProbeCommand = "if /usr/libexec/java_home >/dev/null 2>&1; then printf '%s/bin/java\\n' \"$(/usr/libexec/java_home)\"; elif command -v java >/dev/null 2>&1 && java -version >/dev/null 2>&1; then command -v java; elif command -v brew >/dev/null 2>&1 && __brisk_jhome=$(brew --prefix openjdk 2>/dev/null) && [ -x \"$__brisk_jhome/bin/java\" ]; then printf '%s/bin/java\\n' \"$__brisk_jhome\"; else false; fi"
+    private static let javacProbeCommand = "if /usr/libexec/java_home >/dev/null 2>&1; then printf '%s/bin/javac\\n' \"$(/usr/libexec/java_home)\"; elif command -v javac >/dev/null 2>&1 && javac -version >/dev/null 2>&1; then command -v javac; elif command -v brew >/dev/null 2>&1 && __brisk_jhome=$(brew --prefix openjdk 2>/dev/null) && [ -x \"$__brisk_jhome/bin/javac\" ]; then printf '%s/bin/javac\\n' \"$__brisk_jhome\"; else false; fi"
+
     static let descriptors: [ToolDescriptor] = [
         ToolDescriptor(id: "run.clang", name: "clang", category: .runner, probeCommand: "xcrun --find clang", usedFor: "C single-file builds", installHint: "Install Xcode Command Line Tools.", installCommand: "xcode-select --install"),
         ToolDescriptor(id: "run.clang++", name: "clang++", category: .runner, probeCommand: "xcrun --find clang++", usedFor: "C++ single-file builds", installHint: "Install Xcode Command Line Tools.", installCommand: "xcode-select --install"),
@@ -32,6 +35,8 @@ enum ToolHealthService {
         ToolDescriptor(id: "run.g++", name: "g++", category: .runner, probeCommand: "command -v g++", usedFor: "C++ single-file builds", installHint: "Install GCC.", installCommand: "brew install gcc"),
         ToolDescriptor(id: "run.swift", name: "swift", category: .runner, probeCommand: "xcrun --find swift", usedFor: "Swift scripts and SwiftPM projects", installHint: "Install Xcode or Swift toolchain.", installCommand: "xcode-select --install"),
         ToolDescriptor(id: "run.python3", name: "python3", category: .runner, probeCommand: "command -v python3", usedFor: "Python files", installHint: "Install Python 3.", installCommand: "brew install python"),
+        ToolDescriptor(id: "run.javac", name: "javac", category: .runner, probeCommand: javacProbeCommand, usedFor: "Java single-file builds", installHint: "Install a JDK.", installCommand: "brew install openjdk"),
+        ToolDescriptor(id: "run.java", name: "java", category: .runner, probeCommand: javaProbeCommand, usedFor: "Java single-file execution", installHint: "Install a JDK.", installCommand: "brew install openjdk"),
         ToolDescriptor(id: "run.node", name: "node", category: .runner, probeCommand: "command -v node", usedFor: "JavaScript files", installHint: "Install Node.js.", installCommand: "brew install node"),
         ToolDescriptor(id: "run.deno", name: "deno", category: .runner, probeCommand: "command -v deno", usedFor: "TypeScript fallback runner", installHint: "Install Deno.", installCommand: "brew install deno"),
         ToolDescriptor(id: "run.tsx", name: "tsx", category: .runner, probeCommand: "command -v tsx", usedFor: "TypeScript fallback runner", installHint: "Install tsx with npm.", installCommand: "npm install -g tsx"),
@@ -43,6 +48,7 @@ enum ToolHealthService {
         ToolDescriptor(id: "lsp.sourcekit", name: "sourcekit-lsp", category: .languageServer, probeCommand: "xcrun --find sourcekit-lsp", usedFor: "Swift completions and diagnostics", installHint: "Install Xcode or Swift toolchain.", installCommand: "xcode-select --install"),
         ToolDescriptor(id: "lsp.gopls", name: "gopls", category: .languageServer, probeCommand: "command -v gopls", usedFor: "Go completions and diagnostics", installHint: "Install gopls.", installCommand: "go install golang.org/x/tools/gopls@latest"),
         ToolDescriptor(id: "lsp.pyright", name: "pyright-langserver", category: .languageServer, probeCommand: "command -v pyright-langserver", usedFor: "Python completions and diagnostics", installHint: "Install pyright.", installCommand: "npm install -g pyright"),
+        ToolDescriptor(id: "lsp.jdtls", name: "jdtls", category: .languageServer, probeCommand: "command -v jdtls", usedFor: "Java completions and diagnostics", installHint: "Install Eclipse JDT Language Server.", installCommand: "brew install jdtls"),
         ToolDescriptor(id: "lsp.rust-analyzer", name: "rust-analyzer", category: .languageServer, probeCommand: "command -v rust-analyzer", usedFor: "Rust completions and diagnostics", installHint: "Install rust-analyzer.", installCommand: "brew install rust-analyzer"),
         ToolDescriptor(id: "lsp.typescript", name: "typescript-language-server", category: .languageServer, probeCommand: "command -v typescript-language-server", usedFor: "JS/TS completions and diagnostics", installHint: "Install typescript-language-server.", installCommand: "npm install -g typescript typescript-language-server"),
 
@@ -93,6 +99,8 @@ enum ToolHealthService {
             return [group(["run.swift"])]
         case .python:
             return [group(["run.python3"])]
+        case .java:
+            return [group(["run.javac"]), group(["run.java"])]
         case .javascript:
             return [group(["run.node"])]
         case .typescript:

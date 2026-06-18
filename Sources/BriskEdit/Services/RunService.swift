@@ -16,6 +16,16 @@ enum RunService {
             throw RunError.needsSavedProjectFile(document.displayName)
         }
 
+        if document.language == .java {
+            let javaSource = try await materializedJavaSource(for: document)
+            let sourceFile = shellQuote(javaSource.sourceURL.path)
+            let classes = shellQuote(javaSource.classOutputURL.path)
+            let cleanupDirectory = shellQuote(javaSource.cleanupDirectory.path)
+            let mainClass = shellQuote(javaSource.mainClass)
+            let line = "(__brisk_javac=''; __brisk_java=''; if /usr/libexec/java_home >/dev/null 2>&1; then __brisk_jhome=$(/usr/libexec/java_home); __brisk_javac=\"$__brisk_jhome/bin/javac\"; __brisk_java=\"$__brisk_jhome/bin/java\"; elif command -v javac >/dev/null 2>&1 && command -v java >/dev/null 2>&1 && javac -version >/dev/null 2>&1 && java -version >/dev/null 2>&1; then __brisk_javac='javac'; __brisk_java='java'; elif command -v brew >/dev/null 2>&1 && __brisk_jhome=$(brew --prefix openjdk 2>/dev/null) && [ -x \"$__brisk_jhome/bin/javac\" ] && [ -x \"$__brisk_jhome/bin/java\" ]; then __brisk_javac=\"$__brisk_jhome/bin/javac\"; __brisk_java=\"$__brisk_jhome/bin/java\"; fi; if [ -z \"$__brisk_javac\" ]; then echo 'BriskEdit: install a JDK to run Java files.'; false; else \"$__brisk_javac\" -d \(classes) \(sourceFile) && \"$__brisk_java\" -cp \(classes) \(mainClass); fi); __brisk_status=$?; rm -rf \(cleanupDirectory); printf '\\n[exit %s]\\n' \"$__brisk_status\""
+            return RunCommand(title: "Run \(document.displayName)", shellLine: line, cwd: runDirectory(for: javaSource.sourceURL, workspaceRoot: workspaceRoot))
+        }
+
         let source = try await materializedSource(for: document)
         let sourceURL = source.url
         let cwd = runDirectory(for: sourceURL, workspaceRoot: workspaceRoot)
@@ -92,6 +102,13 @@ enum RunService {
         let cleanupAfterRun: Bool
     }
 
+    private struct MaterializedJavaSource {
+        let sourceURL: URL
+        let classOutputURL: URL
+        let cleanupDirectory: URL
+        let mainClass: String
+    }
+
     @MainActor
     private static func materializedSource(for document: TextDocument) async throws -> MaterializedSource {
         if !document.isDirty, let url = document.fileURL {
@@ -106,6 +123,24 @@ enum RunService {
             try text.write(to: url, atomically: true, encoding: .utf8)
         }.value
         return MaterializedSource(url: url, cleanupAfterRun: true)
+    }
+
+    @MainActor
+    private static func materializedJavaSource(for document: TextDocument) async throws -> MaterializedJavaSource {
+        let text = document.text
+        let fallbackName = document.fileURL?.deletingPathExtension().lastPathComponent ?? "Main"
+        let typeName = javaPrimaryTypeName(in: text) ?? javaSafeTypeName(fallbackName)
+        let packageName = javaPackageName(in: text)
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("briskedit-java-\(UUID().uuidString)", isDirectory: true)
+        let sourceURL = root.appendingPathComponent("\(typeName).java")
+        let classOutputURL = root.appendingPathComponent("classes", isDirectory: true)
+        try FileManager.default.createDirectory(at: classOutputURL, withIntermediateDirectories: true)
+        try await Task.detached(priority: .userInitiated) {
+            try text.write(to: sourceURL, atomically: true, encoding: .utf8)
+        }.value
+        let mainClass = packageName.map { "\($0).\(typeName)" } ?? typeName
+        return MaterializedJavaSource(sourceURL: sourceURL, classOutputURL: classOutputURL, cleanupDirectory: root, mainClass: mainClass)
     }
 
     @MainActor
@@ -144,6 +179,29 @@ enum RunService {
 
     private static func tempBinaryPath() -> String {
         "/tmp/briskedit-\(UUID().uuidString)"
+    }
+
+    private static func javaPrimaryTypeName(in text: String) -> String? {
+        javaFirstMatch(in: text, pattern: #"(?m)^\s*public\s+(?:final\s+|abstract\s+|sealed\s+|non-sealed\s+)*(?:class|interface|enum|record)\s+([A-Za-z_$][A-Za-z0-9_$]*)"#)
+            ?? javaFirstMatch(in: text, pattern: #"(?m)^\s*(?:final\s+|abstract\s+|sealed\s+|non-sealed\s+)*(?:class|interface|enum|record)\s+([A-Za-z_$][A-Za-z0-9_$]*)"#)
+    }
+
+    private static func javaPackageName(in text: String) -> String? {
+        javaFirstMatch(in: text, pattern: #"(?m)^\s*package\s+([A-Za-z_$][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)\s*;"#)
+    }
+
+    private static func javaFirstMatch(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = text as NSString
+        let range = NSRange(location: 0, length: ns.length)
+        guard let match = regex.firstMatch(in: text, range: range), match.numberOfRanges > 1 else { return nil }
+        return ns.substring(with: match.range(at: 1))
+    }
+
+    private static func javaSafeTypeName(_ value: String) -> String {
+        let allowed = value.filter { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "$" }
+        guard let first = allowed.first, first.isLetter || first == "_" || first == "$" else { return "Main" }
+        return allowed.isEmpty ? "Main" : allowed
     }
 
     static func shellQuote(_ value: String) -> String {

@@ -401,7 +401,7 @@ enum SourceLanguage: String, Sendable, CaseIterable, Identifiable {
 
     var isRunnable: Bool {
         switch self {
-        case .c, .cpp, .go, .javascript, .lua, .perl, .php, .python, .ruby, .rust, .shell, .swift, .typescript:
+        case .c, .cpp, .go, .java, .javascript, .lua, .perl, .php, .python, .ruby, .rust, .shell, .swift, .typescript:
             true
         default:
             false

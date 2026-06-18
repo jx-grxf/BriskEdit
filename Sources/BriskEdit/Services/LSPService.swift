@@ -119,7 +119,7 @@ struct LSPToolStatus: Sendable, Equatable {
 /// Minimal multi-server LSP client. Speaks JSON-RPC over a server's stdio to
 /// provide semantic completion and live diagnostics, using the language servers
 /// the developer already has installed (clangd via Xcode, sourcekit-lsp, gopls,
-/// pyright, rust-analyzer, typescript-language-server). Everything is best
+/// pyright, jdtls, rust-analyzer, typescript-language-server). Everything is best
 /// effort: a missing or misbehaving server just yields no results and the editor
 /// falls back to keyword/buffer completion.
 actor LSPService {
@@ -163,6 +163,9 @@ actor LSPService {
         case .python:
             let (exe, args) = shell("pyright-langserver --stdio")
             return ServerConfig(id: "pyright", executable: exe, arguments: args, probe: "pyright-langserver", languageId: "python")
+        case .java:
+            let (exe, args) = shell("jdtls")
+            return ServerConfig(id: "jdtls", executable: exe, arguments: args, probe: "jdtls", languageId: "java")
         case .rust:
             let (exe, args) = shell("rust-analyzer")
             return ServerConfig(id: "rust-analyzer", executable: exe, arguments: args, probe: "rust-analyzer", languageId: "rust")
