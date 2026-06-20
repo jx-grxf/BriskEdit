@@ -1,10 +1,11 @@
 # Release Notes
 
-## 0.5.1 - Source control history, Java, and a sharper Markdown preview
+## 0.5.1 - Source control history, Java, Markdown, and stability fixes
 
 BriskEdit 0.5.1 builds on 0.5.0 with a richer Source Control pane, Java support,
-and a much nicer Markdown preview. It remains an unsigned developer preview; on
-first launch, right-click `BriskEdit.app`, choose **Open**, and confirm.
+a much nicer Markdown preview, and an important editor undo crash fix. It
+remains an unsigned developer preview; on first launch, right-click
+`BriskEdit.app`, choose **Open**, and confirm.
 
 ### Added
 
@@ -26,8 +27,8 @@ first launch, right-click `BriskEdit.app`, choose **Open**, and confirm.
 ### Fixed
 
 - **No more crash after a folder drop.** Dropping a folder to swap the workspace
-  root no longer leaves a stale undo registration that could crash on the next
-  ⌘Z.
+  root no longer leaves stale editor undo registrations that could crash on the
+  next ⌘Z.
 
 ### Compatibility
 

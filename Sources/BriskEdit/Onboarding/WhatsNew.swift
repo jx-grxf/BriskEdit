@@ -59,5 +59,8 @@ enum WhatsNew {
         Section(name: "Markdown", highlights: [
             Highlight(symbol: "doc.richtext", title: "Sharper Markdown preview", detail: "Ordered and task lists, horizontal rules, more heading levels, italics and strikethrough, with a cleaner GitHub-style look in light and dark.", tint: .purple),
         ]),
+        Section(name: "Stability", highlights: [
+            Highlight(symbol: "checkmark.shield", title: "Folder drops undo safely", detail: "Dropping a folder to swap the workspace root no longer leaves stale editor undo state behind.", tint: .teal),
+        ]),
     ]
 }
