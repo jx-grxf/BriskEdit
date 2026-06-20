@@ -22,6 +22,9 @@ final class ToolHealthServiceTests: XCTestCase {
         XCTAssertTrue(names.contains("clang"))
         XCTAssertTrue(names.contains("gcc"))
         XCTAssertTrue(names.contains("swift"))
+        XCTAssertTrue(names.contains("java"))
+        XCTAssertTrue(names.contains("javac"))
+        XCTAssertTrue(names.contains("jdtls"))
         XCTAssertTrue(names.contains("sourcekit-lsp"))
         XCTAssertTrue(names.contains("clangd"))
     }

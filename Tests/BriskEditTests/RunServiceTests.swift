@@ -76,6 +76,30 @@ final class RunServiceTests: XCTestCase {
         XCTAssertTrue(command.shellLine.contains(".briskedit-run-"))
     }
 
+    func testResolveJavaCompilesPublicClassNameFromTemporarySource() async throws {
+        let root = try makeTemporaryDirectory()
+        let source = root.appendingPathComponent("test.java")
+        let text = """
+        public class Main {
+            public static void main(String[] args) {
+                System.out.println("Hello World");
+            }
+        }
+        """
+        try text.write(to: source, atomically: true, encoding: .utf8)
+
+        let document = TextDocument(fileURL: source, text: text, encoding: .utf8)
+        let command = try await RunService.resolve(document: document, workspaceRoot: root)
+
+        XCTAssertEqual(command.title, "Run test.java")
+        XCTAssertEqual(command.cwd, root)
+        XCTAssertTrue(command.shellLine.contains("\"$__brisk_javac\" -d"))
+        XCTAssertTrue(command.shellLine.contains("brew --prefix openjdk"))
+        XCTAssertTrue(command.shellLine.contains("Main.java"))
+        XCTAssertTrue(command.shellLine.contains("\"$__brisk_java\" -cp"))
+        XCTAssertTrue(command.shellLine.contains("'Main'"))
+    }
+
     private func makeTemporaryDirectory() throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("briskedit-tests-\(UUID().uuidString)", isDirectory: true)
