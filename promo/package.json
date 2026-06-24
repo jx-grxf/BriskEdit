@@ -6,20 +6,20 @@
   "license": "UNLICENSED",
   "private": true,
   "dependencies": {
-    "@remotion/cli": "4.0.479",
-    "@remotion/google-fonts": "4.0.479",
-    "@remotion/tailwind-v4": "4.0.479",
-    "react": "19.2.3",
-    "react-dom": "19.2.3",
-    "remotion": "4.0.479",
-    "tailwindcss": "4.0.0"
+    "@remotion/cli": "4.0.482",
+    "@remotion/google-fonts": "4.0.482",
+    "@remotion/tailwind-v4": "4.0.482",
+    "react": "19.2.7",
+    "react-dom": "19.2.7",
+    "remotion": "4.0.482",
+    "tailwindcss": "4.3.1"
   },
   "devDependencies": {
-    "@remotion/eslint-config-flat": "4.0.479",
-    "@types/react": "19.2.7",
-    "@types/web": "0.0.166",
+    "@remotion/eslint-config-flat": "4.0.482",
+    "@types/react": "19.2.17",
+    "@types/web": "0.0.350",
     "eslint": "9.39.4",
-    "prettier": "3.8.1",
+    "prettier": "3.8.4",
     "typescript": "6.0.3"
   },
   "scripts": {
