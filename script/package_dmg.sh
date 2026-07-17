@@ -76,6 +76,9 @@ if [[ -n "${BRISKEDIT_SIGN_IDENTITY:-}" ]]; then
     # Notarization rejects signatures without a secure timestamp; plain
     # `xcodebuild build` does not add one on its own.
     "OTHER_CODE_SIGN_FLAGS=--timestamp"
+    # Plain `xcodebuild build` injects the get-task-allow debug entitlement,
+    # which notarization rejects.
+    "CODE_SIGN_INJECT_BASE_ENTITLEMENTS=NO"
   )
 fi
 if [[ "${BRISKEDIT_WARNINGS_AS_ERRORS:-}" == "true" ]]; then
@@ -102,6 +105,31 @@ fi
 mkdir -p dist
 rm -rf dist/BriskEdit.app
 cp -R "$APP_SRC" dist/BriskEdit.app
+
+if [[ -n "${BRISKEDIT_SIGN_IDENTITY:-}" ]]; then
+  # xcodebuild re-signs only the Sparkle framework bundle itself; the nested
+  # updater helpers keep Sparkle's upstream signature, which notarization
+  # rejects ("not signed with a valid Developer ID certificate"). Re-sign
+  # them inside-out, then re-seal the framework and the app bundle.
+  SPARKLE="dist/BriskEdit.app/Contents/Frameworks/Sparkle.framework"
+  if [[ -d "$SPARKLE" ]]; then
+    for nested in \
+      "$SPARKLE/Versions/B/XPCServices/Downloader.xpc" \
+      "$SPARKLE/Versions/B/XPCServices/Installer.xpc" \
+      "$SPARKLE/Versions/B/Autoupdate" \
+      "$SPARKLE/Versions/B/Updater.app"; do
+      [[ -e "$nested" ]] || continue
+      codesign --force --options runtime --timestamp \
+        --preserve-metadata=entitlements \
+        --sign "$BRISKEDIT_SIGN_IDENTITY" "$nested"
+    done
+    codesign --force --options runtime --timestamp \
+      --sign "$BRISKEDIT_SIGN_IDENTITY" "$SPARKLE"
+  fi
+  codesign --force --options runtime --timestamp \
+    --preserve-metadata=entitlements \
+    --sign "$BRISKEDIT_SIGN_IDENTITY" dist/BriskEdit.app
+fi
 
 codesign --verify --deep --strict dist/BriskEdit.app
 
