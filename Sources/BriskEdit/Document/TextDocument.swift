@@ -8,7 +8,7 @@ final class TextDocument {
     nonisolated static let maximumEditableFileBytes: Int64 = 128 * 1024 * 1024
     private(set) var fileURL: URL?
     private(set) var encoding: String.Encoding
-    var text: String
+    private(set) var text: String
     private(set) var byteCount: Int
     var isDirty: Bool = false
     var cursorLine: Int = 1
@@ -30,6 +30,10 @@ final class TextDocument {
     private var lineStartOffsets: [Int] = [0]
     private var lineIndexWork: DispatchWorkItem?
     private var autosaveWork: DispatchWorkItem?
+    /// Tail of the write chain. Each new write awaits the previous one so two
+    /// in-flight writes (autosave racing a manual ⌘S) can never reorder and
+    /// leave older content on disk.
+    private var lastWriteTask: Task<Void, Error>?
 
     var displayName: String {
         fileURL?.lastPathComponent ?? "Untitled"
@@ -89,8 +93,8 @@ final class TextDocument {
     static func load(from url: URL) async throws -> TextDocument {
         let loaded = try await Task.detached(priority: .userInitiated) { () -> (String, String.Encoding, Int) in
             let values = try url.resourceValues(forKeys: [.fileSizeKey])
-            if let size = values.fileSize, Int64(size) > maximumEditableFileBytes {
-                throw TextDocumentError.fileTooLarge(maximumBytes: maximumEditableFileBytes)
+            if let size = values.fileSize, Int64(size) > Self.maximumEditableFileBytes {
+                throw TextDocumentError.fileTooLarge(maximumBytes: Self.maximumEditableFileBytes)
             }
             var used: String.Encoding = .utf8
             let str = try String(contentsOf: url, usedEncoding: &used)
@@ -171,6 +175,10 @@ final class TextDocument {
     func reloadFromDisk() async {
         guard let url = fileURL else { return }
         let loaded = try? await Task.detached(priority: .userInitiated) { () -> (String, String.Encoding) in
+            let values = try url.resourceValues(forKeys: [.fileSizeKey])
+            if let size = values.fileSize, Int64(size) > Self.maximumEditableFileBytes {
+                throw TextDocumentError.fileTooLarge(maximumBytes: Self.maximumEditableFileBytes)
+            }
             var used: String.Encoding = .utf8
             let str = try String(contentsOf: url, usedEncoding: &used)
             return (str, used)
@@ -246,9 +254,15 @@ final class TextDocument {
     private func write(to url: URL, encoding: String.Encoding) async throws -> Int {
         let snapshot = text
         let snapshotRevision = revision
-        try await Task.detached(priority: .userInitiated) { [snapshot, encoding] in
+        let previous = lastWriteTask
+        let task = Task.detached(priority: .userInitiated) { [snapshot, encoding] in
+            // A failed earlier write doesn't block this one — every write
+            // carries a complete snapshot; only the ordering matters.
+            _ = try? await previous?.value
             try snapshot.write(to: url, atomically: true, encoding: encoding)
-        }.value
+        }
+        lastWriteTask = task
+        try await task.value
         return snapshotRevision
     }
 

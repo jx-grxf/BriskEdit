@@ -105,8 +105,8 @@ enum SearchService {
             return SearchResponse(results: [], errorMessage: "Could not start ripgrep: \(error.localizedDescription)", reachedMatchLimit: false)
         }
         let timeout = DispatchWorkItem { [weak process] in
-            guard let process, process.isRunning else { return }
-            process.terminate()
+            guard let process else { return }
+            terminateWithEscalation(process)
         }
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 30, execute: timeout)
 
@@ -122,7 +122,7 @@ enum SearchService {
             pending.append(chunk)
             if pending.count > 8 * 1024 * 1024 {
                 reachedResourceLimit = true
-                process.terminate()
+                terminateWithEscalation(process)
                 break
             }
             while let newline = pending.firstIndex(of: 0x0a) {
@@ -131,7 +131,7 @@ enum SearchService {
                 guard let line = String(data: lineData, encoding: .utf8) else { continue }
                 parseRipgrepLine(Substring(line), byFile: &byFile, order: &order, total: &total, matchLimit: matchLimit, reachedLimit: &reachedLimit)
                 if reachedLimit {
-                    process.terminate()
+                    terminateWithEscalation(process)
                     break
                 }
             }
@@ -157,6 +157,19 @@ enum SearchService {
             errorMessage: errorMessage,
             reachedMatchLimit: reachedLimit
         )
+    }
+
+    /// SIGTERM now, SIGKILL after a 1 s grace period — the same escalation
+    /// BoundedProcessRunner uses. Without it a ripgrep stuck in uninterruptible
+    /// I/O (stale network mount) ignores SIGTERM and `waitUntilExit()` hangs
+    /// the search task forever.
+    private static func terminateWithEscalation(_ process: Process) {
+        guard process.isRunning else { return }
+        process.terminate()
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) { [weak process] in
+            guard let process, process.isRunning else { return }
+            kill(process.processIdentifier, SIGKILL)
+        }
     }
 
     private static func parseRipgrepLine(

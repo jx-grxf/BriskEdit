@@ -505,6 +505,9 @@ private actor Server {
 
     private var nextId = 1
     private var pending: [Int: CheckedContinuation<Data?, Never>] = [:]
+    /// Per-request timeout tasks, cancelled as soon as the response arrives so
+    /// heavy completion/hover traffic doesn't accumulate sleeping tasks.
+    private var timeoutTasks: [Int: Task<Void, Never>] = [:]
     private var openVersions: [String: Int] = [:]
     private var lastText: [String: String] = [:]
     private var inbox = Data()
@@ -635,8 +638,7 @@ private actor Server {
         outHandle = nil
         initialized = false
         // Fail any in-flight requests so their continuations don't leak.
-        for (_, continuation) in pending { continuation.resume(returning: nil) }
-        pending.removeAll()
+        failAllPending()
     }
 
     // MARK: - JSON-RPC
@@ -648,12 +650,12 @@ private actor Server {
         return await withCheckedContinuation { (continuation: CheckedContinuation<Data?, Never>) in
             pending[id] = continuation
             guard send(message: message) else {
-                if let continuation = pending.removeValue(forKey: id) {
+                if let continuation = takePending(id: id) {
                     continuation.resume(returning: nil)
                 }
                 return
             }
-            Task {
+            timeoutTasks[id] = Task {
                 try? await Task.sleep(for: .seconds(5))
                 self.timeout(id: id)
             }
@@ -661,7 +663,24 @@ private actor Server {
     }
 
     private func timeout(id: Int) {
-        if let continuation = pending.removeValue(forKey: id) {
+        if let continuation = takePending(id: id) {
+            continuation.resume(returning: nil)
+        }
+    }
+
+    /// Removes a pending request and cancels its timeout task in one step.
+    private func takePending(id: Int) -> CheckedContinuation<Data?, Never>? {
+        timeoutTasks.removeValue(forKey: id)?.cancel()
+        return pending.removeValue(forKey: id)
+    }
+
+    /// Fails every in-flight request and drops all timeout tasks.
+    private func failAllPending() {
+        for task in timeoutTasks.values { task.cancel() }
+        timeoutTasks.removeAll()
+        let continuations = Array(pending.values)
+        pending.removeAll()
+        for continuation in continuations {
             continuation.resume(returning: nil)
         }
     }
@@ -695,8 +714,7 @@ private actor Server {
         initialized = false
         if let stdin { try? stdin.close() }
         self.stdin = nil
-        for (_, continuation) in pending { continuation.resume(returning: nil) }
-        pending.removeAll()
+        failAllPending()
     }
 
     private func ingest(_ data: Data) {
@@ -707,7 +725,7 @@ private actor Server {
         inbox.append(data)
         while let body = extractMessage() {
             guard let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { continue }
-            if let id = json["id"] as? Int, let continuation = pending.removeValue(forKey: id) {
+            if let id = json["id"] as? Int, let continuation = takePending(id: id) {
                 continuation.resume(returning: body)
             } else if json["method"] as? String == "textDocument/publishDiagnostics" {
                 handlePublishDiagnostics(json["params"])
@@ -775,11 +793,7 @@ private actor Server {
         failed = true
         inbox.removeAll(keepingCapacity: false)
         process?.terminate()
-        let continuations = Array(pending.values)
-        pending.removeAll()
-        for continuation in continuations {
-            continuation.resume(returning: nil)
-        }
+        failAllPending()
     }
 
     private static func isAvailable(_ executable: String) -> Bool {

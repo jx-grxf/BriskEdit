@@ -68,17 +68,21 @@ enum TextKit2SyntaxHighlighter {
             textView.typingAttributes = baseAttributes(theme: theme)
             return
         }
-        let source = storage.string as NSString
+        // Bridge the storage's UTF-16 string to a Swift `String` exactly once and
+        // thread it through every pass. Each pass previously re-bridged the
+        // NSString back to a String for `enumerateMatches`, multiplying an O(n)
+        // conversion across ~9 passes on every (debounced) keystroke.
+        let text = storage.string
         let range = NSRange(location: 0, length: length)
         // Order matters: later passes win on overlapping ranges, so tokens that
         // must always survive (strings, comments) run last.
-        highlightFunctions(with: painter, source: source, range: range, language: language, color: theme.function)
-        highlightTypes(with: painter, source: source, range: range, language: language, color: theme.type)
-        highlightKeywords(with: painter, source: source, range: range, language: language, theme: theme)
-        highlightNumbers(with: painter, source: source, range: range, color: theme.number)
-        highlightPreprocessor(with: painter, source: source, range: range, language: language, color: theme.preprocessor)
-        highlightStrings(with: painter, source: source, range: range, color: theme.string)
-        highlightComments(with: painter, source: source, range: range, language: language, color: theme.comment)
+        highlightFunctions(with: painter, text: text, range: range, language: language, color: theme.function)
+        highlightTypes(with: painter, text: text, range: range, language: language, color: theme.type)
+        highlightKeywords(with: painter, text: text, range: range, language: language, theme: theme)
+        highlightNumbers(with: painter, text: text, range: range, color: theme.number)
+        highlightPreprocessor(with: painter, text: text, range: range, language: language, color: theme.preprocessor)
+        highlightStrings(with: painter, text: text, range: range, color: theme.string)
+        highlightComments(with: painter, text: text, range: range, language: language, color: theme.comment)
         textView.typingAttributes = baseAttributes(theme: theme)
     }
 
@@ -95,7 +99,7 @@ enum TextKit2SyntaxHighlighter {
         ]
     }
 
-    private static func highlightComments(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightComments(with painter: RenderingPainter, text: String, range: NSRange, language: SourceLanguage, color: NSColor) {
         let patterns: [String]
         switch language {
         case .markdown, .html, .xml:
@@ -111,42 +115,42 @@ enum TextKit2SyntaxHighlighter {
         default:
             patterns = ["//.*$", "/\\*(?s:.*?)\\*/"]
         }
-        apply(patterns: patterns, with: painter, source: source, range: range, options: [.anchorsMatchLines], attributes: [.foregroundColor: color])
+        apply(patterns: patterns, with: painter, text: text, range: range, options: [.anchorsMatchLines], attributes: [.foregroundColor: color])
     }
 
-    private static func highlightStrings(with painter: RenderingPainter, source: NSString, range: NSRange, color: NSColor) {
-        apply(patterns: ["\"(?:\\\\.|[^\"\\\\])*\"", "'(?:\\\\.|[^'\\\\])*'", "<[A-Za-z0-9_./]+\\.h>"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
+    private static func highlightStrings(with painter: RenderingPainter, text: String, range: NSRange, color: NSColor) {
+        apply(patterns: ["\"(?:\\\\.|[^\"\\\\])*\"", "'(?:\\\\.|[^'\\\\])*'", "<[A-Za-z0-9_./]+\\.h>"], with: painter, text: text, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightNumbers(with painter: RenderingPainter, source: NSString, range: NSRange, color: NSColor) {
-        apply(patterns: ["\\b0[xX][0-9a-fA-F]+\\b", "\\b\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?[fFuUlL]*\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
+    private static func highlightNumbers(with painter: RenderingPainter, text: String, range: NSRange, color: NSColor) {
+        apply(patterns: ["\\b0[xX][0-9a-fA-F]+\\b", "\\b\\d+(?:\\.\\d+)?(?:[eE][-+]?\\d+)?[fFuUlL]*\\b"], with: painter, text: text, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightPreprocessor(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightPreprocessor(with painter: RenderingPainter, text: String, range: NSRange, language: SourceLanguage, color: NSColor) {
         guard language == .c || language == .cpp else { return }
         // Color only the `#directive` token so the included path stays a string.
         applyCaptureGroup(
             pattern: "^(\\s*#\\s*(?:include|define|if|ifdef|ifndef|else|elif|endif|pragma|undef|error|warning))\\b",
             group: 1,
             with: painter,
-            source: source,
+            text: text,
             range: range,
             options: [.anchorsMatchLines],
             attributes: [.foregroundColor: color]
         )
     }
 
-    private static func highlightFunctions(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightFunctions(with painter: RenderingPainter, text: String, range: NSRange, language: SourceLanguage, color: NSColor) {
         switch language {
         case .markdown, .yaml, .json, .html, .xml, .css, .plainText:
             return
         default:
             break
         }
-        applyCaptureGroup(pattern: "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()", group: 1, with: painter, source: source, range: range, attributes: [.foregroundColor: color])
+        applyCaptureGroup(pattern: "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()", group: 1, with: painter, text: text, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightTypes(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, color: NSColor) {
+    private static func highlightTypes(with painter: RenderingPainter, text: String, range: NSRange, language: SourceLanguage, color: NSColor) {
         switch language {
         case .markdown, .yaml, .json, .html, .xml, .css, .shell, .plainText:
             return
@@ -154,18 +158,18 @@ enum TextKit2SyntaxHighlighter {
             break
         }
         // CamelCase identifiers (types/classes) and C `_t` suffixed types.
-        apply(patterns: ["\\b[A-Z][A-Za-z0-9_]*\\b", "\\b[a-z_][A-Za-z0-9_]*_t\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: color])
+        apply(patterns: ["\\b[A-Z][A-Za-z0-9_]*\\b", "\\b[a-z_][A-Za-z0-9_]*_t\\b"], with: painter, text: text, range: range, attributes: [.foregroundColor: color])
     }
 
-    private static func highlightKeywords(with painter: RenderingPainter, source: NSString, range: NSRange, language: SourceLanguage, theme: EditorTheme) {
+    private static func highlightKeywords(with painter: RenderingPainter, text: String, range: NSRange, language: SourceLanguage, theme: EditorTheme) {
         let (keywords, control) = keywordSets(for: language)
         if !keywords.isEmpty {
             let escaped = keywords.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
-            apply(patterns: ["\\b(\(escaped))\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: theme.keyword])
+            apply(patterns: ["\\b(\(escaped))\\b"], with: painter, text: text, range: range, attributes: [.foregroundColor: theme.keyword])
         }
         if !control.isEmpty {
             let escaped = control.map(NSRegularExpression.escapedPattern(for:)).joined(separator: "|")
-            apply(patterns: ["\\b(\(escaped))\\b"], with: painter, source: source, range: range, attributes: [.foregroundColor: theme.controlKeyword])
+            apply(patterns: ["\\b(\(escaped))\\b"], with: painter, text: text, range: range, attributes: [.foregroundColor: theme.controlKeyword])
         }
     }
 
@@ -224,8 +228,7 @@ enum TextKit2SyntaxHighlighter {
         return (keywords, control)
     }
 
-    private static func apply(patterns: [String], with painter: RenderingPainter, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
-        let text = source as String
+    private static func apply(patterns: [String], with painter: RenderingPainter, text: String, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
         for pattern in patterns {
             guard let regex = regex(pattern, options: options) else { continue }
             regex.enumerateMatches(in: text, options: [], range: range) { match, _, _ in
@@ -235,9 +238,9 @@ enum TextKit2SyntaxHighlighter {
         }
     }
 
-    private static func applyCaptureGroup(pattern: String, group: Int, with painter: RenderingPainter, source: NSString, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
+    private static func applyCaptureGroup(pattern: String, group: Int, with painter: RenderingPainter, text: String, range: NSRange, options: NSRegularExpression.Options = [], attributes: [NSAttributedString.Key: Any]) {
         guard let regex = regex(pattern, options: options) else { return }
-        regex.enumerateMatches(in: source as String, options: [], range: range) { match, _, _ in
+        regex.enumerateMatches(in: text, options: [], range: range) { match, _, _ in
             guard let match, group < match.numberOfRanges else { return }
             let captured = match.range(at: group)
             guard captured.location != NSNotFound else { return }
