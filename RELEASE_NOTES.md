@@ -1,34 +1,47 @@
 # Release Notes
 
-## 0.5.1 - Source control history, Java, Markdown, and stability fixes
+## 0.5.2 - Signed and notarized builds, smarter editing, stability fixes
 
-BriskEdit 0.5.1 builds on 0.5.0 with a richer Source Control pane, Java support,
-a much nicer Markdown preview, and an important editor undo crash fix. It
-remains an unsigned developer preview; on first launch, right-click
-`BriskEdit.app`, choose **Open**, and confirm.
+BriskEdit 0.5.2 is the first release that is signed with a Developer ID and
+notarized by Apple. The DMG now opens like any other Mac app — no more
+right-click-and-Open dance. Existing installs update seamlessly through the
+built-in updater; because the signing identity changed, macOS may ask once to
+re-confirm previously granted permissions.
 
 ### Added
 
-- **Commit history in Source Control.** The sidebar now lists recent commits with
-  a graph lane, marks the commits you haven't pushed yet, and lets you copy a
-  commit's SHA or message.
-- **Run and IntelliSense for Java.** Run Java files straight from the editor and
-  get completion, diagnostics and hovers when a Java language server is installed.
+- **Signed and notarized releases.** Every build is now signed with a Developer
+  ID certificate, hardened, and notarized by Apple, so Gatekeeper accepts it
+  out of the box.
+- **Surround selection with brackets or quotes.** Select text and type `(`,
+  `[`, `{`, `"` or `'` to wrap it instead of replacing it, with the selection
+  kept so you can keep typing.
 
 ### Improved
 
-- **Source Control keeps itself up to date.** Opening the pane, returning to the
-  window, or saving a file now refreshes the status and change list immediately —
-  no manual refresh needed.
-- **Richer Markdown preview.** Ordered lists, task-list checkboxes, horizontal
-  rules, more heading levels, italics and strikethrough, all with a cleaner,
-  GitHub-style look that adapts to light and dark.
+- **Smarter bracket and quote pairing.** Typing a closer that's already next to
+  the caret steps over it instead of doubling it, backspace inside an empty
+  pair removes both characters, and quotes no longer auto-close next to a word
+  (so `don't` stays `don't`).
+- **Closing many tabs respects Cancel.** "Close All" and "Close Other Tabs" now
+  prompt for each unsaved file in order and stop the moment you cancel, leaving
+  the remaining tabs open.
+- **Faster syntax highlighting.** Large files re-highlight with noticeably less
+  overhead while typing.
+- **Sharper file-tree filtering.** `bin` and `obj` folders are only hidden when
+  they are actually .NET build output — hand-written `bin/` folders in Go,
+  Rails, or Node projects stay visible.
 
 ### Fixed
 
-- **No more crash after a folder drop.** Dropping a folder to swap the workspace
-  root no longer leaves stale editor undo registrations that could crash on the
-  next ⌘Z.
+- **Rapid saves can no longer lose an edit.** A save landing while an autosave
+  was still writing could previously leave the older content on disk; writes
+  are now strictly ordered.
+- **Huge growing files no longer bog down the app.** A watched file that grows
+  past the editing size limit (for example a busy log) is no longer re-read
+  into memory on every change.
+- **Find in Files can't hang anymore.** A search tool stuck on an unresponsive
+  network folder is now force-quit instead of freezing the search forever.
 
 ### Compatibility
 
