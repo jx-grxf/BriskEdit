@@ -146,12 +146,23 @@ jobs:
           BRISKEDIT_SPARKLE_PRIVATE_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PRIVATE_KEY }}
           BRISKEDIT_SPARKLE_PUBLIC_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PUBLIC_KEY }}
           BRISKEDIT_SIGN_IDENTITY: ${{ secrets.BRISKEDIT_SIGN_IDENTITY }}
+          BRISKEDIT_SIGN_P12_BASE64: ${{ secrets.BRISKEDIT_SIGN_P12_BASE64 }}
+          BRISKEDIT_SIGN_P12_PASSWORD: ${{ secrets.BRISKEDIT_SIGN_P12_PASSWORD }}
           BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
           BRISKEDIT_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.BRISKEDIT_NOTARY_KEYCHAIN_PROFILE }}
+          BRISKEDIT_NOTARY_KEY_ID: ${{ secrets.BRISKEDIT_NOTARY_KEY_ID }}
+          BRISKEDIT_NOTARY_ISSUER_ID: ${{ secrets.BRISKEDIT_NOTARY_ISSUER_ID }}
+          BRISKEDIT_NOTARY_KEY_P8_BASE64: ${{ secrets.BRISKEDIT_NOTARY_KEY_P8_BASE64 }}
           BRISKEDIT_NOTARY_APPLE_ID: ${{ secrets.BRISKEDIT_NOTARY_APPLE_ID }}
           BRISKEDIT_NOTARY_TEAM_ID: ${{ secrets.BRISKEDIT_NOTARY_TEAM_ID }}
           BRISKEDIT_NOTARY_PASSWORD: ${{ secrets.BRISKEDIT_NOTARY_PASSWORD }}
         run: ./script/verify_release_secrets.sh
+
+      - name: Import signing certificate
+        env:
+          BRISKEDIT_SIGN_P12_BASE64: ${{ secrets.BRISKEDIT_SIGN_P12_BASE64 }}
+          BRISKEDIT_SIGN_P12_PASSWORD: ${{ secrets.BRISKEDIT_SIGN_P12_PASSWORD }}
+        run: ./script/import_signing_certificate.sh
 
       - name: Generate locked Xcode project
         run: ./script/prepare_xcode_project.sh
@@ -202,6 +213,9 @@ jobs:
           BRISKEDIT_UPDATE_CHANNEL: ${{ needs.preflight.outputs.channel }}
           BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
           BRISKEDIT_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.BRISKEDIT_NOTARY_KEYCHAIN_PROFILE }}
+          BRISKEDIT_NOTARY_KEY_ID: ${{ secrets.BRISKEDIT_NOTARY_KEY_ID }}
+          BRISKEDIT_NOTARY_ISSUER_ID: ${{ secrets.BRISKEDIT_NOTARY_ISSUER_ID }}
+          BRISKEDIT_NOTARY_KEY_P8_BASE64: ${{ secrets.BRISKEDIT_NOTARY_KEY_P8_BASE64 }}
           BRISKEDIT_NOTARY_APPLE_ID: ${{ secrets.BRISKEDIT_NOTARY_APPLE_ID }}
           BRISKEDIT_NOTARY_TEAM_ID: ${{ secrets.BRISKEDIT_NOTARY_TEAM_ID }}
           BRISKEDIT_NOTARY_PASSWORD: ${{ secrets.BRISKEDIT_NOTARY_PASSWORD }}
@@ -306,6 +320,10 @@ jobs:
               --notes "Moving Sparkle beta appcast feed. Install beta builds from versioned prereleases." \
               --prerelease
           fi
+
+      - name: Remove signing keychain
+        if: always()
+        run: ./script/cleanup_signing_keychain.sh
 
       - name: Refresh website with new release
         env:

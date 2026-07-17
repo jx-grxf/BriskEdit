@@ -73,6 +73,9 @@ if [[ -n "${BRISKEDIT_SIGN_IDENTITY:-}" ]]; then
     "CODE_SIGN_IDENTITY=$BRISKEDIT_SIGN_IDENTITY"
     "CODE_SIGNING_REQUIRED=YES"
     "ENABLE_HARDENED_RUNTIME=YES"
+    # Notarization rejects signatures without a secure timestamp; plain
+    # `xcodebuild build` does not add one on its own.
+    "OTHER_CODE_SIGN_FLAGS=--timestamp"
   )
 fi
 if [[ "${BRISKEDIT_WARNINGS_AS_ERRORS:-}" == "true" ]]; then
@@ -158,6 +161,13 @@ fi
 if [[ ! -f "$DMG" ]]; then
   echo "error: DMG was not produced at $DMG" >&2
   exit 1
+fi
+
+if [[ -n "${BRISKEDIT_SIGN_IDENTITY:-}" ]]; then
+  # Sign the container too: notarize_release.sh assesses the DMG's primary
+  # signature via spctl, which an unsigned image would fail.
+  codesign --force --sign "$BRISKEDIT_SIGN_IDENTITY" --timestamp "$DMG"
+  codesign --verify --strict "$DMG"
 fi
 
 hdiutil imageinfo "$DMG" >/dev/null

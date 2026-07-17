@@ -23,12 +23,22 @@ if [[ -n "${BRISKEDIT_SPARKLE_PUBLIC_KEY:-}" && "$BRISKEDIT_SPARKLE_PUBLIC_KEY" 
   fail=1
 fi
 
+if [[ -n "${BRISKEDIT_SIGN_IDENTITY:-}" ]]; then
+  require_secret BRISKEDIT_SIGN_P12_BASE64 || fail=1
+  require_secret BRISKEDIT_SIGN_P12_PASSWORD || fail=1
+fi
+
 if [[ "${BRISKEDIT_NOTARY_ENABLED:-}" == "true" ]]; then
   require_secret BRISKEDIT_SIGN_IDENTITY || fail=1
   if [[ -z "${BRISKEDIT_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
-    require_secret BRISKEDIT_NOTARY_APPLE_ID || fail=1
-    require_secret BRISKEDIT_NOTARY_TEAM_ID || fail=1
-    require_secret BRISKEDIT_NOTARY_PASSWORD || fail=1
+    if [[ -n "${BRISKEDIT_NOTARY_KEY_P8_BASE64:-}" || -n "${BRISKEDIT_NOTARY_KEY_PATH:-}" ]]; then
+      require_secret BRISKEDIT_NOTARY_KEY_ID || fail=1
+      require_secret BRISKEDIT_NOTARY_ISSUER_ID || fail=1
+    else
+      require_secret BRISKEDIT_NOTARY_APPLE_ID || fail=1
+      require_secret BRISKEDIT_NOTARY_TEAM_ID || fail=1
+      require_secret BRISKEDIT_NOTARY_PASSWORD || fail=1
+    fi
   fi
 fi
 
