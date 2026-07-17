@@ -45,11 +45,22 @@ extension WorkspaceModel {
     private func handleExternalChange(_ id: EditorTab.ID) async {
         guard let tab = tabs.first(where: { $0.id == id }), let url = tab.document.fileURL else { return }
         guard FileManager.default.fileExists(atPath: url.path) else { return }
-        let disk = await Task.detached(priority: .utility) { () -> String? in
+        let disk = await Task.detached(priority: .utility) { () -> (oversized: Bool, content: String?) in
+            // Same safety cap as TextDocument.load: a file that grew past the
+            // editing limit (e.g. a log another process appends to) must not be
+            // slurped into memory on every FS event just to diff it.
+            if let size = try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize,
+               Int64(size) > TextDocument.maximumEditableFileBytes {
+                return (true, nil)
+            }
             var used: String.Encoding = .utf8
-            return try? String(contentsOf: url, usedEncoding: &used)
+            return (false, try? String(contentsOf: url, usedEncoding: &used))
         }.value
-        guard let disk, disk != tab.document.text else { return }
+        if disk.oversized {
+            tab.document.externalChangePending = true
+            return
+        }
+        guard let disk = disk.content, disk != tab.document.text else { return }
         if tab.document.isDirty {
             tab.document.externalChangePending = true
         } else {

@@ -61,7 +61,11 @@ enum DiagnosticsService {
         switch language {
         case .c:
             return Spec(command: { file, dir in
-                "xcrun clang -fsyntax-only -fno-color-diagnostics -Wall -DprintDih=printf -I \(q(dir)) \(q(file))"
+                // Match RunService: the easter-egg macro only exists when
+                // secret mode is on, so diagnostics and runtime agree on
+                // whether `printDih` is defined.
+                let extra = SecretMode.isEnabled ? " -DprintDih=printf" : ""
+                return "xcrun clang -fsyntax-only -fno-color-diagnostics -Wall\(extra) -I \(q(dir)) \(q(file))"
             }, source: "clang")
         case .cpp:
             return Spec(command: { file, dir in
