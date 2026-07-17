@@ -928,14 +928,20 @@ struct TextKit2EditorHost: NSViewRepresentable {
             }
         }
 
+        /// True for identifier characters (letters, digits, underscore).
+        static func isWordCharacter(_ u: unichar) -> Bool {
+            guard let scalar = UnicodeScalar(u) else { return false }
+            return CharacterSet.alphanumerics.contains(scalar) || scalar == "_"
+        }
+
+        /// Opener → closer map shared by auto-close, type-over and paired-delete.
+        static let bracketPairs: [Character: Character] = ["{": "}", "(": ")", "[": "]", "\"": "\"", "'": "'"]
+        static let bracketClosers: Set<Character> = ["}", ")", "]", "\"", "'"]
+
         private static func wordRange(at location: Int, in ns: NSString) -> NSRange {
-            func isWord(_ u: unichar) -> Bool {
-                guard let scalar = UnicodeScalar(u) else { return false }
-                return CharacterSet.alphanumerics.contains(scalar) || scalar == "_"
-            }
             var start = location, end = location
-            while start > 0, isWord(ns.character(at: start - 1)) { start -= 1 }
-            while end < ns.length, isWord(ns.character(at: end)) { end += 1 }
+            while start > 0, isWordCharacter(ns.character(at: start - 1)) { start -= 1 }
+            while end < ns.length, isWordCharacter(ns.character(at: end)) { end += 1 }
             return NSRange(location: start, length: end - start)
         }
 
@@ -977,12 +983,63 @@ struct TextKit2EditorHost: NSViewRepresentable {
             // With multiple cursors, let AppKit apply the edit to every range
             // verbatim — auto-pairing one range would desync the others.
             if textView.selectedRanges.count > 1 { return true }
-            guard let string = replacementString, range.length == 0, string.count == 1 else { return true }
-            let pairs: [Character: Character] = ["{": "}", "(": ")", "[": "]", "\"": "\"", "'": "'"]
-            guard let opener = string.first, let closer = pairs[opener] else { return true }
-            textView.insertText("\(opener)\(closer)", replacementRange: range)
+            guard let string = replacementString, string.count == 1, let typed = string.first else { return true }
+
+            let openToClose = Self.bracketPairs
+            let closers = Self.bracketClosers
+            let ns = textView.string as NSString
+
+            // Wrap a non-empty selection in the typed bracket/quote instead of
+            // replacing it — select `foo`, type `(` → `(foo)` with `foo` still
+            // selected. Matches every mainstream editor's surround-with behavior.
+            if range.length > 0, let closer = openToClose[typed] {
+                let inner = ns.substring(with: range)
+                textView.insertText("\(typed)\(inner)\(closer)", replacementRange: range)
+                textView.setSelectedRange(NSRange(location: range.location + 1, length: (inner as NSString).length))
+                return false
+            }
+
+            guard range.length == 0 else { return true }
+
+            // Type-over: typing a closer that is already the next character steps
+            // past it instead of inserting a duplicate, so closing an auto-inserted
+            // pair (`()`, `[]`, `""`) doesn't leave a stray `)`/`"`.
+            if closers.contains(typed), let ascii = typed.asciiValue,
+               range.location < ns.length, ns.character(at: range.location) == unichar(ascii) {
+                textView.setSelectedRange(NSRange(location: range.location + 1, length: 0))
+                return false
+            }
+
+            guard let closer = openToClose[typed] else { return true }
+
+            // Don't auto-close a quote that abuts a word character: that's an
+            // apostrophe (`don't`) or a quote trailing an identifier, not a new
+            // string — auto-pairing there leaves a dangling quote.
+            if typed == "\"" || typed == "'" {
+                let prevIsWord = range.location > 0 && Self.isWordCharacter(ns.character(at: range.location - 1))
+                let nextIsWord = range.location < ns.length && Self.isWordCharacter(ns.character(at: range.location))
+                if prevIsWord || nextIsWord { return true }
+            }
+
+            textView.insertText("\(typed)\(closer)", replacementRange: range)
             textView.setSelectedRange(NSRange(location: range.location + 1, length: 0))
             return false
+        }
+
+        /// Backspace between an empty auto-inserted pair (`(|)`, `"|"`) deletes
+        /// both delimiters in one keystroke, mirroring the auto-close that created
+        /// them. Returns false (defer to normal backspace) in any other context.
+        private func deleteEmptyPair(in textView: NSTextView) -> Bool {
+            guard textView.selectedRanges.count == 1 else { return false }
+            let sel = textView.selectedRange()
+            guard sel.length == 0, sel.location > 0 else { return false }
+            let ns = textView.string as NSString
+            guard sel.location < ns.length,
+                  let before = UnicodeScalar(ns.character(at: sel.location - 1)),
+                  let after = UnicodeScalar(ns.character(at: sel.location)),
+                  Self.bracketPairs[Character(before)] == Character(after) else { return false }
+            textView.insertText("", replacementRange: NSRange(location: sel.location - 1, length: 2))
+            return true
         }
 
         func textView(_ textView: NSTextView, doCommandBy selector: Selector) -> Bool {
@@ -1014,6 +1071,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 insertSmartNewline(in: textView)
                 return true
             case #selector(NSResponder.deleteBackward(_:)):
+                if deleteEmptyPair(in: textView) { return true }
                 return smartOutdent(in: textView)
             case #selector(NSResponder.complete(_:)):
                 updateCompletionPopup(in: textView, minimumPrefix: 0)

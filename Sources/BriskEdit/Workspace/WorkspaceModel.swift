@@ -60,6 +60,10 @@ final class WorkspaceModel {
     var persistsSession = false
     var childCache: [FileTreeCacheKey: [FileNode]] = [:]
     var watchers: [EditorTab.ID: FileWatcher] = [:]
+    /// True while a bulk tab-close ("Close All"/"Close Others") is awaiting
+    /// per-tab save dialogs. A second bulk request during that window is
+    /// dropped instead of racing the first over overlapping tab IDs.
+    var bulkCloseInProgress = false
     /// Per-file VCS status driving the file-tree git badges. Refreshed on root
     /// change, after git operations (`.gitDidChange`) and when the window
     /// re-activates. Empty outside a repository.

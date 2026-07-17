@@ -239,21 +239,50 @@ extension WorkspaceModel {
     }
 
     func requestCloseOtherTabs(keeping id: EditorTab.ID) {
-        for tab in tabs where tab.id != id {
-            requestCloseTab(tab.id)
-        }
+        let ids = tabs.filter { $0.id != id }.map(\.id)
+        Task { await closeTabsSequentially(ids) }
     }
 
     func requestCloseTabsToRight(of id: EditorTab.ID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
-        for tab in tabs.dropFirst(index + 1) {
-            requestCloseTab(tab.id)
-        }
+        let ids = tabs[(index + 1)...].map(\.id)
+        Task { await closeTabsSequentially(ids) }
     }
 
     func requestCloseAllTabs() {
-        for tab in tabs {
-            requestCloseTab(tab.id)
+        let ids = tabs.map(\.id)
+        Task { await closeTabsSequentially(ids) }
+    }
+
+    /// Closes the given tabs in order, prompting to save each dirty one. Aborts
+    /// the rest of the batch the moment the user cancels (or a save fails) — so
+    /// "Close Other Tabs" with a Cancel leaves the remaining tabs open, matching
+    /// mainstream editors instead of closing them anyway. IDs are snapshotted by
+    /// the callers, so concurrent tab mutation can't shift the set mid-loop.
+    private func closeTabsSequentially(_ ids: [EditorTab.ID]) async {
+        guard !bulkCloseInProgress else { return }
+        bulkCloseInProgress = true
+        defer { bulkCloseInProgress = false }
+        for id in ids {
+            guard let tab = tabs.first(where: { $0.id == id }) else { continue }
+            guard tab.previewKind == nil, tab.document.isDirty else {
+                closeTab(id)
+                continue
+            }
+            let alert = NSAlert()
+            alert.messageText = "Do you want to save the changes you made to “\(tab.document.displayName)”?"
+            alert.informativeText = "Your changes will be lost if you don't save them."
+            alert.addButton(withTitle: "Save")
+            alert.addButton(withTitle: "Don't Save")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                if await save(tab) { closeTab(id) } else { return }
+            case .alertSecondButtonReturn:
+                closeTab(id)
+            default:
+                return
+            }
         }
     }
 
