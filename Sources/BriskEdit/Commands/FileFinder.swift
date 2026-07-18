@@ -80,8 +80,9 @@ struct FileFinderView: View {
                         openSelection()
                     } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: FileNode(url: url, isDirectory: false).language.iconName)
-                                .foregroundStyle(.secondary)
+                            FileTypeIcon(url: url, isDirectory: false,
+                                         language: FileNode(url: url, isDirectory: false).language,
+                                         size: 16)
                                 .frame(width: 18)
                             Text(url.lastPathComponent)
                             Spacer()

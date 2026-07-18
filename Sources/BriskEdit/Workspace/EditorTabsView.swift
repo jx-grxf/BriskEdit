@@ -651,6 +651,7 @@ private struct TabChip: View {
         .contentShape(Rectangle())
         .accessibilityLabel("Select \(tab.displayTitle)")
         .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onSelect() }
         .animation(.easeInOut(duration: 0.15), value: isActive)
         // Native "front tab" look: the active tab reads as a raised surface
         // (matching the editor area) instead of an accent wash, with a thin

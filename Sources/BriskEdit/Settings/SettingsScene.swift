@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsScene: View {
     @Environment(Preferences.self) private var preferences
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     var body: some View {
         TabView {
@@ -27,7 +28,7 @@ struct SettingsScene: View {
         // the overflow into a \"»\" popover whose items don't reliably click.
         .frame(width: 720, height: 480)
         .transaction { transaction in
-            if preferences.reduceMotion { transaction.disablesAnimations = true }
+            if preferences.reduceMotion || accessibilityReduceMotion { transaction.disablesAnimations = true }
         }
     }
 }

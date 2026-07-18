@@ -413,6 +413,38 @@ enum SourceLanguage: String, Sendable, CaseIterable, Identifiable {
         }
     }
 
+    /// Compact language mark used where SF Symbols do not provide an accurate
+    /// language glyph. Keeps the file tree recognizable without brand assets.
+    var iconMonogram: String? {
+        switch self {
+        case .swift, .shell, .markdown, .plainText: nil
+        case .c: "C"
+        case .cpp: "C++"
+        case .css: "CSS"
+        case .dart: "D"
+        case .go: "GO"
+        case .html: "HT"
+        case .ini: "INI"
+        case .java: "JV"
+        case .javascript: "JS"
+        case .json: "{}"
+        case .kotlin: "KT"
+        case .less: "LE"
+        case .lua: "LU"
+        case .perl: "PL"
+        case .php: "PHP"
+        case .python: "PY"
+        case .ruby: "RB"
+        case .rust: "RS"
+        case .scss: "SC"
+        case .sql: "SQL"
+        case .toml: "TM"
+        case .typescript: "TS"
+        case .xml: "XM"
+        case .yaml: "YM"
+        }
+    }
+
     var isRunnable: Bool {
         switch self {
         case .c, .cpp, .go, .java, .javascript, .lua, .perl, .php, .python, .ruby, .rust, .shell, .swift, .typescript:
