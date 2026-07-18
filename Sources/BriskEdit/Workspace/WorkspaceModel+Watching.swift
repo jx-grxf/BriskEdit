@@ -27,7 +27,6 @@ extension WorkspaceModel {
         if tabs.contains(where: { $0.id != tab.id && $0.document.fileURL == url }) { return }
         let uri = url.absoluteString
         let language = tab.document.language
-        LSPDiagnosticsBus.shared.removeHandler(uri: uri)
         Task { await LSPService.shared.didClose(language: language, uri: uri) }
     }
 
@@ -35,7 +34,6 @@ extension WorkspaceModel {
         guard let uri,
               replacementURL?.absoluteString != uri,
               LSPService.config(for: language) != nil else { return }
-        LSPDiagnosticsBus.shared.removeHandler(uri: uri)
         Task { await LSPService.shared.didClose(language: language, uri: uri) }
     }
 

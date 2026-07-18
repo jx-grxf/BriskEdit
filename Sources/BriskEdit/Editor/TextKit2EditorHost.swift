@@ -294,6 +294,10 @@ struct TextKit2EditorHost: NSViewRepresentable {
         Coordinator(document: document, theme: theme)
     }
 
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.tearDown()
+    }
+
     private func configure(_ textView: NSTextView, theme: EditorTheme) {
         textView.isEditable = true
         textView.isSelectable = true
@@ -335,9 +339,11 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var highlightWork: DispatchWorkItem?
         private var gitWork: DispatchWorkItem?
         private var lspWork: DispatchWorkItem?
+        private var lspRequestGeneration = 0
         private var minimapWork: DispatchWorkItem?
         private var lspItems: [LSPCompletion] = []
         private var lspDiagnosticsURI: String?
+        private var lspDiagnosticsToken: UUID?
         private var lspLanguage: SourceLanguage?
         private var lspRoot: String?
         var lastSyncedRevision = 0
@@ -384,6 +390,15 @@ struct TextKit2EditorHost: NSViewRepresentable {
         deinit {
             formatTask?.cancel()
             NotificationCenter.default.removeObserver(self)
+        }
+
+        func tearDown() {
+            lspWork?.cancel()
+            lspRequestGeneration += 1
+            popup.detach()
+            unsubscribeFromDiagnostics()
+            hideHover()
+            hideSignatureHelp()
         }
 
         /// Give the text view its own undo manager (see `editorUndoManager`).
@@ -952,8 +967,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let lowered = partial.lowercased()
             var seen = Set<String>()
             var ordered: [CompletionItem] = []
-            func matches(_ label: String) -> Bool {
-                !label.isEmpty && (lowered.isEmpty || label.lowercased().hasPrefix(lowered)) && label != partial
+            func matches(_ text: String, displayedLabel: String? = nil) -> Bool {
+                !text.isEmpty && (lowered.isEmpty || text.lowercased().hasPrefix(lowered))
+                    && (displayedLabel ?? text) != partial
             }
             func add(_ words: [String], detail: String? = nil, kind: CompletionKind = .text) {
                 for word in words where matches(word) {
@@ -968,13 +984,16 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 }
             }
             // Semantic results from the language server carry signature + kind.
-            for completion in lspItems where matches(completion.label) {
-                if seen.insert(completion.label).inserted {
-                    ordered.append(CompletionItem(label: completion.label, detail: completion.detail, kind: CompletionKind(lspKind: completion.kind)))
+            for completion in lspItems where matches(completion.filterText, displayedLabel: completion.label) {
+                let identity = "\(completion.label)\u{1F}\(completion.detail ?? "")\u{1F}\(completion.insertionText)"
+                if seen.insert(identity).inserted {
+                    ordered.append(CompletionItem(label: completion.label, detail: completion.detail,
+                                                  kind: CompletionKind(lspKind: completion.kind),
+                                                  insertionText: completion.insertionText,
+                                                  filterText: completion.filterText))
                 }
             }
             add(document.language.completionWords, kind: .keyword)
-            add(globalCompletionWords, kind: .keyword)
             add(bufferSymbols(in: text, excluding: partial), kind: .variable)
             return Array(ordered.prefix(120))
         }
@@ -1186,7 +1205,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             treeSitterHighlighter = nil
             treeSitterAttemptedLanguage = nil
             if let uri = lspDiagnosticsURI {
-                LSPDiagnosticsBus.shared.removeHandler(uri: uri)
+                unsubscribeFromDiagnostics()
                 if let language = lspLanguage {
                     Task { await LSPService.shared.didClose(language: language, uri: uri) }
                 }
@@ -1432,7 +1451,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             guard !items.isEmpty, !onlyEcho else { popup.hide(); return }
 
             completionRange = NSRange(location: start, length: selection.location - start)
-            let caretRect = textView.firstRect(forCharacterRange: NSRange(location: start, length: 0), actualRange: nil)
+            let caretRect = textView.firstRect(forCharacterRange: NSRange(location: selection.location, length: 0), actualRange: nil)
             ignoreNextSelectionChange = true
             popup.show(items: items, caretScreenRect: caretRect, parent: textView.window)
             textView.needsDisplay = true
@@ -1457,7 +1476,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 insertText = expansion.text
                 selection = expansion.selection
             } else {
-                insertText = item.label
+                insertText = item.insertionText
             }
 
             // Absorb a leading `#` that's already in the buffer (e.g. user typed
@@ -1487,6 +1506,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 return
             }
             lspWork?.cancel()
+            lspRequestGeneration += 1
+            let generation = lspRequestGeneration
+            lspItems = []
 
             let text = textView.string
             let nsString = text as NSString
@@ -1500,7 +1522,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
                         language: language, uri: uri, text: text,
                         line: line, character: character, root: root
                     )
-                    guard let self, !items.isEmpty else { return }
+                    guard let self, self.lspRequestGeneration == generation else { return }
                     self.lspItems = items
                     // Fold fresh semantic results into an already-open popup.
                     if self.popup.isVisible, let tv = self.textView {
@@ -1525,7 +1547,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             lspLanguage = language
             lspRoot = root
             // Route this server's diagnostics into the document for the gutter.
-            LSPDiagnosticsBus.shared.setHandler(uri: uri) { [weak self] diagnostics in
+            lspDiagnosticsToken = LSPDiagnosticsBus.shared.subscribe(uri: uri) { [weak self] diagnostics in
                 self?.document.diagnostics = diagnostics
             }
             let text = textView.string
@@ -1542,7 +1564,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let root = document.fileURL.map(lspRootPath)
             guard uri != lspDiagnosticsURI || language != lspLanguage || root != lspRoot else { return }
             if let oldURI = lspDiagnosticsURI {
-                LSPDiagnosticsBus.shared.removeHandler(uri: oldURI)
+                unsubscribeFromDiagnostics()
                 if let oldLanguage = lspLanguage {
                     Task { await LSPService.shared.didClose(language: oldLanguage, uri: oldURI) }
                 }
@@ -1553,6 +1575,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
             lspItems = []
             document.diagnostics = []
             warmUpLSP()
+        }
+
+        private func unsubscribeFromDiagnostics() {
+            guard let uri = lspDiagnosticsURI, let token = lspDiagnosticsToken else { return }
+            LSPDiagnosticsBus.shared.unsubscribe(uri: uri, token: token)
+            lspDiagnosticsToken = nil
         }
 
         private func lspRootPath(for url: URL) -> String {
@@ -1657,10 +1685,6 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var indentUnit: String {
             theme.usesSpacesForTabs ? String(repeating: " ", count: theme.tabWidth) : "\t"
         }
-
-        private let globalCompletionWords = [
-            "TODO:", "MARK:", "FIXME:", "main", "printf", "scanf", "return", "true", "false", "NULL", "nil"
-        ]
 
         /// Backspace inside a line's leading whitespace removes a whole indent
         /// level (back to the previous tab stop) in one keystroke instead of one

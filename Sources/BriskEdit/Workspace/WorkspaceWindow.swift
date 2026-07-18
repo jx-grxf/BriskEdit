@@ -10,6 +10,7 @@ struct WorkspaceWindow: View {
     @Environment(Preferences.self) private var preferences
     @Environment(UpdateService.self) private var updates
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -20,7 +21,7 @@ struct WorkspaceWindow: View {
         }
         .navigationSplitViewStyle(.balanced)
         .transaction { transaction in
-            if preferences.reduceMotion { transaction.disablesAnimations = true }
+            if preferences.reduceMotion || accessibilityReduceMotion { transaction.disablesAnimations = true }
         }
         .task {
             guard !didStartSession else { return }

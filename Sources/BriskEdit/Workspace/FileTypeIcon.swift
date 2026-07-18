@@ -20,12 +20,8 @@ struct FileTypeIcon: View {
                 .font(.system(size: size * 0.95))
                 .frame(width: size, height: size)
         } else if language != .plainText {
-            // A recognized language → colored glyph.
-            Image(systemName: language.iconName)
-                .symbolRenderingMode(.hierarchical)
-                .foregroundStyle(Self.tint(language))
-                .font(.system(size: size * 0.9, weight: .medium))
-                .frame(width: size, height: size)
+            languageMark
+                .accessibilityHidden(true)
         } else if let icon = Self.icon(for: url) {
             // Unrecognized but on disk (image/PDF/binary): real thumbnail.
             Image(nsImage: icon)
@@ -37,6 +33,29 @@ struct FileTypeIcon: View {
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
                 .font(.system(size: size * 0.9))
+                .frame(width: size, height: size)
+        }
+    }
+
+    @ViewBuilder
+    private var languageMark: some View {
+        if let monogram = language.iconMonogram {
+            Text(monogram)
+                .font(.system(size: size * (monogram.count > 2 ? 0.43 : 0.52), weight: .bold, design: .rounded))
+                .foregroundStyle(Self.tint(language))
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
+                .frame(width: size, height: size)
+                .background(Self.tint(language).opacity(0.14), in: RoundedRectangle(cornerRadius: size * 0.24))
+                .overlay {
+                    RoundedRectangle(cornerRadius: size * 0.24)
+                        .stroke(Self.tint(language).opacity(0.32), lineWidth: 0.7)
+                }
+        } else {
+            Image(systemName: language.iconName)
+                .symbolRenderingMode(.hierarchical)
+                .foregroundStyle(Self.tint(language))
+                .font(.system(size: size * 0.9, weight: .medium))
                 .frame(width: size, height: size)
         }
     }

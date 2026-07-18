@@ -100,6 +100,7 @@ struct TerminalPanel: View {
                     )
                     .opacity(isActive ? 1 : 0)
                     .allowsHitTesting(isActive)
+                    .accessibilityHidden(!isActive)
                 }
             }
             .frame(minHeight: 160)

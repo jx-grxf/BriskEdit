@@ -64,11 +64,10 @@ enum RunService {
         case .perl:
             line = "perl \(file)\(cleanup)"
         case .go:
-            if ancestor(containing: "go.mod", from: sourceURL.deletingLastPathComponent(), stopAt: workspaceRoot) != nil {
-                line = "go run ."
-            } else {
-                line = "go run \(file)\(cleanup)"
+            if let moduleRoot = ancestor(containing: "go.mod", from: sourceURL.deletingLastPathComponent(), stopAt: workspaceRoot) {
+                return RunCommand(title: "go run", shellLine: "go run .", cwd: moduleRoot)
             }
+            line = "go run \(file)\(cleanup)"
         case .rust:
             if let cargoRoot = ancestor(containing: "Cargo.toml", from: sourceURL.deletingLastPathComponent(), stopAt: workspaceRoot) {
                 return RunCommand(title: "cargo run", shellLine: "cargo run", cwd: cargoRoot)
