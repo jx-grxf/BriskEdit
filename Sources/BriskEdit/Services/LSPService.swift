@@ -58,6 +58,8 @@ struct LSPCompletion: Sendable, Equatable {
     let label: String
     let detail: String?
     let kind: Int
+    let insertionText: String
+    let filterText: String
 }
 
 /// Signature-help results returned by a language server or synthesized from the
@@ -340,7 +342,7 @@ actor LSPService {
 
     // MARK: - Completion parsing
 
-    private static func parseCompletions(_ result: Any?) -> [LSPCompletion] {
+    static func parseCompletions(_ result: Any?) -> [LSPCompletion] {
         let items: [[String: Any]]
         if let dict = result as? [String: Any], let list = dict["items"] as? [[String: Any]] {
             items = list
@@ -357,16 +359,22 @@ actor LSPService {
         var seen = Set<String>()
         var completions: [LSPCompletion] = []
         for item in ranked {
-            let raw = (item["insertText"] as? String) ?? (item["label"] as? String) ?? ""
-            let symbol = raw.prefix { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "#" }
-            let token = symbol.isEmpty ? raw.trimmingCharacters(in: .whitespaces) : String(symbol)
-            guard !token.isEmpty, seen.insert(token).inserted else { continue }
+            guard let label = item["label"] as? String, !label.isEmpty else { continue }
+            let textEdit = item["textEdit"] as? [String: Any]
+            let insertionText = (textEdit?["newText"] as? String)
+                ?? (item["insertText"] as? String)
+                ?? label
+            let filterText = (item["filterText"] as? String) ?? label
             // `detail` is clangd's signature/type; `labelDetails.detail` is its
             // newer home. Fall back across both.
             let detail = (item["detail"] as? String)
                 ?? ((item["labelDetails"] as? [String: Any])?["detail"] as? String)
             let kind = (item["kind"] as? Int) ?? 1
-            completions.append(LSPCompletion(label: token, detail: detail?.trimmingCharacters(in: .whitespaces), kind: kind))
+            let normalizedDetail = detail?.trimmingCharacters(in: .whitespaces)
+            let identity = "\(label)\u{1F}\(normalizedDetail ?? "")\u{1F}\(insertionText)"
+            guard seen.insert(identity).inserted else { continue }
+            completions.append(LSPCompletion(label: label, detail: normalizedDetail, kind: kind,
+                                             insertionText: insertionText, filterText: filterText))
         }
         return completions
     }

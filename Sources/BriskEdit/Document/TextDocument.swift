@@ -489,7 +489,7 @@ enum SourceLanguage: String, Sendable, CaseIterable, Identifiable {
         case .javascript, .typescript:
             ["import", "export", "const", "let", "function", "async", "await", "return", "class", "interface", "type", "if", "else", "for", "while"]
         case .python:
-            ["import", "from", "def", "class", "self", "return", "if", "elif", "else", "for", "while", "with", "try", "except"]
+            ["import", "from", "def", "class", "self", "return", "if", "elif", "else", "for", "while", "with", "try", "except", "print", "len", "range", "enumerate", "zip", "open", "isinstance", "True", "False", "None"]
         case .go:
             ["package", "import", "func", "return", "struct", "interface", "defer", "go", "range", "if", "else", "for"]
         case .rust:

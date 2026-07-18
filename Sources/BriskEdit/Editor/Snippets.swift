@@ -69,13 +69,20 @@ struct CompletionItem: Equatable {
     let detail: String?
     let snippet: CodeSnippet?
     let kind: CompletionKind
+    let insertionText: String
+    let filterText: String
 
-    init(label: String, detail: String? = nil, snippet: CodeSnippet? = nil, kind: CompletionKind = .text) {
+    init(label: String, detail: String? = nil, snippet: CodeSnippet? = nil, kind: CompletionKind = .text,
+         insertionText: String? = nil, filterText: String? = nil) {
         self.label = label
         self.detail = detail
         self.snippet = snippet
         self.kind = kind
+        self.insertionText = insertionText ?? label
+        self.filterText = filterText ?? label
     }
+
+    var stableIdentity: String { "\(label)\u{1F}\(detail ?? "")\u{1F}\(kind)\u{1F}\(insertionText)" }
 }
 
 enum SnippetLibrary {
