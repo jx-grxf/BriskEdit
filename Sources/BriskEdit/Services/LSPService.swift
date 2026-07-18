@@ -6,18 +6,24 @@ import Foundation
 @MainActor
 final class LSPDiagnosticsBus {
     static let shared = LSPDiagnosticsBus()
-    private var handlers: [String: ([Diagnostic]) -> Void] = [:]
+    private var handlers: [String: [UUID: ([Diagnostic]) -> Void]] = [:]
 
-    func setHandler(uri: String, _ handler: @escaping ([Diagnostic]) -> Void) {
-        handlers[uri] = handler
+    func subscribe(uri: String, _ handler: @escaping ([Diagnostic]) -> Void) -> UUID {
+        let token = UUID()
+        handlers[uri, default: [:]][token] = handler
+        return token
     }
 
-    func removeHandler(uri: String) {
-        handlers[uri] = nil
+    func unsubscribe(uri: String, token: UUID) {
+        handlers[uri]?[token] = nil
+        if handlers[uri]?.isEmpty == true { handlers[uri] = nil }
     }
 
     func deliver(uri: String, diagnostics: [Diagnostic]) {
-        handlers[uri]?(diagnostics)
+        guard let uriHandlers = handlers[uri] else { return }
+        for handler in uriHandlers.values {
+            handler(diagnostics)
+        }
     }
 }
 

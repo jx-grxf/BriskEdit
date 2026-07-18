@@ -343,6 +343,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var minimapWork: DispatchWorkItem?
         private var lspItems: [LSPCompletion] = []
         private var lspDiagnosticsURI: String?
+        private var lspDiagnosticsToken: UUID?
         private var lspLanguage: SourceLanguage?
         private var lspRoot: String?
         var lastSyncedRevision = 0
@@ -395,6 +396,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             lspWork?.cancel()
             lspRequestGeneration += 1
             popup.detach()
+            unsubscribeFromDiagnostics()
             hideHover()
             hideSignatureHelp()
         }
@@ -1203,7 +1205,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             treeSitterHighlighter = nil
             treeSitterAttemptedLanguage = nil
             if let uri = lspDiagnosticsURI {
-                LSPDiagnosticsBus.shared.removeHandler(uri: uri)
+                unsubscribeFromDiagnostics()
                 if let language = lspLanguage {
                     Task { await LSPService.shared.didClose(language: language, uri: uri) }
                 }
@@ -1545,7 +1547,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             lspLanguage = language
             lspRoot = root
             // Route this server's diagnostics into the document for the gutter.
-            LSPDiagnosticsBus.shared.setHandler(uri: uri) { [weak self] diagnostics in
+            lspDiagnosticsToken = LSPDiagnosticsBus.shared.subscribe(uri: uri) { [weak self] diagnostics in
                 self?.document.diagnostics = diagnostics
             }
             let text = textView.string
@@ -1562,7 +1564,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let root = document.fileURL.map(lspRootPath)
             guard uri != lspDiagnosticsURI || language != lspLanguage || root != lspRoot else { return }
             if let oldURI = lspDiagnosticsURI {
-                LSPDiagnosticsBus.shared.removeHandler(uri: oldURI)
+                unsubscribeFromDiagnostics()
                 if let oldLanguage = lspLanguage {
                     Task { await LSPService.shared.didClose(language: oldLanguage, uri: oldURI) }
                 }
@@ -1573,6 +1575,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
             lspItems = []
             document.diagnostics = []
             warmUpLSP()
+        }
+
+        private func unsubscribeFromDiagnostics() {
+            guard let uri = lspDiagnosticsURI, let token = lspDiagnosticsToken else { return }
+            LSPDiagnosticsBus.shared.unsubscribe(uri: uri, token: token)
+            lspDiagnosticsToken = nil
         }
 
         private func lspRootPath(for url: URL) -> String {
