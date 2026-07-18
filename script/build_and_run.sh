@@ -8,6 +8,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# A previously installed build can otherwise stay frontmost while the freshly
+# built bundle launches behind it, making verification appear to use stale code.
+pkill -x BriskEdit 2>/dev/null || true
+
 ./script/prepare_xcode_project.sh
 
 DERIVED_DATA="$(mktemp -d)"
