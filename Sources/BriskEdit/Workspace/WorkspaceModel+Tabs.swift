@@ -3,7 +3,19 @@ import Foundation
 
 // Tab lifecycle: opening, closing, selecting and saving editor tabs.
 extension WorkspaceModel {
+    /// Routes deferred-autosave failures into the workspace's usual error
+    /// message so they aren't dropped silently.
+    private func observeAutosaveFailures(of document: TextDocument) {
+        document.autosaveFailureHandler = { [weak self, weak document] error in
+            guard let document else { return }
+            self?.lastError = "Could not autosave \(document.displayName): \(error.localizedDescription)"
+        }
+    }
+
     func openFile(at url: URL) async {
+        // Every open (new tab, re-focus of an existing tab, preview) makes this
+        // the most recently used file for File ▸ Open Recent.
+        RecentWorkspacesStore.shared.recordFile(url)
         if let existing = tabs.first(where: { $0.document.fileURL == url }) {
             activeTabID = existing.id
             persistSession()
@@ -15,6 +27,7 @@ extension WorkspaceModel {
         }
         do {
             let doc = try await TextDocument.load(from: url)
+            observeAutosaveFailures(of: doc)
             let tab = EditorTab(document: doc)
             if tabs.count == 1,
                let current = tabs.first,
@@ -66,6 +79,7 @@ extension WorkspaceModel {
 
     func newUntitled() {
         let doc = TextDocument.empty()
+        observeAutosaveFailures(of: doc)
         let tab = EditorTab(document: doc)
         tabs.append(tab)
         activeTabID = tab.id
@@ -85,13 +99,31 @@ extension WorkspaceModel {
         activeTabID = tab.id
     }
 
+    /// Reopens the most recently closed file tab (⇧⌘T), selecting it once
+    /// loaded. Every removal path funnels through `closeTab` — user closes,
+    /// folder-delete and the watcher auto-closing a clean vanished tab — so all
+    /// of them land here. Tear-off moves don't: the tab keeps living, just in
+    /// another window.
+    func reopenClosedTab() {
+        guard let url = ClosedTabHistory.shared.pop() else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            lastError = "Could not reopen \(url.lastPathComponent): the file no longer exists."
+            return
+        }
+        Task { await openFile(at: url) }
+    }
+
     func closeTab(_ id: EditorTab.ID) {
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
+        if let url = tabs[index].document.fileURL {
+            ClosedTabHistory.shared.record(url)
+        }
         if splitPreviewContent == .markdown(id) {
             splitPreviewContent = nil
         }
         stopWatching(id)
         releaseLSP(tabs[index])
+        tabs[index].document.invalidatePendingSaves()
         tabs.remove(at: index)
         if activeTabID == id {
             let fallback = tabs.indices.contains(index) ? tabs[index] : tabs.last
@@ -129,6 +161,7 @@ extension WorkspaceModel {
         }
         tabs = [tab]
         activeTabID = tab.id
+        observeAutosaveFailures(of: tab.document)
         startWatching(tab)
     }
 
@@ -148,6 +181,7 @@ extension WorkspaceModel {
             tabs.append(tab)
         }
         activeTabID = tab.id
+        observeAutosaveFailures(of: tab.document)
         startWatching(tab)
         persistSession()
     }
@@ -209,6 +243,7 @@ extension WorkspaceModel {
             tabs.append(tab)
         }
         activeTabID = tab.id
+        observeAutosaveFailures(of: tab.document)
         startWatching(tab)
         persistSession()
     }
@@ -326,6 +361,7 @@ extension WorkspaceModel {
             guard panel.runModal() == .OK, let url = panel.url else { return false }
             do {
                 try await tab.document.save(to: url)
+                await finishFileBindingSave(tab, oldURL: nil, oldLanguage: tab.document.language)
                 return true
             } catch {
                 lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"
@@ -340,6 +376,17 @@ extension WorkspaceModel {
             lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"
             return false
         }
+    }
+
+    /// Shared post-write wiring for saves that bind a document to a (new) file:
+    /// releases a stale LSP registration, restarts the file watcher, persists the
+    /// session and refreshes diagnostics + git decorations.
+    private func finishFileBindingSave(_ tab: EditorTab, oldURL: URL?, oldLanguage: SourceLanguage) async {
+        releaseLSPIfNeeded(uri: oldURL?.absoluteString, language: oldLanguage, replacementURL: tab.document.fileURL)
+        startWatching(tab)
+        persistSession()
+        await checkActiveDocument()
+        NotificationCenter.default.post(name: .gitDidChange, object: nil)
     }
 
     func saveActiveTab() async {
@@ -371,11 +418,7 @@ extension WorkspaceModel {
         let oldLanguage = tab.document.language
         do {
             try await tab.document.save(to: url)
-            releaseLSPIfNeeded(uri: oldURL?.absoluteString, language: oldLanguage, replacementURL: url)
-            startWatching(tab)
-            persistSession()
-            await checkActiveDocument()
-            NotificationCenter.default.post(name: .gitDidChange, object: nil)
+            await finishFileBindingSave(tab, oldURL: oldURL, oldLanguage: oldLanguage)
         } catch {
             NSLog("BriskEdit: save-as failed: %@", String(describing: error))
             lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"

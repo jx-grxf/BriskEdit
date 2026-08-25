@@ -24,8 +24,11 @@ enum CommandRegistry {
         EditorCommand(id: "file.saveAs", title: "Save As…", group: "File", shortcut: "⇧⌘S") { ws in
             Task { await ws.saveActiveTabAs() }
         },
-        EditorCommand(id: "tab.closeActive", title: "Close Tab", group: "Tabs", shortcut: "⌘W") { ws in
-            if let id = ws.activeTabID { ws.closeTab(id) }
+        EditorCommand(id: "tab.closeActive", title: "Close Tab", group: "Tabs", shortcut: "⌃⌘W") { ws in
+            if let id = ws.activeTabID { ws.requestCloseTab(id) }
+        },
+        EditorCommand(id: "tab.reopen", title: "Reopen Closed Tab", group: "Tabs", shortcut: "⇧⌘T") { ws in
+            ws.reopenClosedTab()
         },
         EditorCommand(id: "file.goto", title: "Go to File…", group: "File", shortcut: "⌘P") { ws in
             ws.showFileFinder = true
