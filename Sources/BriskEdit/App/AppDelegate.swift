@@ -33,7 +33,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSEvent.removeMonitor(keyMonitor)
             self.keyMonitor = nil
         }
-        // Kill any language servers we spawned so they don't outlive the app.
+        // Backstop for the graceful handshake started above: kill any language
+        // servers we spawned so they don't outlive the app.
         LSPProcessRegistry.shared.terminateAll()
         // Clear our Discord Rich Presence so a stale card doesn't linger.
         DiscordPresenceController.shared.shutdown()
@@ -71,6 +72,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        // Start the graceful LSP shutdown handshake now so servers receive
+        // `shutdown`/`exit`; `terminateAll` below remains the backstop.
+        Task { await LSPService.shared.shutdownAll() }
         let dirty = WorkspaceRegistry.models.filter(\.hasUnsavedChanges)
         guard !dirty.isEmpty else { return .terminateNow }
 
@@ -83,9 +87,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         switch alert.runModal() {
         case .alertFirstButtonReturn:
             Task { @MainActor in
-                var success = true
-                for model in dirty where await model.saveAllForQuit() == false { success = false }
-                sender.reply(toApplicationShouldTerminate: success)
+                for model in dirty {
+                    guard await model.saveAllForQuit() else {
+                        sender.reply(toApplicationShouldTerminate: false)
+                        return
+                    }
+                }
+                sender.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater
         case .alertSecondButtonReturn:
@@ -107,6 +115,17 @@ enum WorkspaceRegistry {
 
     static var models: [WorkspaceModel] {
         table.allObjects
+    }
+
+    /// The workspace belonging to the key window, resolved via the window ↔
+    /// workspace registry used for tab tear-off. Nil when the key window isn't
+    /// a registered workspace window.
+    static var keyWindowWorkspace: WorkspaceModel? {
+        guard let key = NSApp.keyWindow,
+              let target = TabTearOffCoordinator.shared.dropTarget(
+                at: CGPoint(x: key.frame.midX, y: key.frame.midY)),
+              target.window === key else { return nil }
+        return target.workspace
     }
 }
 
@@ -153,7 +172,7 @@ final class ExternalFileOpenCoordinator {
 
     func open(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        if let workspace = WorkspaceRegistry.models.first {
+        if let workspace = WorkspaceRegistry.keyWindowWorkspace ?? WorkspaceRegistry.models.first {
             route(urls, into: workspace)
         } else {
             pendingURLs.append(contentsOf: urls)

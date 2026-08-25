@@ -109,15 +109,57 @@ final class WorkspaceModel {
     /// Reopens the file tabs that were open when the app last quit. Skips files
     /// that no longer exist and restores the previously active tab. No-op once
     /// tabs are already present, so it never clobbers a window in use.
+    ///
+    /// All files load concurrently in a task group; the resulting tabs keep the
+    /// saved order, and the previously active tab is selected afterwards.
     func restoreSession() async {
         guard tabs.isEmpty else { return }
         let defaults = UserDefaults.standard
         let paths = defaults.stringArray(forKey: Keys.openSessionFiles) ?? []
         guard !paths.isEmpty else { return }
         let activePath = defaults.string(forKey: Keys.activeSessionFile)
-        for path in paths where FileManager.default.fileExists(atPath: path) {
-            await openFile(at: URL(fileURLWithPath: path))
+
+        var seen = Set<URL>()
+        let urls: [URL] = paths
+            .map { URL(fileURLWithPath: $0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) && seen.insert($0).inserted }
+
+        var loaded = [Result<TextDocument, Error>?](repeating: nil, count: urls.count)
+        await withTaskGroup(of: (Int, Result<TextDocument, Error>).self) { group in
+            for (index, url) in urls.enumerated() {
+                group.addTask {
+                    do { return (index, .success(try await TextDocument.load(from: url))) }
+                    catch { return (index, .failure(error)) }
+                }
+            }
+            for await (index, result) in group {
+                loaded[index] = result
+            }
         }
+
+        for (index, result) in loaded.enumerated() {
+            let url = urls[index]
+            if let kind = PreviewKind.previewKind(for: url) {
+                tabs.append(EditorTab.preview(kind))
+                continue
+            }
+            switch result {
+            case .success(let doc):
+                doc.autosaveFailureHandler = { [weak self, weak doc] error in
+                    guard let doc else { return }
+                    self?.lastError = "Could not autosave \(doc.displayName): \(error.localizedDescription)"
+                }
+                let tab = EditorTab(document: doc)
+                tabs.append(tab)
+                startWatching(tab)
+            case .failure(let error):
+                NSLog("BriskEdit: failed to load %@: %@", url.path, String(describing: error))
+                lastError = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
+            case .none:
+                break
+            }
+        }
+        activeTabID = tabs.last?.id
         if let activePath, let match = tabs.first(where: { $0.document.fileURL?.path == activePath }) {
             activeTabID = match.id
         }

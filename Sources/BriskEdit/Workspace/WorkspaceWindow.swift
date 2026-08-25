@@ -654,7 +654,6 @@ private struct RunButton: View {
         .tint(.green)
         .controlSize(.regular)
         .disabled(!isRunnable)
-        .keyboardShortcut("r", modifiers: .command)
         .help(isRunnable ? "Compile & run in terminal" : "Open a runnable file to enable Run")
     }
 }

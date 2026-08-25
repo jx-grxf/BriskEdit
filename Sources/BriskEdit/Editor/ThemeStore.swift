@@ -34,7 +34,13 @@ final class ThemeStore {
     func importTheme(from url: URL) throws -> ColorTheme {
         let data = try Data(contentsOf: url)
         let baseName = url.deletingPathExtension().lastPathComponent
-        let id = "imported." + slug(baseName)
+        let slug = slug(baseName)
+        var id = "imported." + slug
+        var counter = 2
+        while imported.contains(where: { $0.id == id }) {
+            id = "imported.\(slug)-\(counter)"
+            counter += 1
+        }
         let theme = try VSCodeThemeImporter.theme(fromJSON: data, id: id, fallbackName: baseName)
 
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -42,7 +48,6 @@ final class ThemeStore {
         let encoded = try JSONEncoder().encode(ColorThemeData(theme))
         try encoded.write(to: dest, options: .atomic)
 
-        imported.removeAll { $0.id == id }
         imported.append(theme)
         return theme
     }

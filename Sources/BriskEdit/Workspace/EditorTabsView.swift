@@ -70,8 +70,13 @@ struct EditorTabsView: View {
                         TerminalResizeHandle()
                             .gesture(resizeTerminalGesture(maxHeight: proxy.size.height - 180))
                     }
+                    // Keep the terminal at a stable nonzero height even while
+                    // hidden: collapsing its frame would resize the live PTY
+                    // (SIGWINCH) and wreck running TUI sessions. The inner fixed
+                    // frame pins SwiftTerm's size; only the layout slot collapses.
                     TerminalPanel(workspace: workspace)
-                        .frame(height: isVisible ? clampedTerminalHeight(maxHeight: proxy.size.height - 180) : 0)
+                        .frame(height: clampedTerminalHeight(maxHeight: proxy.size.height - 180))
+                        .frame(height: isVisible ? clampedTerminalHeight(maxHeight: proxy.size.height - 180) : 0, alignment: .top)
                         .opacity(isVisible ? 1 : 0)
                         .allowsHitTesting(isVisible)
                         .accessibilityHidden(!isVisible)
@@ -845,6 +850,7 @@ private struct StatusBar: View {
 private struct GitStatusBarView: View {
     let root: URL?
     @State private var status: GitStatus?
+    @State private var window: NSWindow?
 
     var body: some View {
         Group {
@@ -873,7 +879,11 @@ private struct GitStatusBarView: View {
         .onReceive(NotificationCenter.default.publisher(for: .gitDidChange)) { _ in
             Task { await reload() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+        // Only this window's activation refreshes the status; a global
+        // subscription made every window shell out `git status` on every key-up.
+        .background(WindowAccessor { window = $0 })
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            guard (note.object as? NSWindow) === window else { return }
             Task { await reload() }
         }
     }
