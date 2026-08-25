@@ -275,30 +275,30 @@ enum GitService {
     }
 
     @discardableResult
-    static func stage(_ path: String, root: URL) async -> Bool {
-        await runVoid(["-C", root.path, "add", "--", path])
+    static func stage(_ path: String, root: URL) async -> GitResult {
+        await runResult(["-C", root.path, "add", "--", path])
     }
 
     @discardableResult
-    static func stageAll(root: URL) async -> Bool {
-        await runVoid(["-C", root.path, "add", "-A"])
+    static func stageAll(root: URL) async -> GitResult {
+        await runResult(["-C", root.path, "add", "-A"])
     }
 
     @discardableResult
-    static func unstage(_ path: String, root: URL) async -> Bool {
-        await runVoid(["-C", root.path, "restore", "--staged", "--", path])
+    static func unstage(_ path: String, root: URL) async -> GitResult {
+        await runResult(["-C", root.path, "restore", "--staged", "--", path])
     }
 
     /// Discards working-tree changes for a tracked file (destructive — the
     /// caller is expected to confirm first).
     @discardableResult
-    static func discard(_ path: String, root: URL) async -> Bool {
-        await runVoid(["-C", root.path, "restore", "--", path])
+    static func discard(_ path: String, root: URL) async -> GitResult {
+        await runResult(["-C", root.path, "restore", "--", path])
     }
 
     @discardableResult
-    static func commit(message: String, root: URL) async -> Bool {
-        await runVoid(["-C", root.path, "commit", "-m", message])
+    static func commit(message: String, root: URL) async -> GitResult {
+        await runResult(["-C", root.path, "commit", "-m", message])
     }
 
     /// Pushes the current branch. If it has no upstream yet, retries with
@@ -373,12 +373,8 @@ enum GitService {
         await runResult(["-C", root.path, "checkout", "-b", name])
     }
 
-    private static func runVoid(_ args: [String]) async -> Bool {
-        await Task.detached(priority: .utility) { run(args) != nil }.value
-    }
-
     /// Runs git capturing stdout+stderr and the exit status — for operations
-    /// whose failure the UI should surface (push/pull/checkout).
+    /// whose failure the UI should surface.
     private static func runResult(_ args: [String]) async -> GitResult {
         await Task.detached(priority: .utility) { () -> GitResult in
             guard let result = BoundedProcessRunner.run(
@@ -404,7 +400,8 @@ enum GitService {
         return await Task.detached(priority: .utility) { () -> GitDiff? in
             guard let root = run(["-C", dir, "rev-parse", "--show-toplevel"])?
                 .trimmingCharacters(in: .whitespacesAndNewlines), !root.isEmpty else { return nil }
-            let relative = path.hasPrefix(root + "/") ? String(path.dropFirst(root.count + 1)) : fileURL.lastPathComponent
+            guard path.hasPrefix(root + "/") else { return nil }
+            let relative = String(path.dropFirst(root.count + 1))
 
             // HEAD version of the file. Missing → file is new/untracked; mark
             // every line as added only when Git already tracks it (staged add).
@@ -415,7 +412,10 @@ enum GitService {
                 guard run(["-C", root, "ls-files", "--error-unmatch", "--", relative]) != nil else {
                     return nil
                 }
-                let count = currentText.isEmpty ? 0 : currentText.components(separatedBy: "\n").count
+                var count = currentText.isEmpty ? 0 : currentText.components(separatedBy: "\n").count
+                // A trailing newline doesn't start another line; without this
+                // the last marked line would sit past EOF.
+                if count > 0 && currentText.hasSuffix("\n") { count -= 1 }
                 var diff = GitDiff()
                 for line in 1...max(1, count) where count > 0 { diff.lineKinds[line] = .added }
                 return diff

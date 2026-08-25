@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 /// Delivers live LSP `publishDiagnostics` to whichever editor owns a document
 /// URI. The editor coordinator registers a handler for its file; the LSP actor
@@ -133,6 +134,7 @@ struct LSPToolStatus: Sendable, Equatable {
 actor LSPService {
     static let shared = LSPService()
     private static let maximumDocumentBytes = 8 * 1024 * 1024
+    private static let maximumLiveServers = 8
 
     struct ServerConfig {
         let id: String
@@ -186,19 +188,42 @@ actor LSPService {
         }
     }
 
+    /// Memoized tool probes keyed by server id: resolving an executable spawns
+    /// a login shell (100–500 ms), which used to run on every tab switch and
+    /// language change. PATH won't meaningfully change mid-session, so entries
+    /// live for the whole app run.
+    private struct ToolStatusCache {
+        var statuses: [String: LSPToolStatus] = [:]
+        var tasks: [String: Task<LSPToolStatus, Never>] = [:]
+    }
+
+    private static let statusCache = OSAllocatedUnfairLock(initialState: ToolStatusCache())
+
     static func toolStatus(for language: SourceLanguage) async -> LSPToolStatus {
         guard let config = config(for: language) else { return .unsupported }
-        let path = await Task.detached(priority: .utility) {
-            resolveExecutablePath(for: config)
-        }.value
-        if let path {
+        if let cached = statusCache.withLock({ $0.statuses[config.id] }) {
+            return cached
+        }
+        if let inFlight = statusCache.withLock({ $0.tasks[config.id] }) {
+            return await inFlight.value
+        }
+        let task = Task.detached(priority: .utility) { () -> LSPToolStatus in
+            guard let path = resolveExecutablePath(for: config) else {
+                return LSPToolStatus(
+                    state: .missing,
+                    serverName: config.displayName,
+                    detail: "\(config.displayName) was not found on PATH"
+                )
+            }
             return LSPToolStatus(state: .available, serverName: config.displayName, detail: path)
         }
-        return LSPToolStatus(
-            state: .missing,
-            serverName: config.displayName,
-            detail: "\(config.displayName) was not found on PATH"
-        )
+        statusCache.withLock { $0.tasks[config.id] = task }
+        let status = await task.value
+        statusCache.withLock {
+            $0.statuses[config.id] = status
+            $0.tasks[config.id] = nil
+        }
+        return status
     }
 
     private struct ServerKey: Hashable {
@@ -207,6 +232,7 @@ actor LSPService {
     }
 
     private var servers: [ServerKey: Server] = [:]
+    private var lastUsed: [ServerKey: ContinuousClock.Instant] = [:]
     /// In-flight cold starts, keyed like `servers`. When a file opens, the
     /// outline, diagnostics, and completion all call `ensureServer` at once; the
     /// loser of that race used to get a not-yet-initialized server back as `nil`
@@ -311,17 +337,42 @@ actor LSPService {
     func shutdownAll() async {
         let running = Array(servers.values)
         servers.removeAll()
+        lastUsed.removeAll()
         for server in running {
             await server.shutdown()
+        }
+    }
+
+    /// Shuts down least-recently-used servers beyond the live cap so workspace
+    /// switches don't accumulate processes. Servers still holding open documents
+    /// are never evicted.
+    private func evictStaleServers(keeping protectedKeys: Set<ServerKey>) async {
+        guard servers.count > Self.maximumLiveServers else { return }
+        let excess = servers.count - Self.maximumLiveServers
+        var candidates: [(key: ServerKey, lastUsed: ContinuousClock.Instant)] = []
+        for (key, server) in servers where !protectedKeys.contains(key) {
+            if await server.hasOpenDocuments { continue }
+            candidates.append((key, lastUsed[key] ?? .now))
+        }
+        for (key, _) in candidates.sorted(by: { $0.lastUsed < $1.lastUsed }).prefix(excess) {
+            if let server = servers.removeValue(forKey: key) {
+                lastUsed[key] = nil
+                await server.shutdown()
+            }
         }
     }
 
     private func ensureServer(_ config: ServerConfig, root: String?) async -> Server? {
         let key = ServerKey(id: config.id, rootURI: Self.rootURI(for: root))
         if let existing = servers[key] {
-            if await existing.isUsable { return existing }
+            if await existing.isUsable {
+                lastUsed[key] = .now
+                await evictStaleServers(keeping: [key])
+                return existing
+            }
             await existing.shutdown()
             servers[key] = nil
+            lastUsed[key] = nil
         }
         if let inFlight = startTasks[key] { return await inFlight.value }
 
@@ -338,7 +389,11 @@ actor LSPService {
         // other call can observe a half-cleared state.
         let server = await task.value
         startTasks[key] = nil
-        if let server { servers[key] = server }
+        if let server {
+            servers[key] = server
+            lastUsed[key] = .now
+            await evictStaleServers(keeping: [key])
+        }
         return server
     }
 
@@ -510,6 +565,8 @@ private actor Server {
     private static let maximumHeaderBytes = 8 * 1024
     private static let maximumMessageBytes = 8 * 1024 * 1024
     private static let maximumInboxBytes = maximumHeaderBytes + maximumMessageBytes
+    private static let requestTimeoutSeconds: Double = 5
+    private static let initializationTimeoutSeconds: Double = 30
     private let config: LSPService.ServerConfig
     private var process: Process?
     private var stdin: FileHandle?
@@ -534,6 +591,10 @@ private actor Server {
 
     var isUsable: Bool {
         initialized && !failed && process?.isRunning == true
+    }
+
+    var hasOpenDocuments: Bool {
+        !openVersions.isEmpty
     }
 
     init(config: LSPService.ServerConfig) {
@@ -566,9 +627,17 @@ private actor Server {
                 await self?.ingest(chunk)
             }
         }
-        outPipe.fileHandleForReading.readabilityHandler = { handle in
+        outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                // EOF means the server process died; an installed handler would
+                // otherwise spin on empty reads forever. Same teardown as
+                // `shutdown()`, plus a failure mark so `ensureServer` restarts.
+                handle.readabilityHandler = nil
+                continuation.finish()
+                Task { await self?.streamEnded() }
+                return
+            }
             continuation.yield(data)
         }
 
@@ -593,7 +662,8 @@ private actor Server {
                 ]
             ]
         ]
-        guard await request(method: "initialize", params: initParams) != nil else {
+        guard await request(method: "initialize", params: initParams,
+                            timeoutSeconds: Self.initializationTimeoutSeconds) != nil else {
             failed = true
             await shutdown()
             return false
@@ -632,6 +702,14 @@ private actor Server {
         ])
     }
 
+    /// EOF arrived on stdout (the server process died). Drops the read handler,
+    /// fails in-flight requests, and marks the server failed so `ensureServer`
+    /// starts a fresh one on next use.
+    func streamEnded() {
+        outHandle?.readabilityHandler = nil
+        markFailed()
+    }
+
     /// Gracefully stops the server: LSP `shutdown` + `exit`, drop the read
     /// handler, terminate the process. Resilient to a half-started server.
     func shutdown() async {
@@ -657,7 +735,8 @@ private actor Server {
 
     // MARK: - JSON-RPC
 
-    func request(method: String, params: [String: Any]) async -> Data? {
+    func request(method: String, params: [String: Any],
+                 timeoutSeconds: Double = Server.requestTimeoutSeconds) async -> Data? {
         let id = nextId
         nextId += 1
         let message: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
@@ -670,7 +749,7 @@ private actor Server {
                 return
             }
             timeoutTasks[id] = Task {
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: .seconds(timeoutSeconds))
                 self.timeout(id: id)
             }
         }

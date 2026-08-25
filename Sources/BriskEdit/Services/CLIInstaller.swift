@@ -102,7 +102,7 @@ enum CLIInstaller {
     static func uninstall() async throws {
         let privileged = unprivilegedUninstall()
         if !privileged.isEmpty {
-            let command = privileged.map { "rm -f '\($0)'" }.joined(separator: " && ")
+            let command = privileged.map { "rm -f \(shellQuote($0))" }.joined(separator: " && ")
             try await runWithAdminPrivileges(command)
         }
         UserDefaults.standard.removeObject(forKey: installedPathsKey)
@@ -263,9 +263,16 @@ enum CLIInstaller {
         guard commandCanBeInstalled(at: fallbackSymlinkPath) else {
             throw CLIInstallerError.failed("A different command already exists at \(fallbackSymlinkPath). BriskEdit did not replace it.")
         }
-        let command = "mkdir -p '\(dir)' && rm -f '\(fallbackSymlinkPath)' && ln -s '\(scriptPath)' '\(fallbackSymlinkPath)'"
+        let command = "mkdir -p \(shellQuote(dir)) && rm -f \(shellQuote(fallbackSymlinkPath)) && ln -s \(shellQuote(scriptPath)) \(shellQuote(fallbackSymlinkPath))"
         try runWithAdminPrivileges(command)
         UserDefaults.standard.set([fallbackSymlinkPath], forKey: installedPathsKey)
+    }
+
+    /// POSIX shell-quoting for values interpolated into privileged commands:
+    /// wraps in single quotes and splices literal quotes as `'\''`, so a path
+    /// containing `'` cannot break out of the shell layer.
+    private static func shellQuote(_ value: String) -> String {
+        "'\(value.replacingOccurrences(of: "'", with: "'\\''"))'"
     }
 
     /// Runs a shell command via the native macOS authorization dialog (password

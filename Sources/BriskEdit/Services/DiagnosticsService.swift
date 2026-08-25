@@ -36,16 +36,17 @@ enum DiagnosticsService {
         guard text.utf8.count <= 8 * 1024 * 1024 else { return nil }
         guard let spec = spec(for: language) else { return nil }
         return await Task.detached(priority: .utility) { () -> [Diagnostic]? in
-            // Stage the (possibly unsaved) buffer in a sibling temp file so the
-            // user's real file is never touched, while relative `#include`s still
-            // resolve against the project directory. Falls back to the temp dir
-            // for untitled buffers.
-            let directory = fileURL?.deletingLastPathComponent() ?? FileManager.default.temporaryDirectory
-            let staged = directory.appendingPathComponent("brisk-check-\(UUID().uuidString).\(language.preferredExtension)")
+            // Stage the (possibly unsaved) buffer in the per-user temp
+            // directory so the user's real file and project directory are
+            // never touched; `-I <original directory>` below keeps relative
+            // `#include`s resolving against the project.
+            let originalDirectory = fileURL?.deletingLastPathComponent()
+            let staged = FileManager.default.temporaryDirectory
+                .appendingPathComponent("brisk-check-\(UUID().uuidString).\(language.preferredExtension)")
             guard (try? text.write(to: staged, atomically: true, encoding: .utf8)) != nil else { return nil }
             defer { try? FileManager.default.removeItem(at: staged) }
 
-            let command = spec.command(staged.path, directory.path)
+            let command = spec.command(staged.path, originalDirectory?.path ?? staged.deletingLastPathComponent().path)
             guard let output = runCapturingStderr(command) else { return nil }
             return parse(output, filename: staged.lastPathComponent, source: spec.source)
         }.value

@@ -28,9 +28,12 @@ enum RunService {
 
         let source = try await materializedSource(for: document)
         let sourceURL = source.url
-        let cwd = runDirectory(for: sourceURL, workspaceRoot: workspaceRoot)
+        let cwd = runDirectory(for: source.includeDirectory ?? sourceURL, workspaceRoot: workspaceRoot)
         let file = shellQuote(sourceURL.path)
         let cleanup = source.cleanupAfterRun ? " ; rm -f \(file)" : ""
+        // Staged buffers live in the temp directory, so quoted includes and
+        // sibling imports need the original file's directory handed back.
+        let includeFlag = source.includeDirectory.map { " -I \(shellQuote($0.path))" } ?? ""
 
         let line: String
         switch document.language {
@@ -40,17 +43,18 @@ enum RunService {
             // both set up the SDK sysroot so system headers (stdio.h…) resolve.
             // Invoking `xcrun --find clang`'s result directly skips that and fails.
             let extra = SecretMode.isEnabled ? " -DprintDih=printf" : ""
-            line = "(if command -v cc >/dev/null 2>&1; then __cc='cc'; elif xcrun --find clang >/dev/null 2>&1; then __cc='xcrun clang'; elif command -v gcc >/dev/null 2>&1; then __cc='gcc'; else __cc=''; fi; if [ -z \"$__cc\" ]; then echo 'BriskEdit: install clang or gcc to run C files.'; false; else $__cc \(file) -Wall -Wextra\(extra) -o \(output) && \(output); fi); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
+            line = "(if command -v cc >/dev/null 2>&1; then __cc='cc'; elif xcrun --find clang >/dev/null 2>&1; then __cc='xcrun clang'; elif command -v gcc >/dev/null 2>&1; then __cc='gcc'; else __cc=''; fi; if [ -z \"$__cc\" ]; then echo 'BriskEdit: install clang or gcc to run C files.'; false; else $__cc \(file)\(includeFlag) -Wall -Wextra\(extra) -o \(output) && \(output); fi); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
         case .cpp:
             let output = shellQuote(tempBinaryPath())
-            line = "(if command -v c++ >/dev/null 2>&1; then __cxx='c++'; elif xcrun --find clang++ >/dev/null 2>&1; then __cxx='xcrun clang++'; elif command -v g++ >/dev/null 2>&1; then __cxx='g++'; else __cxx=''; fi; if [ -z \"$__cxx\" ]; then echo 'BriskEdit: install clang++ or g++ to run C++ files.'; false; else $__cxx \(file) -Wall -Wextra -std=c++20 -o \(output) && \(output); fi); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
+            line = "(if command -v c++ >/dev/null 2>&1; then __cxx='c++'; elif xcrun --find clang++ >/dev/null 2>&1; then __cxx='xcrun clang++'; elif command -v g++ >/dev/null 2>&1; then __cxx='g++'; else __cxx=''; fi; if [ -z \"$__cxx\" ]; then echo 'BriskEdit: install clang++ or g++ to run C++ files.'; false; else $__cxx \(file)\(includeFlag) -Wall -Wextra -std=c++20 -o \(output) && \(output); fi); __brisk_status=$?; rm -f \(output)\(cleanup); printf '\\n[exit %s]\\n' \"$__brisk_status\""
         case .swift:
             if let packageRoot = ancestor(containing: "Package.swift", from: sourceURL.deletingLastPathComponent(), stopAt: workspaceRoot) {
                 return RunCommand(title: "swift run", shellLine: "swift run", cwd: packageRoot)
             }
             line = "swift \(file)\(cleanup)"
         case .python:
-            line = "python3 \(file)\(cleanup)"
+            let pythonPath = source.includeDirectory.map { "PYTHONPATH=\(shellQuote($0.path)) " } ?? ""
+            line = "\(pythonPath)python3 \(file)\(cleanup)"
         case .javascript:
             line = "node \(file)\(cleanup)"
         case .typescript:
@@ -99,6 +103,9 @@ enum RunService {
     private struct MaterializedSource {
         let url: URL
         let cleanupAfterRun: Bool
+        /// Original directory of a staged (dirty) buffer, so include/import
+        /// resolution and the fallback run directory stay in the project.
+        var includeDirectory: URL? = nil
     }
 
     private struct MaterializedJavaSource {
@@ -115,13 +122,17 @@ enum RunService {
         }
 
         let ext = document.language.preferredExtension
-        let directory = sourceDirectory(for: document)
-        let url = directory.appendingPathComponent(".briskedit-run-\(UUID().uuidString).\(ext)")
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent(".briskedit-run-\(UUID().uuidString).\(ext)")
         let text = document.text
         try await Task.detached(priority: .userInitiated) {
             try text.write(to: url, atomically: true, encoding: .utf8)
         }.value
-        return MaterializedSource(url: url, cleanupAfterRun: true)
+        return MaterializedSource(
+            url: url,
+            cleanupAfterRun: true,
+            includeDirectory: document.fileURL?.deletingLastPathComponent()
+        )
     }
 
     @MainActor
@@ -140,16 +151,6 @@ enum RunService {
         }.value
         let mainClass = packageName.map { "\($0).\(typeName)" } ?? typeName
         return MaterializedJavaSource(sourceURL: sourceURL, classOutputURL: classOutputURL, cleanupDirectory: root, mainClass: mainClass)
-    }
-
-    @MainActor
-    private static func sourceDirectory(for document: TextDocument) -> URL {
-        switch document.language {
-        case .c, .cpp:
-            return document.fileURL?.deletingLastPathComponent() ?? FileManager.default.temporaryDirectory
-        default:
-            return FileManager.default.temporaryDirectory
-        }
     }
 
     private static func runDirectory(for sourceURL: URL, workspaceRoot: URL?) -> URL {
@@ -177,7 +178,8 @@ enum RunService {
     }
 
     private static func tempBinaryPath() -> String {
-        "/tmp/briskedit-\(UUID().uuidString)"
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("briskedit-\(UUID().uuidString)").path
     }
 
     private static func javaPrimaryTypeName(in text: String) -> String? {

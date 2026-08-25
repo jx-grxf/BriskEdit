@@ -336,9 +336,9 @@ struct GitSidebarView: View {
                 Button("Commit") {
                     let message = commitMessage
                     perform {
-                        let ok = await GitService.commit(message: message, root: root)
-                        if ok { await MainActor.run { commitMessage = "" } }
-                        return ok
+                        let result = await GitService.commit(message: message, root: root)
+                        if result.ok { await MainActor.run { commitMessage = "" } }
+                        return result
                     }
                 }
                 .controlSize(.small)
@@ -364,11 +364,21 @@ struct GitSidebarView: View {
         self.commits = await commits
     }
 
-    /// Boolean git op (stage/commit/…), then refresh + broadcast.
-    private func perform(_ op: @escaping () async -> Bool) {
+    /// Git op whose failure should surface (stage/unstage/discard/commit), then
+    /// refresh + broadcast. Failures reuse the result-banner; successes stay
+    /// silent.
+    private func perform(_ op: @escaping () async -> GitResult) {
         isWorking = true
         Task {
-            _ = await op()
+            let result = await op()
+            if result.ok {
+                feedback = nil
+            } else {
+                feedback = GitFeedback(
+                    text: result.output.isEmpty ? "Git operation failed." : result.output,
+                    isError: true
+                )
+            }
             await reload()
             NotificationCenter.default.post(name: .gitDidChange, object: nil)
             isWorking = false
