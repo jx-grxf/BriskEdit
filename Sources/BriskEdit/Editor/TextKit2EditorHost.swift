@@ -55,6 +55,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         context.coordinator.gitDiffDebounce = gitDiffDebounce
         context.coordinator.showInlineBlame = showInlineGitBlame
         context.coordinator.workspaceRootURL = workspaceRootURL
+        context.coordinator.refreshEditorConfig(fileURL: document.fileURL, workspaceRoot: workspaceRootURL)
         context.coordinator.installBlameLabel(in: textView)
         textView.onResignFirstResponder = { [weak coordinator = context.coordinator] in
             coordinator?.dismissCompletions()
@@ -62,7 +63,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         // Returning to the editor (e.g. after committing in the terminal) should
         // refresh the gutter's git diff, which is otherwise stale.
         textView.onBecomeFirstResponder = { [weak coordinator = context.coordinator] in
-            coordinator?.scheduleGitDiff()
+            coordinator?.scheduleGitDiff(force: true)
         }
         textView.onSelectNextOccurrence = { [weak coordinator = context.coordinator] in
             coordinator?.selectNextOccurrence()
@@ -119,6 +120,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
         gutter.textView = textView
         context.coordinator.gutter = gutter
         context.coordinator.scrollView = scrollView
+        gutter.lineStartsProvider = { [weak coordinator = context.coordinator] in
+            coordinator?.currentLineStartOffsets() ?? [0]
+        }
 
         // Code folding: a content-storage delegate collapses folded lines
         // (display-only, never mutates the storage). The gutter draws/toggles
@@ -138,6 +142,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         let minimap = MinimapView(theme: theme)
         minimap.textView = textView
         minimap.scrollView = scrollView
+        minimap.invalidateContent()
         context.coordinator.minimap = minimap
 
         let container = EditorBackingView(fillColor: theme.background)
@@ -204,6 +209,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         coordinator.highlightDebounce = highlightDebounce
         coordinator.gitDiffDebounce = gitDiffDebounce
         coordinator.updateInlineBlameEnabled(showInlineGitBlame)
+        coordinator.refreshEditorConfig(fileURL: document.fileURL, workspaceRoot: workspaceRootURL)
         let previousTheme = coordinator.theme
         let themeChanged = previousTheme != theme
         coordinator.theme = theme
@@ -336,12 +342,22 @@ struct TextKit2EditorHost: NSViewRepresentable {
         var minimapWidthConstraint: NSLayoutConstraint?
         weak var scrollView: NSScrollView?
         var workspaceRootURL: URL?
+        /// Per-file `.editorconfig` overrides for this document; recomputed only
+        /// when the document or workspace root changes (never per keystroke).
+        var editorConfig = EditorConfigService.Settings()
+        private var editorConfigSource: (file: URL?, root: URL?)?
         private var highlightWork: DispatchWorkItem?
         private var gitWork: DispatchWorkItem?
         private var lspWork: DispatchWorkItem?
         private var lspRequestGeneration = 0
         private var minimapWork: DispatchWorkItem?
+        /// Guards the debounced git-diff Task: results of a superscheduled
+        /// diff must not overwrite a newer one (same pattern as
+        /// `lspRequestGeneration` / `blameToken`).
+        private var gitDiffGeneration = 0
+        private var lastDiffedRevision = -1
         private var lspItems: [LSPCompletion] = []
+        private var lineStartsCache: (revision: Int, offsets: [Int])?
         private var lspDiagnosticsURI: String?
         private var lspDiagnosticsToken: UUID?
         private var lspLanguage: SourceLanguage?
@@ -361,6 +377,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
         let editorUndoManager = UndoManager()
         private let hoverPanel = HoverPanel()
         private var hoverWork: DispatchWorkItem?
+        /// Bumped by `hideHover` so an in-flight hover Task can detect that its
+        /// result was dismissed while the request was on the wire.
+        private var hoverGeneration = 0
         private let signaturePanel = SignatureHelpPanel()
         private var signatureWork: DispatchWorkItem?
         private var treeSitterHighlighter: TreeSitterHighlighter?
@@ -424,8 +443,15 @@ struct TextKit2EditorHost: NSViewRepresentable {
             hideSignatureHelp()
         }
 
-        @objc private func gitMaybeChanged() {
-            scheduleGitDiff()
+        @objc private func gitMaybeChanged(_ notification: Notification) {
+            // didBecomeKeyNotification arrives for every window in the app;
+            // only react when it's this editor's own window.
+            if let activatedWindow = notification.object as? NSWindow,
+               let ownWindow = textView?.window,
+               activatedWindow !== ownWindow {
+                return
+            }
+            scheduleGitDiff(force: true)
             // Window reactivation can land on a gutter that was painted blank
             // while the window was inactive — repaint it too.
             gutter?.refresh()
@@ -528,6 +554,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         func hideHover() {
+            hoverGeneration &+= 1
             hoverWork?.cancel()
             hoverPanel.hide()
             hoverIndex = -1
@@ -550,14 +577,16 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
             // Otherwise show LSP hover (type/docs) when a server is configured.
             guard let url = document.fileURL, LSPService.config(for: document.language) != nil else { hoverPanel.hide(); return }
-            let (line, character) = Self.lspPosition(in: ns, location: index)
+            let (line, character) = lspPosition(at: index)
             let language = document.language
             let uri = url.absoluteString
             let text = textView.string
             let root = lspRootPath(for: url)
+            let generation = hoverGeneration
             Task { @MainActor [weak self] in
                 guard let self else { return }
                 let info = await LSPService.shared.hover(language: language, uri: uri, text: text, line: line, character: character, root: root)
+                guard self.hoverGeneration == generation else { return }
                 guard let info, !info.isEmpty else { self.hoverPanel.hide(); return }
                 let rect = textView.firstRect(forCharacterRange: NSRange(location: index, length: 1), actualRange: nil)
                 self.hoverIndex = index
@@ -605,7 +634,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             guard let url = document.fileURL else { return }
             let ns = textView.string as NSString
             let location = min(max(textView.selectedRange().location, 0), ns.length)
-            let (line, character) = Self.lspPosition(in: ns, location: location)
+            let (line, character) = lspPosition(at: location)
             let language = document.language
             let uri = url.absoluteString
             let text = textView.string
@@ -931,7 +960,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let ns = textView.string as NSString
             let safe = max(0, min(index, ns.length))
             textView.setSelectedRange(NSRange(location: safe, length: 0))
-            let (line, character) = Self.lspPosition(in: ns, location: safe)
+            let (line, character) = lspPosition(at: safe)
             let language = document.language
             let uri = url.absoluteString
             let text = textView.string
@@ -994,8 +1023,22 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 }
             }
             add(document.language.completionWords, kind: .keyword)
-            add(bufferSymbols(in: text, excluding: partial), kind: .variable)
+            add(bufferedSymbols(in: text).filter { $0 != partial }, kind: .variable)
             return Array(ordered.prefix(120))
+        }
+
+        /// Buffer-scraped identifiers, cached per document revision and throttled
+        /// so a keystroke while the popup is open serves the previous scrape
+        /// instead of regex-walking the whole buffer again; the list settles once
+        /// typing pauses.
+        private var symbolCache: (revision: Int, builtAt: Date, symbols: [String])?
+
+        private func bufferedSymbols(in text: String) -> [String] {
+            if let cache = symbolCache, cache.revision == document.revision { return cache.symbols }
+            if let cache = symbolCache, Date().timeIntervalSince(cache.builtAt) < 0.25 { return cache.symbols }
+            let symbols = Self.scrapeBufferSymbols(in: text)
+            symbolCache = (document.revision, Date(), symbols)
+            return symbols
         }
 
         func textView(_ textView: NSTextView, shouldChangeTextIn range: NSRange, replacementString: String?) -> Bool {
@@ -1194,6 +1237,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         func disableExpensiveFeaturesForLargeFile() {
             highlightWork?.cancel()
             gitWork?.cancel()
+            gitDiffGeneration &+= 1
             lspWork?.cancel()
             minimapWork?.cancel()
             hoverWork?.cancel()
@@ -1329,7 +1373,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let language = doc.language
             let url = doc.fileURL
             guard language.supportsFormatting else { return }
-            let indentWidth = theme.tabWidth
+            let indentWidth = effectiveTabWidth
             formatTask = Task { @MainActor [weak self] in
                 let formatted = await FormatterService.format(
                     text: text,
@@ -1392,7 +1436,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 gutter?.refresh()
                 return
             }
-            let regions = FoldingAnalyzer.regions(in: textView.string as NSString, tabWidth: theme.tabWidth)
+            let regions = FoldingAnalyzer.regions(in: textView.string as NSString, tabWidth: effectiveTabWidth)
             folding.updateRegions(regions)
             gutter?.refresh()
         }
@@ -1410,18 +1454,27 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         /// Debounced recompute of the git gutter diff (buffer vs HEAD). Cleared
-        /// for documents with no on-disk URL.
-        func scheduleGitDiff() {
+        /// for documents with no on-disk URL. Pass `force: true` for events that
+        /// can change HEAD without touching the buffer (git ops, window
+        /// activation); ordinary edit-driven schedules skip the run when the
+        /// revision was already diffed.
+        func scheduleGitDiff(force: Bool = false) {
             gitWork?.cancel()
+            gitDiffGeneration &+= 1
+            let generation = gitDiffGeneration
             guard gutter != nil else { return }
             guard !isLargeFile else { gutter?.setGitDiff(nil); return }
             guard document.fileURL != nil else { gutter?.setGitDiff(nil); return }
             let work = DispatchWorkItem { [weak self] in
                 guard let self, let tv = self.textView, let url = self.document.fileURL else { return }
+                if !force, document.revision == lastDiffedRevision { return }
                 let text = tv.string
+                let diffedRevision = document.revision
                 Task { @MainActor [weak self] in
                     let diff = await GitService.diff(for: url, currentText: text)
-                    self?.gutter?.setGitDiff(diff)
+                    guard let self, self.gitDiffGeneration == generation else { return }
+                    self.gutter?.setGitDiff(diff)
+                    self.lastDiffedRevision = diffedRevision
                 }
             }
             gitWork = work
@@ -1454,7 +1507,6 @@ struct TextKit2EditorHost: NSViewRepresentable {
             let caretRect = textView.firstRect(forCharacterRange: NSRange(location: selection.location, length: 0), actualRange: nil)
             ignoreNextSelectionChange = true
             popup.show(items: items, caretScreenRect: caretRect, parent: textView.window)
-            textView.needsDisplay = true
         }
 
         private func acceptCompletion(_ item: CompletionItem) {
@@ -1511,8 +1563,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
             lspItems = []
 
             let text = textView.string
-            let nsString = text as NSString
-            let (line, character) = Self.lspPosition(in: nsString, location: textView.selectedRange().location)
+            let (line, character) = lspPosition(at: textView.selectedRange().location)
             let uri = url.absoluteString
             let root = lspRootPath(for: url)
 
@@ -1587,44 +1638,77 @@ struct TextKit2EditorHost: NSViewRepresentable {
             workspaceRootURL?.path ?? url.deletingLastPathComponent().path
         }
 
-        private static func lspPosition(in nsString: NSString, location: Int) -> (line: Int, character: Int) {
-            let safe = max(0, min(location, nsString.length))
-            let lineRange = nsString.lineRange(for: NSRange(location: safe, length: 0))
-            let character = safe - lineRange.location
-            var line = 0
-            if lineRange.location > 0 {
-                nsString.enumerateSubstrings(in: NSRange(location: 0, length: lineRange.location), options: [.byLines, .substringNotRequired]) { _, _, _, _ in
-                    line += 1
-                }
+        /// The document's line-start offsets, cached per revision so the gutter,
+        /// LSP position mapping and diagnostic resolution all share one O(log n)
+        /// line lookup instead of each re-enumerating substrings from offset 0.
+        func currentLineStartOffsets() -> [Int] {
+            if let cache = lineStartsCache, cache.revision == document.revision { return cache.offsets }
+            let offsets = TextDocument.computeLineStartOffsets(in: textView?.string ?? document.text)
+            lineStartsCache = (document.revision, offsets)
+            return offsets
+        }
+
+        /// 0-based line and column (both 0-based, as the LSP wants) of a UTF-16
+        /// location, via a binary search over the cached line-start offsets.
+        private func lspPosition(at location: Int) -> (line: Int, character: Int) {
+            let full = textView?.string ?? ""
+            let safe = max(0, min(location, full.utf16.count))
+            let offsets = currentLineStartOffsets()
+            if safe == full.utf16.count, full.hasSuffix("\n") {
+                return (offsets.count, 0)
             }
-            return (line, character)
+            var low = 0
+            var high = offsets.count
+            while low < high {
+                let mid = (low + high) / 2
+                if offsets[mid] <= safe { low = mid + 1 } else { high = mid }
+            }
+            let index = max(0, low - 1)
+            return (index, safe - offsets[index])
         }
 
         /// Maps the document's diagnostics to resolved character ranges and hands
         /// them to the text view to draw as squiggles. Recomputed from the live
-        /// buffer so the underlines track the text between LSP publishes.
+        /// buffer so the underlines track the text between LSP publishes — but
+        /// skipped entirely when neither the diagnostics nor the revision changed
+        /// since they were last applied (this runs on every `updateNSView`).
+        private var appliedDiagnostics: (revision: Int, diagnostics: [Diagnostic])?
+
         func refreshDiagnosticUnderlines() {
             guard let textView = textView as? BriskCodeTextView else { return }
             guard !isLargeFile else {
+                appliedDiagnostics = nil
                 textView.setDiagnosticUnderlines([])
                 return
             }
+            let revision = document.revision
+            let diagnostics = document.diagnostics
+            if let applied = appliedDiagnostics, applied.revision == revision, applied.diagnostics == diagnostics {
+                return
+            }
+            appliedDiagnostics = (revision, diagnostics)
             let ns = textView.string as NSString
-            let underlines: [(range: NSRange, severity: Diagnostic.Severity)] = document.diagnostics.compactMap { d in
-                guard d.severity != .note, let range = Self.diagnosticRange(for: d, in: ns) else { return nil }
-                return (range, d.severity)
+            let lineStarts = currentLineStartOffsets()
+            var underlines: [(range: NSRange, severity: Diagnostic.Severity)] = []
+            underlines.reserveCapacity(diagnostics.count)
+            for d in diagnostics where d.severity != .note {
+                if let range = Self.diagnosticRange(for: d, in: ns, lineStarts: lineStarts) {
+                    underlines.append((range, d.severity))
+                }
             }
             textView.setDiagnosticUnderlines(underlines)
         }
 
         /// Resolves a diagnostic's span to a character range: the real end when
         /// the source gave one (LSP), otherwise the token at the start column
-        /// (the clang/swiftc fallback only reports a point).
-        static func diagnosticRange(for d: Diagnostic, in ns: NSString) -> NSRange? {
-            guard let lineStart = lineStartOffset(in: ns, line1: d.line) else { return nil }
+        /// (the clang/swiftc fallback only reports a point). Line starts come
+        /// from a shared snapshot so a batch of diagnostics costs one lookup
+        /// pass, not one substring walk per entry.
+        static func diagnosticRange(for d: Diagnostic, in ns: NSString, lineStarts: [Int]) -> NSRange? {
+            guard let lineStart = lineStartOffset(line1: d.line, lineStarts: lineStarts) else { return nil }
             let start = min(ns.length, lineStart + max(0, d.column - 1))
             if let endLine = d.endLine, let endColumn = d.endColumn,
-               let endLineStart = lineStartOffset(in: ns, line1: endLine) {
+               let endLineStart = lineStartOffset(line1: endLine, lineStarts: lineStarts) {
                 let end = min(ns.length, endLineStart + max(0, endColumn - 1))
                 if end > start { return NSRange(location: start, length: end - start) }
             }
@@ -1636,41 +1720,35 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         /// Character offset of the 1-based line's first character, or nil if the
         /// line is past the end of the buffer.
-        private static func lineStartOffset(in ns: NSString, line1: Int) -> Int? {
-            if line1 <= 1 { return 0 }
-            var lineNo = 1
-            var result: Int?
-            ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines, .substringNotRequired]) { _, _, enclosingRange, stop in
-                lineNo += 1
-                if lineNo == line1 {
-                    result = NSMaxRange(enclosingRange)
-                    stop.pointee = true
-                }
-            }
-            return result
+        private static func lineStartOffset(line1: Int, lineStarts: [Int]) -> Int? {
+            guard line1 >= 1 else { return nil }
+            let index = line1 - 1
+            guard index < lineStarts.count else { return nil }
+            return lineStarts[index]
         }
 
         /// The diagnostic(s) whose span covers a character index, for the hover.
         func diagnostics(at index: Int) -> [Diagnostic] {
             guard let textView else { return [] }
             let ns = textView.string as NSString
+            let lineStarts = currentLineStartOffsets()
             return document.diagnostics.filter { d in
-                guard let range = Self.diagnosticRange(for: d, in: ns) else { return false }
+                guard let range = Self.diagnosticRange(for: d, in: ns, lineStarts: lineStarts) else { return false }
                 return NSLocationInRange(index, range) || index == NSMaxRange(range)
             }
         }
 
         /// Unique identifiers found in the buffer — gives "suggest my own
         /// variable / function names" without needing a language server.
-        private func bufferSymbols(in text: String, excluding partial: String) -> [String] {
+        private static func scrapeBufferSymbols(in text: String) -> [String] {
             guard text.utf16.count <= 200_000 else { return [] }
-            guard let regex = Self.identifierRegex else { return [] }
+            guard let regex = identifierRegex else { return [] }
             let nsText = text as NSString
             var counts: [String: Int] = [:]
             regex.enumerateMatches(in: text, range: NSRange(location: 0, length: nsText.length)) { match, _, _ in
                 guard let match else { return }
                 let token = nsText.substring(with: match.range)
-                guard token != partial, token.count >= 3, !Self.reservedTokens.contains(token) else { return }
+                guard token.count >= 3, !Self.reservedTokens.contains(token) else { return }
                 counts[token, default: 0] += 1
             }
             return counts.keys.sorted { lhs, rhs in
@@ -1683,7 +1761,25 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private static let reservedTokens: Set<String> = ["int", "for", "the", "and", "var", "let", "void", "return"]
 
         private var indentUnit: String {
-            theme.usesSpacesForTabs ? String(repeating: " ", count: theme.tabWidth) : "\t"
+            effectiveUsesSpaces ? String(repeating: " ", count: max(effectiveTabWidth, 1)) : "\t"
+        }
+
+        /// Indentation behavior resolved for this document: `.editorconfig`
+        /// values win over the global preferences when present.
+        func refreshEditorConfig(fileURL: URL?, workspaceRoot: URL?) {
+            if let source = editorConfigSource, source.file == fileURL, source.root == workspaceRootURL {
+                return
+            }
+            editorConfigSource = (file: fileURL, root: workspaceRoot)
+            editorConfig = EditorConfigService.settings(for: fileURL, workspaceRoot: workspaceRoot)
+        }
+
+        private var effectiveUsesSpaces: Bool {
+            editorConfig.usesSpacesForIndentation ?? theme.usesSpacesForTabs
+        }
+
+        private var effectiveTabWidth: Int {
+            editorConfig.indentWidth ?? theme.tabWidth
         }
 
         /// Backspace inside a line's leading whitespace removes a whole indent
@@ -1693,7 +1789,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         /// false so AppKit's default delete (selection delete, line-join,
         /// tab-mode) runs unchanged.
         private func smartOutdent(in textView: NSTextView) -> Bool {
-            guard theme.usesSpacesForTabs,
+            guard effectiveUsesSpaces,
                   textView.selectedRanges.count == 1 else { return false }
             let selection = textView.selectedRange()
             guard selection.length == 0, selection.location > 0 else { return false }
@@ -1705,7 +1801,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 let c = nsString.character(at: offset)
                 guard c == 0x20 || c == 0x09 else { return false }
             }
-            let tab = max(theme.tabWidth, 1)
+            let tab = max(effectiveTabWidth, 1)
             let removal = width - ((width - 1) / tab) * tab  // distance to previous tab stop (e.g. 15->3, 12->4)
             textView.insertText("", replacementRange: NSRange(location: selection.location - removal, length: removal))
             return true

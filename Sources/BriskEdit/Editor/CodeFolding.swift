@@ -35,17 +35,26 @@ enum FoldingAnalyzer {
         guard text.length > 0 else { return [] }
 
         // Collect each line's paragraph range (incl. trailing newline), its indent
-        // width, whether it's blank, and its trimmed text (for brace detection).
+        // width, whether it's blank, and whether it trims to a lone closer or a
+        // bare `{` — classified in place over UTF-16, without materializing a
+        // trimmed string per line.
         var ranges: [NSRange] = []
         var indents: [Int] = []
         var blanks: [Bool] = []
-        var trimmed: [String] = []
-        text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: [.byLines]) { line, _, enclosing, _ in
+        var loneClosers: [Bool] = []
+        var bareOpeners: [Bool] = []
+        text.enumerateSubstrings(in: NSRange(location: 0, length: text.length), options: [.byLines, .substringNotRequired]) { _, _, enclosing, _ in
             ranges.append(enclosing)
-            let (indent, blank) = Self.indentWidth(of: (line ?? "") as NSString, tabWidth: tabWidth)
-            indents.append(indent)
-            blanks.append(blank)
-            trimmed.append((line ?? "").trimmingCharacters(in: .whitespaces))
+            var end = NSMaxRange(enclosing)
+            while end > enclosing.location {
+                let c = text.character(at: end - 1)
+                if c == 0x0A || c == 0x0D { end -= 1 } else { break }
+            }
+            let line = Self.classifyLine(text, from: enclosing.location, upTo: end, tabWidth: tabWidth)
+            indents.append(line.indent)
+            blanks.append(line.blank)
+            loneClosers.append(line.closer)
+            bareOpeners.append(line.bareOpener)
         }
 
         var regions: [FoldRegion] = []
@@ -64,7 +73,7 @@ enum FoldingAnalyzer {
             // sits at the header's indent — pure-indentation folding excludes it,
             // which left the closing brace dangling on its own line after a fold.
             if last + 1 < ranges.count, !blanks[last + 1],
-               indents[last + 1] <= base, Self.isLoneCloser(trimmed[last + 1]) {
+               indents[last + 1] <= base, loneClosers[last + 1] {
                 last += 1
             }
 
@@ -73,7 +82,7 @@ enum FoldingAnalyzer {
             // to one clean header line instead of leaving `{` stranded above the
             // hidden body. Guard against stealing a line already used as a header.
             var header = i
-            if Self.isLoneOpener(trimmed[i]), i - 1 >= 0, !blanks[i - 1],
+            if bareOpeners[i], i - 1 >= 0, !blanks[i - 1],
                indents[i - 1] <= base, !claimedHeaders.contains(i - 1),
                !regions.contains(where: { $0.lastLine >= i - 1 && $0.headerLine < i - 1 }) {
                 header = i - 1
@@ -87,33 +96,55 @@ enum FoldingAnalyzer {
         return regions
     }
 
-    /// A line that is nothing but a closing delimiter (optionally with a trailing
-    /// `;` or `,`), e.g. `}`, `};`, `)`, `},`, `]`.
-    private static func isLoneCloser(_ line: String) -> Bool {
-        guard let first = line.first, "}])".contains(first) else { return false }
-        let rest = line.dropFirst().filter { !$0.isWhitespace }
-        return rest.allSatisfy { "}]);,".contains($0) }
-    }
+    /// Classifies one line in place over UTF-16 (no trimmed-string copies):
+    /// leading-whitespace width (tabs counted as `tabWidth`), whether the line
+    /// is blank, whether it trims to a lone closing delimiter (optionally with
+    /// trailing `;` or `,`, e.g. `}`, `};`, `)`, `},`), and whether it trims to
+    /// exactly `{`.
+    private static func classifyLine(_ text: NSString, from start: Int, upTo end: Int, tabWidth: Int)
+        -> (indent: Int, blank: Bool, closer: Bool, bareOpener: Bool) {
+        let openBrace = unichar(UnicodeScalar("{").value)
+        let closeBrace = unichar(UnicodeScalar("}").value)
+        let closeBracket = unichar(UnicodeScalar("]").value)
+        let closeParen = unichar(UnicodeScalar(")").value)
+        let semicolon = unichar(UnicodeScalar(";").value)
+        let comma = unichar(UnicodeScalar(",").value)
 
-    /// A line that ends an opening construct with just a brace, e.g. `{`.
-    private static func isLoneOpener(_ line: String) -> Bool {
-        line == "{"
-    }
-
-    /// Leading-whitespace width (tabs counted as `tabWidth`); `blank` is true for
-    /// whitespace-only lines, which carry no indentation level of their own.
-    private static func indentWidth(of line: NSString, tabWidth: Int) -> (width: Int, blank: Bool) {
-        var width = 0
-        var i = 0
-        while i < line.length {
-            switch line.character(at: i) {
-            case 0x20: width += 1
-            case 0x09: width += tabWidth
-            default: return (width, false)
-            }
+        var indent = 0
+        var i = start
+        while i < end {
+            let c = text.character(at: i)
+            if c == 0x20 { indent += 1 }
+            else if c == 0x09 { indent += tabWidth }
+            else { break }
             i += 1
         }
-        return (width, true) // only whitespace
+        guard i < end else { return (indent, true, false, false) }
+
+        let first = text.character(at: i)
+        var j = end - 1
+        while j > i {
+            let c = text.character(at: j)
+            if c != 0x20 && c != 0x09 { break }
+            j -= 1
+        }
+        let last = text.character(at: j)
+
+        func isCloserToken(_ c: unichar) -> Bool {
+            c == closeBrace || c == closeBracket || c == closeParen || c == semicolon || c == comma
+        }
+        var closer = first == closeBrace || first == closeBracket || first == closeParen
+        if closer {
+            var k = i
+            while k <= j {
+                let c = text.character(at: k)
+                if c != 0x20 && c != 0x09 && !isCloserToken(c) { closer = false; break }
+                k += 1
+            }
+        }
+        // Exactly `{`: the only non-whitespace character sits at `i == j`.
+        let bareOpener = first == openBrace && last == openBrace && i == j
+        return (indent, false, closer, bareOpener)
     }
 }
 
