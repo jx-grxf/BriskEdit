@@ -199,6 +199,7 @@ extension WorkspaceModel {
             do {
                 try await moveItem(at: src, to: destination)
                 retargetTabs(from: src, to: destination)
+                persistSession()
                 // Surface the moved item: open the target folder so the drop
                 // result is immediately visible (matches `importExternalFile`).
                 expandedDirectories.insert(dir)
@@ -247,15 +248,29 @@ extension WorkspaceModel {
     }
 
     private func closeTabs(referencing url: URL) {
-        for tab in tabs where tab.document.fileURL?.standardizedFileURL == url.standardizedFileURL {
-            closeTab(tab.id)
+        let removedPath = url.standardizedFileURL.path
+        for tab in tabs {
+            guard let path = tab.document.fileURL?.standardizedFileURL.path else { continue }
+            if path == removedPath || path.hasPrefix(removedPath + "/") {
+                closeTab(tab.id)
+            }
         }
     }
 
+    /// Re-points every open tab at the moved item — including, when a *folder*
+    /// was renamed/moved, all tabs on files inside it — and restarts their
+    /// watchers so external changes keep being picked up.
     private func retargetTabs(from oldURL: URL, to newURL: URL) {
-        for tab in tabs where tab.document.fileURL?.standardizedFileURL == oldURL.standardizedFileURL {
+        let oldPath = oldURL.standardizedFileURL.path
+        let newPath = newURL.standardizedFileURL.path
+        for tab in tabs {
+            guard let path = tab.document.fileURL?.standardizedFileURL.path else { continue }
+            guard path == oldPath || path.hasPrefix(oldPath + "/") else { continue }
+            let target = path == oldPath
+                ? newURL
+                : URL(fileURLWithPath: newPath + String(path.dropFirst(oldPath.count)))
             releaseLSP(tab)
-            tab.document.retarget(to: newURL)
+            tab.document.retarget(to: target)
             startWatching(tab)
         }
     }

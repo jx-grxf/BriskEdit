@@ -30,6 +30,13 @@ final class TextDocument {
     private var lineStartOffsets: [Int] = [0]
     private var lineIndexWork: DispatchWorkItem?
     private var autosaveWork: DispatchWorkItem?
+    private var isClosedForSaves = false
+    /// Called when a deferred autosave fails so the owning workspace can raise
+    /// its usual save-failure message instead of dropping the error.
+    var autosaveFailureHandler: ((Error) -> Void)?
+    /// Size and modification date observed right after our own write landed;
+    /// lets the file watcher tell self-initiated saves from external edits.
+    private(set) var lastSelfWriteInfo: (modificationDate: Date, size: Int)?
     /// Tail of the write chain. Each new write awaits the previous one so two
     /// in-flight writes (autosave racing a manual ⌘S) can never reorder and
     /// leave older content on disk.
@@ -52,20 +59,41 @@ final class TextDocument {
         SourceLanguage(url: fileURL, displayName: displayName)
     }
 
-    /// Cache of the exact UTF-8 byte count, keyed by revision. `byteCount` is a
-    /// cheap UTF-16 estimate kept current for the large-file gate; the status bar
-    /// wants the real size, so compute it once per edit (not per render).
-    private var utf8CountCache: (revision: Int, count: Int)?
+    /// Exact UTF-8 byte count shown in the status bar. Computing it walks the
+    /// whole buffer, so while typing it lags `revision` and is refreshed on a
+    /// short debounce instead of on every keystroke. `byteCount` stays the
+    /// cheap UTF-16 estimate backing the large-file gate.
+    private var displayedByteCount: Int
+    private var displayedByteCountRevision: Int
+    private var byteCountWork: DispatchWorkItem?
+    /// Cached `ByteCountFormatter` output for the current `displayedByteCount`;
+    /// re-formatted only when the displayed count actually changes.
+    private var fileSizeLabelText: String?
 
     var fileSizeLabel: String {
-        let count: Int
-        if let cache = utf8CountCache, cache.revision == revision {
-            count = cache.count
-        } else {
-            count = text.utf8.count
-            utf8CountCache = (revision, count)
+        if displayedByteCountRevision != revision {
+            scheduleByteCountRefresh()
         }
-        return ByteCountFormatter.string(fromByteCount: Int64(count), countStyle: .file)
+        if let cached = fileSizeLabelText {
+            return cached
+        }
+        let label = ByteCountFormatter.string(fromByteCount: Int64(displayedByteCount), countStyle: .file)
+        fileSizeLabelText = label
+        return label
+    }
+
+    private func scheduleByteCountRefresh() {
+        byteCountWork?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            Task { @MainActor [weak self] in
+                guard let self, self.displayedByteCountRevision != self.revision else { return }
+                self.displayedByteCount = self.text.utf8.count
+                self.displayedByteCountRevision = self.revision
+                self.fileSizeLabelText = nil
+            }
+        }
+        byteCountWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
     var isLargeFile: Bool {
@@ -77,10 +105,13 @@ final class TextDocument {
     }
 
     init(fileURL: URL?, text: String, encoding: String.Encoding, byteCount: Int? = nil) {
+        let exactBytes = byteCount ?? text.utf8.count
         self.fileURL = fileURL
         self.text = text
         self.encoding = encoding
-        self.byteCount = byteCount ?? text.utf8.count
+        self.byteCount = exactBytes
+        self.displayedByteCount = exactBytes
+        self.displayedByteCountRevision = 0
         if !isLargeFile {
             rebuildLineIndex()
         }
@@ -122,11 +153,28 @@ final class TextDocument {
         autosaveWork?.cancel()
         guard fileURL != nil, UserDefaults.standard.bool(forKey: "editor.autosave") else { return }
         let work = DispatchWorkItem { [weak self] in
-            guard let self, self.isDirty, self.fileURL != nil else { return }
-            Task { @MainActor in try? await self.save() }
+            guard let self, !isClosedForSaves, isDirty, fileURL != nil else { return }
+            Task { @MainActor in await self.performAutosave() }
         }
         autosaveWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: work)
+    }
+
+    private func performAutosave() async {
+        guard !isClosedForSaves else { return }
+        do {
+            try await save(respectingCloseGuard: true)
+        } catch {
+            autosaveFailureHandler?(error)
+        }
+    }
+
+    /// Cancels all deferred writes because the owning tab just closed. An
+    /// autosave scheduled before "Don't Save" must never land on disk.
+    func invalidatePendingSaves() {
+        isClosedForSaves = true
+        autosaveWork?.cancel()
+        autosaveWork = nil
     }
 
     /// Small files rebuild the line index immediately (exact Ln/Col); large files
@@ -166,6 +214,9 @@ final class TextDocument {
         text = newText
         byteCount = newText.utf8.count
         revision &+= 1
+        displayedByteCount = byteCount
+        displayedByteCountRevision = revision
+        fileSizeLabelText = nil
         isDirty = true
         scheduleLineIndexRebuild()
     }
@@ -174,6 +225,7 @@ final class TextDocument {
     /// so the editor re-seeds its text view, and clears dirty/pending state.
     func reloadFromDisk() async {
         guard let url = fileURL else { return }
+        let revisionAtStart = revision
         let loaded = try? await Task.detached(priority: .userInitiated) { () -> (String, String.Encoding) in
             let values = try url.resourceValues(forKeys: [.fileSizeKey])
             if let size = values.fileSize, Int64(size) > Self.maximumEditableFileBytes {
@@ -184,10 +236,19 @@ final class TextDocument {
             return (str, used)
         }.value
         guard let loaded else { return }
+        guard revision == revisionAtStart else {
+            // The user typed while the read was in flight; don't clobber those
+            // edits or mark them clean — offer the reload banner instead.
+            externalChangePending = true
+            return
+        }
         text = loaded.0
-        byteCount = loaded.0.utf8.count
         encoding = loaded.1
         revision &+= 1
+        byteCount = loaded.0.utf8.count
+        displayedByteCount = byteCount
+        displayedByteCountRevision = revision
+        fileSizeLabelText = nil
         isDirty = false
         lastSavedRevision = revision
         externalChangePending = false
@@ -232,13 +293,17 @@ final class TextDocument {
     }
 
     func save() async throws {
+        try await save(respectingCloseGuard: false)
+    }
+
+    func save(respectingCloseGuard: Bool) async throws {
         guard let url = fileURL else { throw CocoaError(.fileWriteUnknown) }
-        let savedRevision = try await write(to: url, encoding: encoding)
+        let savedRevision = try await write(to: url, encoding: encoding, respectingCloseGuard: respectingCloseGuard)
         finishSave(revision: savedRevision)
     }
 
     func save(to url: URL) async throws {
-        let savedRevision = try await write(to: url, encoding: encoding)
+        let savedRevision = try await write(to: url, encoding: encoding, respectingCloseGuard: false)
         fileURL = url
         finishSave(revision: savedRevision)
     }
@@ -251,7 +316,8 @@ final class TextDocument {
         NotificationCenter.default.post(name: .gitDidChange, object: nil)
     }
 
-    private func write(to url: URL, encoding: String.Encoding) async throws -> Int {
+    private func write(to url: URL, encoding: String.Encoding, respectingCloseGuard: Bool) async throws -> Int {
+        if respectingCloseGuard && isClosedForSaves { throw CancellationError() }
         let snapshot = text
         let snapshotRevision = revision
         let previous = lastWriteTask
@@ -263,7 +329,16 @@ final class TextDocument {
         }
         lastWriteTask = task
         try await task.value
+        recordSelfWrite(at: url)
         return snapshotRevision
+    }
+
+    private func recordSelfWrite(at url: URL) {
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let modified = attributes[.modificationDate] as? Date,
+           let size = attributes[.size] as? Int {
+            lastSelfWriteInfo = (modificationDate: modified, size: size)
+        }
     }
 
     private func rebuildLineIndex() {

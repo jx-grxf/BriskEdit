@@ -38,11 +38,28 @@ extension WorkspaceModel {
     }
 
     /// Reloads a clean buffer from disk; flags a dirty buffer for the reload
-    /// banner instead of clobbering unsaved edits. Our own saves land here too,
-    /// but disk == buffer then, so they're a no-op.
+    /// banner instead of clobbering unsaved edits. Events caused by our own
+    /// saves are skipped, and a vanished file closes the tab — or flags it when
+    /// unsaved edits remain.
     private func handleExternalChange(_ id: EditorTab.ID) async {
         guard let tab = tabs.first(where: { $0.id == id }), let url = tab.document.fileURL else { return }
-        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            if tab.document.isDirty {
+                tab.document.externalChangePending = true
+            } else {
+                closeTab(id)
+            }
+            return
+        }
+        // An atomic save replaces the file and fires this watcher. Identical
+        // size+mtime right after our own write means the event was ours — and
+        // stat is far cheaper than decoding the file just to diff it.
+        if let written = tab.document.lastSelfWriteInfo,
+           let values = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey]),
+           values.fileSize == written.size,
+           values.contentModificationDate == written.modificationDate {
+            return
+        }
         let disk = await Task.detached(priority: .utility) { () -> (oversized: Bool, content: String?) in
             // Same safety cap as TextDocument.load: a file that grew past the
             // editing limit (e.g. a log another process appends to) must not be
