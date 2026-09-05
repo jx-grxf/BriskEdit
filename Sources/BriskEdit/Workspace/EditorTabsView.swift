@@ -450,7 +450,7 @@ private struct TabStrip: View {
                                         Task { await workspace.openInSplitScreen(url) }
                                     }
                                 },
-                                makeTransfer: { makeTabTransfer(tabID: tab.id, source: workspace) },
+                                source: workspace,
                                 onReorder: { draggedID in reorder(draggedID, toPositionOf: tab.id) }
                             )
                             .id(tab.id)
@@ -630,7 +630,7 @@ private struct BreadcrumbBar: View {
     }
 }
 
-private struct TabChip: View {
+struct TabChip: View {
     let tab: EditorTab
     let isActive: Bool
     let onSelect: () -> Void
@@ -639,83 +639,38 @@ private struct TabChip: View {
     let onCloseRight: () -> Void
     let onCloseAll: () -> Void
     let onOpenSplitPreview: () -> Void
-    /// Builds the `.draggable` payload for the tab (registers the in-flight drag
-    /// with the coordinator).
-    let makeTransfer: () -> TabTransfer
+    let source: WorkspaceModel
     /// Reorders the dragged tab (its id) to this chip's slot — in-strip reorder.
     let onReorder: (UUID) -> Void
     @State private var isDropTargeted = false
 
     var body: some View {
-        // The chip is a plain hittable surface (not a `Button`): a SwiftUI
-        // `Button` swallows drag events. Selection is a simultaneous `TapGesture`;
-        // the drag is `.draggable` — the exact native drag path the file tree uses
-        // (`.draggable(node.url)`), which is the only mechanism that fires inside
-        // the tab strip's `ScrollView` (`.onDrag` and a `DragGesture` both stayed
-        // inert there). `contentShape` makes the whole area (incl. padding and the
-        // trailing reserve) hittable; the close button overlays the reserve on top
-        // so it still gets its own clicks.
-        HStack(spacing: 6) {
-            if let special = tab.special {
-                Image(systemName: special.symbol)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.tint)
-                    .frame(width: 14)
-            } else {
-                FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
-            }
-            Text(tab.displayTitle)
-                .foregroundStyle(isActive ? .primary : .secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
-            if tab.special == nil, tab.document.isDirty {
-                Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
-            }
-        }
-        .padding(.leading, 10)
-        .padding(.trailing, 28)
-        .frame(height: DesignTokens.Chrome.tabStripHeight)
-        .contentShape(Rectangle())
-        .accessibilityLabel("Select \(tab.displayTitle)")
-        .accessibilityAddTraits(.isButton)
-        .accessibilityAction { onSelect() }
-        .animation(.easeInOut(duration: 0.15), value: isActive)
-        // Native "front tab" look: the active tab reads as a raised surface
-        // (matching the editor area) instead of an accent wash, with a thin
-        // accent hairline along its top edge — the Xcode/Safari idiom.
-        .overlay(alignment: .top) {
-            Capsule().fill(.tint).frame(height: 2).padding(.horizontal, 8).opacity(isActive ? 1 : 0)
-        }
-        .overlay(alignment: .trailing) {
+        HStack(spacing: 0) {
+            selectionSurface
+                .modifier(TabDragLifecycle(tabID: tab.id, source: source, preview: TabDragPreview(tab: tab)))
             Button(action: onClose) {
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .semibold))
                     .foregroundStyle(Color(nsColor: .labelColor))
                     .frame(width: 20, height: 20)
-                    .background(isActive ? Color.primary.opacity(0.12) : Color.clear,
-                                in: Circle())
+                    .background(isActive ? Color.primary.opacity(0.12) : Color.clear, in: Circle())
                     .contentShape(Circle())
             }
             .buttonStyle(.plain)
             .opacity(isActive ? 1 : 0.65)
             .padding(.trailing, 6)
-            .zIndex(10)
-            .help("Close \(tab.document.displayName)")
-            .accessibilityLabel("Close \(tab.document.displayName)")
+            .accessibilityIdentifier("tab.close." + tab.id.uuidString)
+            .help("Close \(tab.displayTitle)")
+            .accessibilityLabel("Close \(tab.displayTitle)")
         }
-        // Include the close control in the glass foreground. An overlay added
-        // after glass can be sampled as backdrop instead of staying readable.
+        .frame(height: DesignTokens.Chrome.tabStripHeight)
+        .overlay(alignment: .top) {
+            Capsule().fill(.tint).frame(height: 2).padding(.horizontal, 8).opacity(isActive ? 1 : 0)
+                .allowsHitTesting(false)
+        }
+        // Glass includes both controls, but the close button is outside the
+        // selection gesture and drag source. One click has exactly one action.
         .adaptiveChromeSurface(active: isActive)
-        // Drag pulls the tab out (native `.draggable`, fires in the ScrollView).
-        // The drag image is a small chip with the tab's name.
-        .draggable(makeTransfer()) {
-            TabDragPreview(tab: tab)
-        }
-        // Selection is a *simultaneous* TapGesture, NOT `.onTapGesture`: on macOS
-        // `.onTapGesture` wins the mouse-down arbitration and blocks the drag from
-        // ever starting. A simultaneous tap runs alongside the drag instead.
-        .simultaneousGesture(TapGesture().onEnded { onSelect() })
         // Dropping a tab onto this chip reorders it into this slot (in-strip
         // reorder). A drop within the same window no-ops in `finishDrag`, so the
         // reorder and tear-off paths don't fight. The leading bar shows where the
@@ -745,6 +700,35 @@ private struct TabChip: View {
                 Button("Open in Split Preview") { onOpenSplitPreview() }
             }
         }
+    }
+
+    private var selectionSurface: some View {
+        HStack(spacing: 6) {
+            if let special = tab.special {
+                Image(systemName: special.symbol)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.tint)
+                    .frame(width: 14)
+            } else {
+                FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
+            }
+            Text(tab.displayTitle)
+                .foregroundStyle(isActive ? .primary : .secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
+            if tab.special == nil, tab.document.isDirty {
+                Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
+            }
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 6)
+        .frame(height: DesignTokens.Chrome.tabStripHeight)
+        .contentShape(Rectangle())
+        .accessibilityLabel("Select \(tab.displayTitle)")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onSelect() }
+        .simultaneousGesture(TapGesture().onEnded { onSelect() })
     }
 }
 

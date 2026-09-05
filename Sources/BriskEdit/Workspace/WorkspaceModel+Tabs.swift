@@ -116,6 +116,7 @@ extension WorkspaceModel {
     }
 
     func closeTab(_ id: EditorTab.ID) {
+        TabTearOffCoordinator.shared.cancelDrag(tabID: id)
         guard let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         if let url = tabs[index].document.fileURL {
             ClosedTabHistory.shared.record(url)
@@ -195,8 +196,9 @@ extension WorkspaceModel {
     }
 
     func selectTab(_ id: EditorTab.ID) {
+        guard let tab = tabs.first(where: { $0.id == id }) else { return }
         activeTabID = id
-        selectedSidebarURL = tabs.first { $0.id == id }?.document.fileURL
+        selectedSidebarURL = tab.document.fileURL
         persistSession()
     }
 

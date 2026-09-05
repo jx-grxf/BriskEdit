@@ -19,6 +19,7 @@
 
 ### Fixed
 
+- **Reliable tab closing.** Close buttons no longer share selection or drag gestures. Re-rendering tabs cannot start phantom drags, and late callbacks cannot reactivate a closed tab.
 - **External edits are protected from autosave.** Conflicts require a deliberate overwrite or reload decision.
 - **Trash and rename preserve unsaved work.** Dirty tabs are resolved before deletion, and file moves wait for pending writes. Divergent edits in multiple windows can be saved as separate copies.
 - **Reliable process deadlines.** Detached descendants holding pipes and blocked stdin no longer keep tool calls waiting indefinitely.

@@ -50,6 +50,7 @@ enum WhatsNew {
     /// the project notes so it doesn't get missed.
     static let sections: [Section] = [
         Section(name: "Your work, protected", highlights: [
+            Highlight(symbol: "xmark.rectangle", title: "Reliable tab closing", detail: "Close a tab without accidentally selecting it again or starting a drag. Move tabs by dragging their labels; the close button stays independent.", tint: .blue),
             Highlight(symbol: "arrow.counterclockwise.circle", title: "Recover unsaved drafts", detail: "Restore local recovery copies after an unexpected exit, including untitled files. Recovered drafts open as copies so existing files stay safe.", tint: .teal),
             Highlight(symbol: "doc.on.doc", title: "Compare before overwriting", detail: "Inspect the editor buffer against the saved file. Autosave pauses when an external change needs your decision.", tint: .blue),
         ]),
