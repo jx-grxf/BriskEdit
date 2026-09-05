@@ -14,7 +14,7 @@ Developer ID signing, notarization and Sparkle Ed25519 signing are configured fo
 
 ## Prepare and publish
 
-1. Update the top `RELEASE_NOTES.md` section, `MARKETING_VERSION`, and both `WhatsNew.highlightsVersion` and `WhatsNew.sections` together. Run `script/prepare_xcode_project.sh`.
+1. Update the top `RELEASE_NOTES.md` section, `MARKETING_VERSION`, the derived `CURRENT_PROJECT_VERSION`, and both `WhatsNew.highlightsVersion` and `WhatsNew.sections` together. Run `script/prepare_xcode_project.sh`.
 2. Run the full tests, `script/verify_release_metadata.sh`, `python3 -m unittest Tests/test_release_scripts.py`, actionlint and shellcheck; open a PR and wait for green CI.
 3. After merge, create a **signed annotated tag** on main, for example `git tag -s v0.6.0 -m "BriskEdit 0.6.0"`, then push that tag. Do not publish unmerged code.
 4. Release preflight verifies the tag signature and main ancestry. It rejects an already published version and releases that would move their channel backwards. Unpublished drafts can be retried.
@@ -31,7 +31,7 @@ Developer ID signing, notarization and Sparkle Ed25519 signing are configured fo
 - Second component: patch.
 - Third component: beta ordinal 1–98, or 99 for stable.
 
-For example 0.6.0-beta.1 → 1006.0.1, 0.6.0 → 1006.0.99, 0.6.1-beta.1 → 1006.1.1. Versions are constrained to canonical minor/patch 0–99 and major 0–89 to respect Apple's four/two/two-digit build component limits. Local debug builds may retain project build 1. Manual workflow `build` input is an optional equality check, not an override.
+For example 0.6.0-beta.1 → 1006.0.1, 0.6.0 → 1006.0.99, 0.6.1-beta.1 → 1006.1.1. Versions are constrained to canonical minor/patch 0–99 and major 0–89 to respect Apple's four/two/two-digit build component limits. The project and local debug builds use the same derived identity, preventing a newer development version from offering an older production build as an update. Manual workflow `build` input is an optional equality check, not an override.
 
 ## Repair a failed publication
 

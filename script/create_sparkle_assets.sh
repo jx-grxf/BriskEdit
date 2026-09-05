@@ -3,7 +3,7 @@
 #
 # Inputs (env):
 #   BRISKEDIT_VERSION                 required
-#   BRISKEDIT_BUILD                   optional, defaults to 1
+#   BRISKEDIT_BUILD                   optional, defaults to the version-derived build
 #   BRISKEDIT_UPDATE_CHANNEL          optional, "stable" or "beta", defaults to stable
 #   BRISKEDIT_SPARKLE_PRIVATE_KEY     required for signing
 #   BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX required, e.g. https://github.com/jx-grxf/BriskEdit/releases/download/v0.1.0
@@ -20,7 +20,7 @@ cd "$(dirname "$0")/.."
 : "${BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX:?BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX is required}"
 
 CHANNEL="${BRISKEDIT_UPDATE_CHANNEL:-stable}"
-BUILD="${BRISKEDIT_BUILD:-1}"
+BUILD="${BRISKEDIT_BUILD:-$(./script/release_build_number.sh "$BRISKEDIT_VERSION")}"
 [[ "$CHANNEL" == "stable" || "$CHANNEL" == "beta" ]] || { echo "error: update channel must be stable or beta" >&2; exit 1; }
 [[ "$BUILD" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}){0,2}$ ]] || { echo "error: Sparkle build must be a numeric CFBundleVersion" >&2; exit 1; }
 

@@ -107,7 +107,7 @@ Run convenience:
 To package a local DMG:
 
 ```bash
-BRISKEDIT_VERSION=0.1.0 ./script/package_dmg.sh
+BRISKEDIT_VERSION=0.6.0 ./script/package_dmg.sh
 ```
 
 ## Release pipeline
