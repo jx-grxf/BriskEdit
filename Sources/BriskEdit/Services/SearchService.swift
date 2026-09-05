@@ -30,6 +30,30 @@ struct SearchResponse: Sendable {
     var reachedMatchLimit: Bool
 }
 
+private final class SearchCancellation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    private weak var process: Process?
+
+    var isCancelled: Bool { lock.withLock { cancelled } }
+
+    func register(_ process: Process) {
+        let shouldStop = lock.withLock {
+            self.process = process
+            return cancelled
+        }
+        if shouldStop { SearchService.terminateWithEscalation(process) }
+    }
+
+    func cancel() {
+        let process = lock.withLock {
+            cancelled = true
+            return self.process
+        }
+        if let process { SearchService.terminateWithEscalation(process) }
+    }
+}
+
 /// Project-wide text search. Prefers ripgrep (fast, .gitignore-aware) when it's
 /// installed; otherwise falls back to a pure-Swift recursive scan that reuses
 /// the file tree's ignore rules. Both run off the main actor.
@@ -38,18 +62,27 @@ enum SearchService {
         await searchWithFeedback(query, root: root, includeHidden: includeHidden, fileLimit: fileLimit, matchLimit: matchLimit).results
     }
 
-    static func searchWithFeedback(_ query: SearchQuery, root: URL, includeHidden: Bool, fileLimit: Int = 4000, matchLimit: Int = 5000) async -> SearchResponse {
+    static func searchWithFeedback(_ query: SearchQuery, root: URL, includeHidden: Bool,
+                                   fileLimit: Int = 4000, matchLimit: Int = 5000,
+                                   ripgrepPathOverride: String? = nil) async -> SearchResponse {
         let trimmed = query.text
         guard !trimmed.isEmpty else { return SearchResponse(results: [], errorMessage: nil, reachedMatchLimit: false) }
         if query.isRegex, compile(query) == nil {
             return SearchResponse(results: [], errorMessage: "Invalid regular expression — turn off the .* button to search the text literally.", reachedMatchLimit: false)
         }
-        return await Task.detached(priority: .userInitiated) {
-            if let rg = ripgrepPath() {
-                return ripgrepSearch(rg: rg, query: query, root: root, includeHidden: includeHidden, matchLimit: matchLimit)
-            }
-            return fallbackSearch(query: query, root: root, includeHidden: includeHidden, fileLimit: fileLimit, matchLimit: matchLimit)
-        }.value
+        let cancellation = SearchCancellation()
+        return await withTaskCancellationHandler {
+            await Task.detached(priority: .userInitiated) {
+                if let rg = ripgrepPathOverride ?? ripgrepPath() {
+                    return ripgrepSearch(rg: rg, query: query, root: root, includeHidden: includeHidden,
+                                         matchLimit: matchLimit, cancellation: cancellation)
+                }
+                return fallbackSearch(query: query, root: root, includeHidden: includeHidden,
+                                      fileLimit: fileLimit, matchLimit: matchLimit, cancellation: cancellation)
+            }.value
+        } onCancel: {
+            cancellation.cancel()
+        }
     }
 
     /// Rewrites every match in the given files on disk. Returns the number of
@@ -82,7 +115,8 @@ enum SearchService {
         return nil
     }
 
-    private static func ripgrepSearch(rg: String, query: SearchQuery, root: URL, includeHidden: Bool, matchLimit: Int) -> SearchResponse {
+    private static func ripgrepSearch(rg: String, query: SearchQuery, root: URL, includeHidden: Bool,
+                                      matchLimit: Int, cancellation: SearchCancellation) -> SearchResponse {
         var args = ["--json", "--line-number", "--column", "--max-filesize", "2M"]
         args.append(query.caseSensitive ? "--case-sensitive" : "--ignore-case")
         if query.wholeWord { args.append("--word-regexp") }
@@ -104,6 +138,7 @@ enum SearchService {
         } catch {
             return SearchResponse(results: [], errorMessage: "Could not start ripgrep: \(error.localizedDescription)", reachedMatchLimit: false)
         }
+        cancellation.register(process)
         let timeout = DispatchWorkItem { [weak process] in
             guard let process else { return }
             terminateWithEscalation(process)
@@ -117,6 +152,10 @@ enum SearchService {
         var reachedResourceLimit = false
         var pending = Data()
         while true {
+            if cancellation.isCancelled {
+                terminateWithEscalation(process)
+                break
+            }
             let chunk = stdout.fileHandleForReading.availableData
             if chunk.isEmpty { break }
             pending.append(chunk)
@@ -163,7 +202,7 @@ enum SearchService {
     /// BoundedProcessRunner uses. Without it a ripgrep stuck in uninterruptible
     /// I/O (stale network mount) ignores SIGTERM and `waitUntilExit()` hangs
     /// the search task forever.
-    private static func terminateWithEscalation(_ process: Process) {
+    fileprivate static func terminateWithEscalation(_ process: Process) {
         guard process.isRunning else { return }
         process.terminate()
         DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 1) { [weak process] in
@@ -220,13 +259,15 @@ enum SearchService {
 
     // MARK: - Pure-Swift fallback
 
-    private static func fallbackSearch(query: SearchQuery, root: URL, includeHidden: Bool, fileLimit: Int, matchLimit: Int) -> SearchResponse {
+    private static func fallbackSearch(query: SearchQuery, root: URL, includeHidden: Bool,
+                                       fileLimit: Int, matchLimit: Int, cancellation: SearchCancellation) -> SearchResponse {
         guard let regex = compile(query) else {
             return SearchResponse(results: [], errorMessage: "Invalid regular expression — turn off the .* button to search the text literally.", reachedMatchLimit: false)
         }
         var results: [SearchFileResult] = []
         var total = 0
         for url in FileIndex.files(under: root, includeHidden: includeHidden, limit: fileLimit) {
+            if cancellation.isCancelled { break }
             guard total < matchLimit else { break }
             guard let attrs = try? url.resourceValues(forKeys: [.fileSizeKey]), (attrs.fileSize ?? 0) <= 2_000_000 else { continue }
             guard let content = try? String(contentsOf: url, encoding: .utf8) else { continue }
@@ -237,6 +278,7 @@ enum SearchService {
             // the fallback O(n²) on large files).
             var currentLine = 0
             ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines]) { line, _, _, stop in
+                if cancellation.isCancelled { stop.pointee = true; return }
                 currentLine += 1
                 guard total < matchLimit else { stop.pointee = true; return }
                 let lineText = (line ?? "")

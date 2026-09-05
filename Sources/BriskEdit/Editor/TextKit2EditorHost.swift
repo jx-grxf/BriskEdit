@@ -40,6 +40,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
     /// Opens a (possibly different) file at a 1-based line/column — used for
     /// go-to-definition. Provided by the host view, which owns the workspace.
     var onOpenLocation: ((URL, Int, Int) -> Void)?
+    var onFindReferences: ((Int, Int) -> Void)?
 
     func makeNSView(context: Context) -> NSView {
         let textView = BriskCodeTextView(usingTextLayoutManager: true)
@@ -84,6 +85,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
             coordinator?.formatDocument()
         }
         context.coordinator.openLocation = onOpenLocation
+        context.coordinator.findReferences = onFindReferences
+        textView.onFindReferences = { [weak coordinator = context.coordinator] index in
+            guard let coordinator else { return }
+            let position = coordinator.lspPosition(at: index)
+            coordinator.findReferences?(position.line, position.character)
+        }
         context.coordinator.configurePopup()
 
         let scrollView = NSScrollView()
@@ -204,6 +211,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         let largeFileModeChanged = coordinator.isLargeFile != document.isLargeFile
         coordinator.isLargeFile = document.isLargeFile
         coordinator.openLocation = onOpenLocation
+        coordinator.findReferences = onFindReferences
         coordinator.workspaceRootURL = workspaceRootURL
         coordinator.showHoverTooltips = showHoverTooltips
         coordinator.highlightDebounce = highlightDebounce
@@ -400,6 +408,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var lastRevealToken = 0
         var lastLanguage: SourceLanguage?
         var openLocation: ((URL, Int, Int) -> Void)?
+        var findReferences: ((Int, Int) -> Void)?
 
         init(document: TextDocument, theme: EditorTheme) {
             self.document = document
@@ -412,6 +421,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         func tearDown() {
+            foldingTask?.cancel()
+            foldingGeneration &+= 1
             lspWork?.cancel()
             lspRequestGeneration += 1
             popup.detach()
@@ -1235,6 +1246,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         func disableExpensiveFeaturesForLargeFile() {
+            foldingTask?.cancel()
+            foldingGeneration &+= 1
             highlightWork?.cancel()
             gitWork?.cancel()
             gitDiffGeneration &+= 1
@@ -1411,6 +1424,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
             textView.window?.makeFirstResponder(textView)
         }
 
+        private var foldingTask: Task<Void, Never>?
+        private var foldingGeneration = 0
+
         private func scheduleHighlight() {
             highlightWork?.cancel()
             guard !isLargeFile else { return }
@@ -1424,11 +1440,12 @@ struct TextKit2EditorHost: NSViewRepresentable {
             DispatchQueue.main.asyncAfter(deadline: .now() + highlightDebounce, execute: work)
         }
 
-        /// Re-detects foldable regions after an edit. The analysis is cheap
-        /// (indentation only); the content-storage relayout inside `updateRegions`
-        /// only fires when something is actually folded, so plain typing stays
-        /// untouched by the folding machinery.
+        /// Analyze a snapshot away from the UI; stale edits and theme changes
+        /// invalidate its result before any TextKit layout work is applied.
         func recomputeFoldRegions() {
+            foldingTask?.cancel()
+            foldingGeneration &+= 1
+            let generation = foldingGeneration
             guard let textView else { return }
             guard !isLargeFile, theme.showCodeFolding, document.language.supportsFolding else {
                 folding.unfoldAll()
@@ -1436,9 +1453,23 @@ struct TextKit2EditorHost: NSViewRepresentable {
                 gutter?.refresh()
                 return
             }
-            let regions = FoldingAnalyzer.regions(in: textView.string as NSString, tabWidth: effectiveTabWidth)
-            folding.updateRegions(regions)
-            gutter?.refresh()
+            let snapshot = textView.string
+            let tabWidth = effectiveTabWidth
+            let revision = document.revision
+            let worker = Task.detached(priority: .userInitiated) {
+                FoldingAnalyzer.regions(in: snapshot as NSString, tabWidth: tabWidth)
+            }
+            foldingTask = Task { @MainActor [weak self] in
+                let regions = await withTaskCancellationHandler {
+                    await worker.value
+                } onCancel: {
+                    worker.cancel()
+                }
+                guard !Task.isCancelled, let self, self.foldingGeneration == generation,
+                      self.document.revision == revision, self.textView != nil else { return }
+                self.folding.updateRegions(regions)
+                self.gutter?.refresh()
+            }
         }
 
         /// Debounced minimap content rebuild. The minimap re-scans the whole
@@ -1650,7 +1681,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         /// 0-based line and column (both 0-based, as the LSP wants) of a UTF-16
         /// location, via a binary search over the cached line-start offsets.
-        private func lspPosition(at location: Int) -> (line: Int, character: Int) {
+        fileprivate func lspPosition(at location: Int) -> (line: Int, character: Int) {
             let full = textView?.string ?? ""
             let safe = max(0, min(location, full.utf16.count))
             let offsets = currentLineStartOffsets()

@@ -37,6 +37,7 @@ struct SettingsScene: View {
 
 private struct GeneralPreferencesView: View {
     @Environment(Preferences.self) private var preferences
+    @AppStorage("editor.draftRecoveryEnabled") private var draftRecoveryEnabled = true
     @State private var cliInstalled = CLIInstaller.isInstalled
     @State private var cliError: String?
     @State private var cliWorking = false
@@ -54,6 +55,12 @@ private struct GeneralPreferencesView: View {
                 Text("Restore reopens the last folder and tabs. Start Empty opens a blank workspace, while still remembering the last session for when restore is enabled again.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            Section("Draft Recovery") {
+                Toggle("Keep local recovery copies of unsaved changes", isOn: $draftRecoveryEnabled)
+                Text("Includes untitled files. Keeps up to 20 drafts for 14 days, up to 2 MB each and 20 MB total. Recovery never overwrites a file automatically.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Section("Command-Line Tool") {
                 HStack(alignment: .firstTextBaseline) {

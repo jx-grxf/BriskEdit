@@ -30,6 +30,9 @@ final class TextDocument {
     private var lineStartOffsets: [Int] = [0]
     private var lineIndexWork: DispatchWorkItem?
     private var autosaveWork: DispatchWorkItem?
+    private var recoveryTask: Task<Void, Never>?
+    private var recoveryGeneration = 0
+    let recoveryID: UUID
     private var isClosedForSaves = false
     /// Called when a deferred autosave fails so the owning workspace can raise
     /// its usual save-failure message instead of dropping the error.
@@ -41,6 +44,7 @@ final class TextDocument {
     /// in-flight writes (autosave racing a manual ⌘S) can never reorder and
     /// leave older content on disk.
     private var lastWriteTask: Task<Void, Error>?
+    private var isRelocating = false
 
     var displayName: String {
         fileURL?.lastPathComponent ?? "Untitled"
@@ -104,7 +108,7 @@ final class TextDocument {
         byteCount > largeFileFeatureThresholdBytes
     }
 
-    init(fileURL: URL?, text: String, encoding: String.Encoding, byteCount: Int? = nil) {
+    init(fileURL: URL?, text: String, encoding: String.Encoding, byteCount: Int? = nil, recoveryID: UUID = UUID()) {
         let exactBytes = byteCount ?? text.utf8.count
         self.fileURL = fileURL
         self.text = text
@@ -112,6 +116,7 @@ final class TextDocument {
         self.byteCount = exactBytes
         self.displayedByteCount = exactBytes
         self.displayedByteCountRevision = 0
+        self.recoveryID = recoveryID
         if !isLargeFile {
             rebuildLineIndex()
         }
@@ -119,6 +124,16 @@ final class TextDocument {
 
     static func empty() -> TextDocument {
         TextDocument(fileURL: nil, text: "", encoding: .utf8)
+    }
+
+    static func recovered(_ draft: RecoverableDraft) -> TextDocument {
+        let document = TextDocument(fileURL: nil, text: draft.text,
+                                    encoding: String.Encoding(rawValue: draft.encodingRawValue),
+                                    recoveryID: draft.id)
+        document.isDirty = true
+        document.revision = 1
+        document.scheduleRecoverySnapshot()
+        return document
     }
 
     static func load(from url: URL) async throws -> TextDocument {
@@ -142,6 +157,7 @@ final class TextDocument {
         isDirty = true
         scheduleLineIndexRebuild()
         scheduleAutosave()
+        scheduleRecoverySnapshot()
     }
 
     /// "After delay" autosave: writes the buffer to disk ~1 s after the last
@@ -153,7 +169,7 @@ final class TextDocument {
         autosaveWork?.cancel()
         guard fileURL != nil, UserDefaults.standard.bool(forKey: "editor.autosave") else { return }
         let work = DispatchWorkItem { [weak self] in
-            guard let self, !isClosedForSaves, isDirty, fileURL != nil else { return }
+            guard let self, !isClosedForSaves, !isRelocating, !externalChangePending, isDirty, fileURL != nil else { return }
             Task { @MainActor in await self.performAutosave() }
         }
         autosaveWork = work
@@ -161,7 +177,7 @@ final class TextDocument {
     }
 
     private func performAutosave() async {
-        guard !isClosedForSaves else { return }
+        guard !isClosedForSaves, !isRelocating, !externalChangePending else { return }
         do {
             try await save(respectingCloseGuard: true)
         } catch {
@@ -175,6 +191,58 @@ final class TextDocument {
         isClosedForSaves = true
         autosaveWork?.cancel()
         autosaveWork = nil
+    }
+
+    private var draftRecoveryEnabled: Bool {
+        if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+            || NSClassFromString("XCTestCase") != nil { return false }
+        let defaults = UserDefaults.standard
+        return defaults.object(forKey: "editor.draftRecoveryEnabled") == nil
+            || defaults.bool(forKey: "editor.draftRecoveryEnabled")
+    }
+
+    private func scheduleRecoverySnapshot() {
+        recoveryTask?.cancel()
+        guard draftRecoveryEnabled else { discardRecoverySnapshot(); return }
+        guard isDirty else { return }
+        // The editor provides a cheap UTF-16 size hint. Reject obviously large
+        // buffers here; exact UTF-8 validation belongs to the off-main store.
+        guard byteCount <= DraftRecoveryStore.maximumDraftBytes else { return }
+        recoveryGeneration &+= 1
+        let generation = recoveryGeneration
+        let snapshot = text
+        let url = fileURL
+        let name = displayName
+        let id = recoveryID
+        let encoding = encoding
+        recoveryTask = Task { [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(1))
+                guard !Task.isCancelled else { return }
+                do { try await DraftRecoveryStore.shared.save(id: id, generation: generation, fileURL: url, displayName: name, text: snapshot, encoding: encoding) }
+                catch { await MainActor.run { self?.autosaveFailureHandler?(error) } }
+            } catch { return }
+        }
+    }
+
+    func discardRecoverySnapshot() {
+        recoveryTask?.cancel()
+        recoveryTask = nil
+        recoveryGeneration &+= 1
+        let generation = recoveryGeneration
+        let id = recoveryID
+        recoveryTask = Task { try? await DraftRecoveryStore.shared.remove(id: id, generation: generation) }
+    }
+
+    func flushRecoveryChanges() async {
+        await recoveryTask?.value
+    }
+
+    func persistRecoverySnapshotNow(minimumGeneration: Int = 0, store: DraftRecoveryStore = .shared) async throws {
+        recoveryTask?.cancel()
+        recoveryGeneration = max(recoveryGeneration + 1, minimumGeneration)
+        try await store.save(id: recoveryID, generation: recoveryGeneration,
+            fileURL: fileURL, displayName: displayName, text: text, encoding: encoding)
     }
 
     /// Small files rebuild the line index immediately (exact Ln/Col); large files
@@ -219,6 +287,7 @@ final class TextDocument {
         fileSizeLabelText = nil
         isDirty = true
         scheduleLineIndexRebuild()
+        scheduleRecoverySnapshot()
     }
 
     /// Re-reads the file from disk after an external change. Bumps `revision`
@@ -252,6 +321,7 @@ final class TextDocument {
         isDirty = false
         lastSavedRevision = revision
         externalChangePending = false
+        discardRecoverySnapshot()
         scheduleLineIndexRebuild()
     }
 
@@ -293,11 +363,20 @@ final class TextDocument {
     }
 
     func save() async throws {
+        guard !externalChangePending else { throw TextDocumentError.externalChangeConflict }
         try await save(respectingCloseGuard: false)
     }
 
-    func save(respectingCloseGuard: Bool) async throws {
+    /// Explicit conflict resolution chosen by the user. This is the only path
+    /// allowed to replace a newer on-disk version with the current buffer.
+    func overwriteExternalChange() async throws {
+        try await save(respectingCloseGuard: false, allowingExternalOverwrite: true)
+        externalChangePending = false
+    }
+
+    func save(respectingCloseGuard: Bool, allowingExternalOverwrite: Bool = false) async throws {
         guard let url = fileURL else { throw CocoaError(.fileWriteUnknown) }
+        guard allowingExternalOverwrite || !externalChangePending else { throw TextDocumentError.externalChangeConflict }
         let savedRevision = try await write(to: url, encoding: encoding, respectingCloseGuard: respectingCloseGuard)
         finishSave(revision: savedRevision)
     }
@@ -312,12 +391,14 @@ final class TextDocument {
         lastSavedRevision = savedRevision
         if revision == savedRevision {
             isDirty = false
+            discardRecoverySnapshot()
         }
         NotificationCenter.default.post(name: .gitDidChange, object: nil)
     }
 
     private func write(to url: URL, encoding: String.Encoding, respectingCloseGuard: Bool) async throws -> Int {
         if respectingCloseGuard && isClosedForSaves { throw CancellationError() }
+        if isRelocating { throw TextDocumentError.relocationInProgress }
         let snapshot = text
         let snapshotRevision = revision
         let previous = lastWriteTask
@@ -331,6 +412,30 @@ final class TextDocument {
         try await task.value
         recordSelfWrite(at: url)
         return snapshotRevision
+    }
+
+    /// Quiesces the write chain before a file-system rename/move. While this
+    /// lease is held new writes fail rather than recreating the old path.
+    func beginRelocation() async throws {
+        guard !isRelocating else { throw TextDocumentError.relocationInProgress }
+        isRelocating = true
+        autosaveWork?.cancel()
+        autosaveWork = nil
+        do { try await lastWriteTask?.value } catch {
+            isRelocating = false
+            throw error
+        }
+    }
+
+    func finishRelocation(to url: URL) {
+        fileURL = url
+        isRelocating = false
+        if isDirty { scheduleAutosave() }
+    }
+
+    func cancelRelocation() {
+        isRelocating = false
+        if isDirty { scheduleAutosave() }
     }
 
     private func recordSelfWrite(at url: URL) {
@@ -364,12 +469,18 @@ final class TextDocument {
 
 enum TextDocumentError: LocalizedError {
     case fileTooLarge(maximumBytes: Int64)
+    case externalChangeConflict
+    case relocationInProgress
 
     var errorDescription: String? {
         switch self {
         case .fileTooLarge(let maximumBytes):
             let limit = ByteCountFormatter.string(fromByteCount: maximumBytes, countStyle: .file)
             return "The file is larger than BriskEdit's \(limit) editing safety limit."
+        case .externalChangeConflict:
+            return "The file changed on disk. Choose whether to reload it or overwrite the external version."
+        case .relocationInProgress:
+            return "The file is being moved. Try saving again when the move finishes."
         }
     }
 }

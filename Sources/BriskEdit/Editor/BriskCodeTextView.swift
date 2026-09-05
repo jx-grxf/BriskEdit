@@ -9,6 +9,7 @@ final class BriskCodeTextView: NSTextView {
     var onSelectNextOccurrence: (() -> Void)?
     /// Go to definition for the symbol at a character index (⌘-click or F12).
     var onGoToDefinition: ((Int) -> Void)?
+    var onFindReferences: ((Int) -> Void)?
     /// Mouse paused over a point (hover) / left the view.
     var onHover: ((NSPoint) -> Void)?
     var onHoverExit: (() -> Void)?
@@ -67,6 +68,11 @@ final class BriskCodeTextView: NSTextView {
 
     override func menu(for event: NSEvent) -> NSMenu? {
         let menu = super.menu(for: event) ?? NSMenu()
+        if onFindReferences != nil {
+            let item = NSMenuItem(title: "Find References…", action: #selector(findReferencesAction), keyEquivalent: "")
+            item.target = self
+            menu.insertItem(item, at: 0)
+        }
         if canFormatDocument() {
             let item = NSMenuItem(title: "Format Document", action: #selector(formatDocumentAction), keyEquivalent: "f")
             item.keyEquivalentModifierMask = [.shift, .option]
@@ -75,6 +81,10 @@ final class BriskCodeTextView: NSTextView {
             menu.insertItem(.separator(), at: 1)
         }
         return menu
+    }
+
+    @objc private func findReferencesAction() {
+        onFindReferences?(selectedRange().location)
     }
 
     @objc private func formatDocumentAction() {

@@ -2,6 +2,23 @@ import XCTest
 @testable import BriskEdit
 
 final class FoldingAnalyzerTests: XCTestCase {
+    func testManyIndependentAllmanFunctionsKeepDistinctHeaders() {
+        let count = 16_000
+        let source = String(repeating: "void f()\n{\n x;\n}\n", count: count) as NSString
+        let regions = FoldingAnalyzer.regions(in: source, tabWidth: 4)
+        XCTAssertEqual(regions.count, count)
+        XCTAssertEqual(regions.last?.headerLine, (count - 1) * 4)
+        XCTAssertEqual(regions.last?.lastLine, count * 4 - 1)
+    }
+
+    func testNestedRegionsAndBlankLinesPreserveBoundaries() {
+        let source = "outer\n  inner\n    body\n\n  sibling\nend\n" as NSString
+        let regions = FoldingAnalyzer.regions(in: source, tabWidth: 4)
+        XCTAssertEqual(regions.map(\.headerLine), [0, 1])
+        XCTAssertEqual(regions.map(\.lastLine), [4, 2])
+        XCTAssertEqual(source.substring(with: regions[0].hiddenRange), "  inner\n    body\n\n  sibling\n")
+    }
+
     func testRefreshPolicyRecomputesForFoldingInputs() {
         var disabled = EditorTheme.default
         disabled.showCodeFolding = false

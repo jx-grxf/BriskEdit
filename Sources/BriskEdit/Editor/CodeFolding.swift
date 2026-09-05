@@ -3,7 +3,7 @@ import AppKit
 /// One foldable region, detected purely from indentation (zero-config, language
 /// agnostic — a plain indentation folding provider). Lines are 0-based
 /// indices into the document's line list.
-struct FoldRegion: Equatable {
+struct FoldRegion: Equatable, Sendable {
     /// The line whose chevron toggles the fold (the "header"); stays visible.
     let headerLine: Int
     /// The last line that belongs to the region; everything from `headerLine + 1`
@@ -57,16 +57,26 @@ enum FoldingAnalyzer {
             bareOpeners.append(line.bareOpener)
         }
 
+        // Nearest nonblank line at the same or shallower indentation. Each
+        // line enters/leaves the stack once, including deeply nested input.
+        var boundaries = Array(repeating: ranges.count, count: ranges.count)
+        var stack: [Int] = []
+        for i in ranges.indices.reversed() where !blanks[i] {
+            while let next = stack.last, indents[next] > indents[i] { stack.removeLast() }
+            boundaries[i] = stack.last ?? ranges.count
+            stack.append(i)
+        }
+        var previousNonblank = Array(repeating: -1, count: ranges.count + 1)
+        for i in ranges.indices {
+            previousNonblank[i + 1] = blanks[i] ? previousNonblank[i] : i
+        }
         var regions: [FoldRegion] = []
         var claimedHeaders = Set<Int>()
-        for i in 0..<ranges.count where !blanks[i] {
+        var furthestRegionEnd = -1
+        for i in ranges.indices where !blanks[i] {
+            if i.isMultiple(of: 1024), Task.isCancelled { return [] }
             let base = indents[i]
-            var last = i
-            var k = i + 1
-            while k < ranges.count {
-                if blanks[k] { k += 1; continue }      // blanks belong to the region
-                if indents[k] > base { last = k; k += 1 } else { break }
-            }
+            var last = previousNonblank[boundaries[i]]
             guard last > i else { continue }
 
             // Absorb a trailing lone closing delimiter (`}`, `};`, `)`, `]`…) that
@@ -84,10 +94,11 @@ enum FoldingAnalyzer {
             var header = i
             if bareOpeners[i], i - 1 >= 0, !blanks[i - 1],
                indents[i - 1] <= base, !claimedHeaders.contains(i - 1),
-               !regions.contains(where: { $0.lastLine >= i - 1 && $0.headerLine < i - 1 }) {
+               furthestRegionEnd < i - 1 {
                 header = i - 1
             }
 
+            furthestRegionEnd = max(furthestRegionEnd, last)
             claimedHeaders.insert(header)
             let start = ranges[header + 1].location
             let end = NSMaxRange(ranges[last])

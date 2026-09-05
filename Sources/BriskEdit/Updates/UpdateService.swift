@@ -45,8 +45,10 @@ final class UpdateService: NSObject {
     private(set) var lastCheckDate: Date?
 
     override init() {
-        let storedChannel = UserDefaults.standard.string(forKey: Keys.channel)
-            .flatMap(Channel.init(rawValue:)) ?? .stable
+        let storedChannel = Self.initialChannel(
+            storedValue: UserDefaults.standard.string(forKey: Keys.channel),
+            bundleVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+        )
         let delegate = UpdaterDelegate(channel: storedChannel)
         self.updaterDelegate = delegate
         self.channel = storedChannel
@@ -76,6 +78,11 @@ final class UpdateService: NSObject {
         // (which also skips the first-run opt-in prompt). We deliberately do NOT
         // force the flag here so the Settings toggle (a user preference Sparkle
         // persists) is respected across launches.
+    }
+
+    nonisolated static func initialChannel(storedValue: String?, bundleVersion: String?) -> Channel {
+        if let storedValue, let stored = Channel(rawValue: storedValue) { return stored }
+        return bundleVersion?.contains("-beta.") == true ? .beta : .stable
     }
 
     /// Manual / toolbar-triggered check. When an update is already pending this
@@ -119,12 +126,12 @@ private final class UpdaterDelegate: NSObject, SPUUpdaterDelegate {
         }
     }
 
-    /// Beta builds must poll a *different* feed than stable ones. The bundle's
+    /// Beta builds poll a composite feed containing the latest beta and stable
+    /// items. The bundle's
     /// `SUFeedURL` points at the `latest` GitHub release (stable only — GitHub's
     /// "latest" never resolves to a prerelease). Betas live behind the moving
-    /// `beta` release, so on the beta channel we swap the path to that beta-only
-    /// feed. Stable updates stay on the stable channel and are not mixed into the
-    /// moving beta feed.
+    /// `beta` release, so on the beta channel we swap the path to that combined
+    /// feed. This lets beta users advance to a newer stable release as well.
     /// Returning nil keeps the bundle default (the stable `latest` feed).
     func feedURLString(for updater: SPUUpdater) -> String? {
         guard channel == .beta else { return nil }

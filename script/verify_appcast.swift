@@ -5,9 +5,10 @@
 //   - The first <item> declares the expected sparkle:channel.
 //
 // Usage:
-//   ./script/verify_appcast.swift appcast.xml https://.../BriskEdit-0.1.0.zip stable [version] [build] [archive]
+//   ./script/verify_appcast.swift appcast.xml https://.../BriskEdit-0.1.0.zip stable [version] [build] [archive] [public-key-base64]
 
 import Foundation
+import CryptoKit
 
 final class AppcastDelegate: NSObject, XMLParserDelegate {
     var enclosureURL: String?
@@ -19,27 +20,28 @@ final class AppcastDelegate: NSObject, XMLParserDelegate {
     private var currentElement = ""
     private var currentText = ""
     private var currentChannel = ""
-    private var foundItem = false
+    private var inFirstItem = false
+    private var completedFirstItem = false
 
     func parser(_ parser: XMLParser, didStartElement elementName: String,
                 namespaceURI: String?, qualifiedName qName: String?,
                 attributes attributeDict: [String: String] = [:]) {
         currentElement = elementName
         currentText = ""
-        if elementName == "item" { foundItem = true }
-        if foundItem, elementName == "enclosure", enclosureURL == nil {
+        if elementName == "item", !completedFirstItem { inFirstItem = true }
+        if inFirstItem, elementName == "enclosure", enclosureURL == nil {
             enclosureURL = attributeDict["url"]
             enclosureLength = attributeDict["length"]
             enclosureSignature = attributeDict["sparkle:edSignature"] ?? attributeDict["edSignature"]
         }
-        if elementName == "sparkle:channel" || qName == "sparkle:channel" {
+        if inFirstItem && (elementName == "sparkle:channel" || qName == "sparkle:channel") {
             currentChannel = ""
         }
     }
 
     func parser(_ parser: XMLParser, foundCharacters string: String) {
         currentText += string
-        if currentElement == "sparkle:channel" {
+        if inFirstItem, currentElement == "sparkle:channel" {
             currentChannel += string
             channel = currentChannel.trimmingCharacters(in: .whitespacesAndNewlines)
         }
@@ -48,19 +50,20 @@ final class AppcastDelegate: NSObject, XMLParserDelegate {
     func parser(_ parser: XMLParser, didEndElement elementName: String,
                 namespaceURI: String?, qualifiedName qName: String?) {
         let value = currentText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if elementName == "sparkle:shortVersionString" || qName == "sparkle:shortVersionString" {
+        if inFirstItem && (elementName == "sparkle:shortVersionString" || qName == "sparkle:shortVersionString") {
             shortVersion = value
-        } else if elementName == "sparkle:version" || qName == "sparkle:version" {
+        } else if inFirstItem && (elementName == "sparkle:version" || qName == "sparkle:version") {
             build = value
         }
+        if elementName == "item", inFirstItem { inFirstItem = false; completedFirstItem = true }
         currentElement = ""
         currentText = ""
     }
 }
 
 let args = CommandLine.arguments
-guard (4...7).contains(args.count) else {
-    FileHandle.standardError.write(Data("usage: verify_appcast.swift <path> <expected-url> <expected-channel> [expected-version] [expected-build] [archive]\n".utf8))
+guard (4...8).contains(args.count) else {
+    FileHandle.standardError.write(Data("usage: verify_appcast.swift <path> <expected-url> <expected-channel> [expected-version] [expected-build] [archive] [public-key-base64]\n".utf8))
     exit(2)
 }
 
@@ -70,6 +73,7 @@ let expectedChannel = args[3]
 let expectedVersion = args.count > 4 ? args[4] : nil
 let expectedBuild = args.count > 5 ? args[5] : nil
 let archivePath = args.count > 6 ? args[6] : nil
+let publicKeyBase64 = args.count > 7 ? args[7] : nil
 
 guard let data = FileManager.default.contents(atPath: path) else {
     FileHandle.standardError.write(Data("appcast not found at \(path)\n".utf8))
@@ -100,6 +104,16 @@ if let expectedBuild, delegate.build != expectedBuild {
 }
 if let archivePath {
     do {
+        if let key = publicKeyBase64.flatMap({ Data(base64Encoded: $0) }),
+           let signature = delegate.enclosureSignature.flatMap({ Data(base64Encoded: $0) }) {
+            let verifier = try Curve25519.Signing.PublicKey(rawRepresentation: key)
+            let archive = try Data(contentsOf: URL(fileURLWithPath: archivePath), options: .mappedIfSafe)
+            if !verifier.isValidSignature(signature, for: archive) {
+                failures.append("archive Ed25519 signature verification failed")
+            }
+        } else {
+            failures.append("archive verification requires a valid public key and Ed25519 signature")
+        }
         let attributes = try FileManager.default.attributesOfItem(atPath: archivePath)
         let size = (attributes[.size] as? NSNumber)?.stringValue
         if delegate.enclosureLength != size {

@@ -13,6 +13,7 @@ extension WorkspaceModel {
     }
 
     func openFile(at url: URL) async {
+        markUserInteraction()
         // Every open (new tab, re-focus of an existing tab, preview) makes this
         // the most recently used file for File ▸ Open Recent.
         RecentWorkspacesStore.shared.recordFile(url)
@@ -78,6 +79,7 @@ extension WorkspaceModel {
     }
 
     func newUntitled() {
+        markUserInteraction()
         let doc = TextDocument.empty()
         observeAutosaveFailures(of: doc)
         let tab = EditorTab(document: doc)
@@ -121,6 +123,7 @@ extension WorkspaceModel {
         if splitPreviewContent == .markdown(id) {
             splitPreviewContent = nil
         }
+        tabs[index].document.discardRecoverySnapshot()
         stopWatching(id)
         releaseLSP(tabs[index])
         tabs[index].document.invalidatePendingSaves()
@@ -130,6 +133,11 @@ extension WorkspaceModel {
             activeTabID = fallback?.id
         }
         persistSession()
+    }
+
+    func discardDraftsForWindowClose() async {
+        for tab in tabs { tab.document.discardRecoverySnapshot() }
+        for tab in tabs { await tab.document.flushRecoveryChanges() }
     }
 
     /// Detaches a tab so it can be re-mounted in another window, keeping the
@@ -190,6 +198,13 @@ extension WorkspaceModel {
         activeTabID = id
         selectedSidebarURL = tabs.first { $0.id == id }?.document.fileURL
         persistSession()
+    }
+
+    func selectAdjacentTab(offset: Int) {
+        guard !tabs.isEmpty, let activeTabID,
+              let index = tabs.firstIndex(where: { $0.id == activeTabID }) else { return }
+        let next = (index + offset % tabs.count + tabs.count) % tabs.count
+        selectTab(tabs[next].id)
     }
 
     /// Reorders an open tab so it lands at the slot held by `targetID` — the
@@ -364,15 +379,17 @@ extension WorkspaceModel {
                 await finishFileBindingSave(tab, oldURL: nil, oldLanguage: tab.document.language)
                 return true
             } catch {
+                if error is CancellationError { return false }
                 lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"
                 return false
             }
         }
         await formatBeforeSave(tab.document)
         do {
-            try await tab.document.save()
+            try await saveResolvingExternalConflict(tab.document)
             return true
         } catch {
+            if error is CancellationError { return false }
             lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"
             return false
         }
@@ -397,15 +414,31 @@ extension WorkspaceModel {
         }
         await formatBeforeSave(tab.document)
         do {
-            try await tab.document.save()
+            try await saveResolvingExternalConflict(tab.document)
             await checkActiveDocument()
             // Saving changes the working tree — refresh git decorations + the
             // Source Control pane so the new modified/added state shows at once.
             NotificationCenter.default.post(name: .gitDidChange, object: nil)
         } catch {
+            if error is CancellationError { return }
             NSLog("BriskEdit: save failed: %@", String(describing: error))
             lastError = "Could not save \(tab.document.displayName): \(error.localizedDescription)"
         }
+    }
+
+    private func saveResolvingExternalConflict(_ document: TextDocument) async throws {
+        guard document.externalChangePending else {
+            try await document.save()
+            return
+        }
+        let alert = NSAlert()
+        alert.messageText = "“\(document.displayName)” changed on disk."
+        alert.informativeText = "Overwrite the external version with your current edits, or cancel and review the conflict."
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Overwrite")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { throw CancellationError() }
+        try await document.overwriteExternalChange()
     }
 
     func saveActiveTabAs() async {

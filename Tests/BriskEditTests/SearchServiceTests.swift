@@ -1,4 +1,5 @@
 import XCTest
+import Darwin
 @testable import BriskEdit
 
 final class SearchServiceTests: XCTestCase {
@@ -39,6 +40,42 @@ final class SearchServiceTests: XCTestCase {
 
         XCTAssertEqual(response.results.reduce(0) { $0 + $1.matches.count }, 3)
         XCTAssertTrue(response.reachedMatchLimit)
+    }
+
+    func testCancellationTerminatesRipgrepProcess() async throws {
+        let root = try makeTemporaryDirectory()
+        let pidFile = root.appendingPathComponent("pid")
+        let executable = root.appendingPathComponent("fake-rg")
+        let script = "#!/bin/sh\nprintf '%s' $$ > '\(pidFile.path)'\nexec /bin/sleep 30\n"
+        try script.write(to: executable, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: executable.path)
+
+        let task = Task {
+            await SearchService.searchWithFeedback(
+                SearchQuery(text: "needle"), root: root, includeHidden: true,
+                ripgrepPathOverride: executable.path
+            )
+        }
+        defer { task.cancel() }
+        var pid: Int32?
+        for _ in 0..<500 {
+            if let text = try? String(contentsOf: pidFile, encoding: .utf8), let value = Int32(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                pid = value
+                break
+            }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard let runningPID = pid else {
+            task.cancel()
+            let response = await task.value
+            return XCTFail("Search fixture did not start: \(response.errorMessage ?? "no process identifier")")
+        }
+        let started = ContinuousClock.now
+        task.cancel()
+        _ = await task.value
+
+        XCTAssertLessThan(started.duration(to: .now), .seconds(2))
+        XCTAssertNotEqual(kill(runningPID, 0), 0)
     }
 
     private func makeTemporaryDirectory() throws -> URL {

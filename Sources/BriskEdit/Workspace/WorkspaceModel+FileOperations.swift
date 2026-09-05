@@ -70,8 +70,9 @@ extension WorkspaceModel {
         Task { [weak self] in
             guard let self else { return }
             do {
+                guard await resolveDirtyTabsBeforeTrash(url) else { return }
                 try await trashItem(at: url)
-                closeTabs(referencing: url)
+                closeTabsAcrossWindows(referencing: url)
                 refreshDirectory(url.deletingLastPathComponent())
             } catch {
                 lastError = "Could not delete \(url.lastPathComponent): \(error.localizedDescription)"
@@ -111,8 +112,14 @@ extension WorkspaceModel {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await moveItem(at: url, to: destination)
-                retargetTabs(from: url, to: destination)
+                let relocations = try await prepareTabRelocations(from: url, to: destination)
+                do {
+                    try await moveItem(at: url, to: destination)
+                    finishTabRelocations(relocations)
+                } catch {
+                    cancelTabRelocations(relocations)
+                    throw error
+                }
                 persistSession()
                 refreshDirectory(destination.deletingLastPathComponent())
                 selectedSidebarURL = destination
@@ -197,8 +204,14 @@ extension WorkspaceModel {
         Task { [weak self] in
             guard let self else { return }
             do {
-                try await moveItem(at: src, to: destination)
-                retargetTabs(from: src, to: destination)
+                let relocations = try await prepareTabRelocations(from: src, to: destination)
+                do {
+                    try await moveItem(at: src, to: destination)
+                    finishTabRelocations(relocations)
+                } catch {
+                    cancelTabRelocations(relocations)
+                    throw error
+                }
                 persistSession()
                 // Surface the moved item: open the target folder so the drop
                 // result is immediately visible (matches `importExternalFile`).
@@ -247,32 +260,99 @@ extension WorkspaceModel {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    private func closeTabs(referencing url: URL) {
+    private func affectedTabs(referencing url: URL) -> [(WorkspaceModel, EditorTab)] {
         let removedPath = url.standardizedFileURL.path
-        for tab in tabs {
-            guard let path = tab.document.fileURL?.standardizedFileURL.path else { continue }
-            if path == removedPath || path.hasPrefix(removedPath + "/") {
-                closeTab(tab.id)
+        return WorkspaceRegistry.models.flatMap { workspace in
+            workspace.tabs.compactMap { tab in
+                guard let path = tab.document.fileURL?.standardizedFileURL.path,
+                      path == removedPath || path.hasPrefix(removedPath + "/") else { return nil }
+                return (workspace, tab)
             }
         }
+    }
+
+    private func resolveDirtyTabsBeforeTrash(_ url: URL) async -> Bool {
+        var resolvedPaths = Set<String>()
+        for (workspace, tab) in affectedTabs(referencing: url) where tab.document.isDirty {
+            let path = tab.document.fileURL?.standardizedFileURL.path ?? ""
+            let alert = NSAlert()
+            let requiresCopy = !resolvedPaths.insert(path).inserted
+            alert.messageText = requiresCopy
+                ? "Save this other edited copy of “\(tab.document.displayName)”?"
+                : "Save changes to “\(tab.document.displayName)” before moving it to Trash?"
+            alert.informativeText = "Cancel keeps the file and all open tabs unchanged."
+            alert.addButton(withTitle: requiresCopy ? "Save Copy…" : "Save")
+            alert.addButton(withTitle: "Don't Save")
+            alert.addButton(withTitle: "Cancel")
+            switch alert.runModal() {
+            case .alertFirstButtonReturn:
+                if requiresCopy {
+                    let panel = NSSavePanel()
+                    panel.nameFieldStringValue = tab.document.displayName
+                    guard panel.runModal() == .OK, let destination = panel.url else { return false }
+                    do {
+                        try await tab.document.save(to: destination)
+                        workspace.startWatching(tab)
+                        workspace.persistSession()
+                    } catch {
+                        workspace.lastError = "Could not save copy: \(error.localizedDescription)"
+                        return false
+                    }
+                } else if await workspace.save(tab) == false { return false }
+            case .alertSecondButtonReturn:
+                tab.document.discardRecoverySnapshot()
+            default:
+                return false
+            }
+        }
+        return true
+    }
+
+    private func closeTabsAcrossWindows(referencing url: URL) {
+        for (workspace, tab) in affectedTabs(referencing: url) { workspace.closeTab(tab.id) }
     }
 
     /// Re-points every open tab at the moved item — including, when a *folder*
     /// was renamed/moved, all tabs on files inside it — and restarts their
     /// watchers so external changes keep being picked up.
-    private func retargetTabs(from oldURL: URL, to newURL: URL) {
+    private struct TabRelocation {
+        let workspace: WorkspaceModel
+        let tab: EditorTab
+        let target: URL
+    }
+
+    private func prepareTabRelocations(from oldURL: URL, to newURL: URL) async throws -> [TabRelocation] {
         let oldPath = oldURL.standardizedFileURL.path
         let newPath = newURL.standardizedFileURL.path
-        for tab in tabs {
-            guard let path = tab.document.fileURL?.standardizedFileURL.path else { continue }
-            guard path == oldPath || path.hasPrefix(oldPath + "/") else { continue }
-            let target = path == oldPath
-                ? newURL
-                : URL(fileURLWithPath: newPath + String(path.dropFirst(oldPath.count)))
-            releaseLSP(tab)
-            tab.document.retarget(to: target)
-            startWatching(tab)
+        var prepared: [TabRelocation] = []
+        do {
+            for workspace in WorkspaceRegistry.models {
+                for tab in workspace.tabs {
+                    guard let path = tab.document.fileURL?.standardizedFileURL.path,
+                          path == oldPath || path.hasPrefix(oldPath + "/") else { continue }
+                    let target = path == oldPath ? newURL : URL(fileURLWithPath: newPath + String(path.dropFirst(oldPath.count)))
+                    try await tab.document.beginRelocation()
+                    prepared.append(TabRelocation(workspace: workspace, tab: tab, target: target))
+                }
+            }
+            return prepared
+        } catch {
+            cancelTabRelocations(prepared)
+            throw error
         }
+    }
+
+    private func finishTabRelocations(_ relocations: [TabRelocation]) {
+        for relocation in relocations {
+            relocation.workspace.releaseLSP(relocation.tab)
+            relocation.tab.document.finishRelocation(to: relocation.target)
+            relocation.workspace.startWatching(relocation.tab)
+            relocation.workspace.persistSession()
+        }
+    }
+
+    private func cancelTabRelocations(_ relocations: [TabRelocation]) {
+        for relocation in relocations { relocation.tab.document.cancelRelocation() }
     }
 
     private func writeEmptyFile(at url: URL) async throws {

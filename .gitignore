@@ -57,3 +57,6 @@ AGENTS.md
 .audits
 
 test.txt
+
+# Python release-script test caches
+__pycache__/

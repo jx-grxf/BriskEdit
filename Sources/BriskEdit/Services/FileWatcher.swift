@@ -16,6 +16,8 @@ final class FileWatcher: @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.johannesgrof.briskedit.filewatcher")
     private var source: (any DispatchSourceFileSystemObject)?
     private var rearmAttempts = 0
+    private var cancellationGeneration = 0
+    private var isCancelled = false
 
     init?(url: URL, onChange: @escaping @Sendable () -> Void) {
         self.path = url.path
@@ -27,8 +29,11 @@ final class FileWatcher: @unchecked Sendable {
 
     func cancel() {
         queue.async { [weak self] in
-            self?.source?.cancel()
-            self?.source = nil
+            guard let self else { return }
+            self.isCancelled = true
+            self.cancellationGeneration &+= 1
+            self.source?.cancel()
+            self.source = nil
         }
     }
 
@@ -38,6 +43,7 @@ final class FileWatcher: @unchecked Sendable {
 
     /// Must run on `queue`.
     private func start() -> Bool {
+        guard !isCancelled else { return false }
         let fd = open(path, O_EVTONLY)
         guard fd >= 0 else { return false }
         let src = DispatchSource.makeFileSystemObjectSource(
@@ -67,11 +73,13 @@ final class FileWatcher: @unchecked Sendable {
         source?.cancel()
         source = nil
         rearmAttempts += 1
-        guard rearmAttempts <= 20 else { return }
-        // The replacement file may not exist for a few milliseconds during an
-        // atomic swap; retry briefly before giving up.
-        queue.asyncAfter(deadline: .now() + 0.05) { [weak self] in
-            guard let self, self.source == nil else { return }
+        let generation = cancellationGeneration
+        // Atomic swaps normally settle immediately. Longer delete/recreate cycles
+        // back off to avoid polling aggressively, but continue until cancellation.
+        let delay = min(5.0, 0.05 * pow(2.0, Double(min(rearmAttempts - 1, 7))))
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, !self.isCancelled, self.cancellationGeneration == generation,
+                  self.source == nil else { return }
             if self.start() {
                 self.onChange()
             } else {

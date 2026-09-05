@@ -88,6 +88,13 @@ struct AppCommands: Commands {
 
             Divider()
 
+            Button("Previous Tab") { workspace?.selectAdjacentTab(offset: -1) }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled((workspace?.tabs.count ?? 0) < 2)
+            Button("Next Tab") { workspace?.selectAdjacentTab(offset: 1) }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled((workspace?.tabs.count ?? 0) < 2)
+
             Button("Move Tab Left") {
                 workspace?.moveActiveTab(by: -1)
             }
@@ -102,6 +109,13 @@ struct AppCommands: Commands {
         }
 
         CommandGroup(after: .saveItem) {
+            Button("Compare with Disk…") {
+                if let document = workspace?.activeTab?.document { workspace?.review.compare(document: document) }
+            }
+            .disabled(workspace?.activeTab?.document.fileURL == nil || workspace?.activeTab?.previewKind != nil)
+            Button("Recover Drafts…") { Task { await workspace?.loadRecoverableDrafts() } }
+                .disabled(workspace == nil)
+            Divider()
             Button("Save") {
                 Task { await workspace?.saveActiveTab() }
             }
@@ -122,6 +136,14 @@ struct AppCommands: Commands {
         }
 
         CommandMenu("Go") {
+            Button("Find References…") {
+                if let workspace, let document = workspace.activeTab?.document {
+                    workspace.review.findReferences(document: document, root: workspace.rootURL)
+                }
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(workspace?.activeTab?.document.fileURL == nil || workspace?.activeTab?.previewKind != nil)
+            Divider()
             Button("Go to File…") {
                 workspace?.showFileFinder = true
             }

@@ -291,6 +291,12 @@ struct GitSidebarView: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Open \(change.displayName)")
             Spacer()
+            Button {
+                workspace.review.gitDiff(file: root.appendingPathComponent(change.path), root: root, staged: help == "Unstage")
+            } label: { Image(systemName: "doc.text.magnifyingglass") }
+                .buttonStyle(.borderless)
+                .help("Show Changes")
+                .accessibilityLabel("Show changes to \(change.displayName)")
             Button(action: action2) { Image(systemName: action) }
                 .buttonStyle(.borderless)
                 .help(help)
@@ -299,6 +305,9 @@ struct GitSidebarView: View {
         .contentShape(Rectangle())
         .contextMenu {
             Button("Open") { openFile(change) }
+            Button("Show Changes…") {
+                workspace.review.gitDiff(file: root.appendingPathComponent(change.path), root: root, staged: help == "Unstage")
+            }
             if change.status != "?" {
                 Button("Discard Changes…", role: .destructive) { discardTarget = change }
             }
@@ -368,6 +377,7 @@ struct GitSidebarView: View {
     /// refresh + broadcast. Failures reuse the result-banner; successes stay
     /// silent.
     private func perform(_ op: @escaping () async -> GitResult) {
+        guard !isWorking else { return }
         isWorking = true
         Task {
             let result = await op()
@@ -388,6 +398,7 @@ struct GitSidebarView: View {
     /// Git op whose result is worth showing (push/pull/fetch/checkout). Always
     /// reports an outcome — success (green, auto-dismiss) or error (orange).
     private func performResult(_ label: String, _ op: @escaping () async -> GitResult) {
+        guard !isWorking else { return }
         isWorking = true
         feedback = nil
         Task {

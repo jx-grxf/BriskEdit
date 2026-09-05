@@ -4,11 +4,11 @@
 
 <img src=".github/assets/logo.png" width="140" height="140" alt="BriskEdit app icon" />
 
-A native macOS text editor for developers. Built in SwiftUI and AppKit, not Electron. Opens instantly, stays under 120 MB idle, runs your code from a button that just figures out the toolchain itself.
+A native macOS text editor for developers. Built in SwiftUI and AppKit, not Electron. Keeps editing local, recovers unsaved drafts, and runs code with the toolchains already installed on your Mac.
 
 [![CI](https://github.com/jx-grxf/BriskEdit/actions/workflows/ci.yml/badge.svg)](https://github.com/jx-grxf/BriskEdit/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/jx-grxf/BriskEdit?label=release)](https://github.com/jx-grxf/BriskEdit/releases/latest)
-![Platform](https://img.shields.io/badge/platform-macOS%2026%2B-111111)
+![Platform](https://img.shields.io/badge/platform-macOS%2015%2B-111111)
 ![Swift](https://img.shields.io/badge/swift-6.0-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
@@ -21,7 +21,7 @@ A native macOS text editor for developers. Built in SwiftUI and AppKit, not Elec
 
 ## What it does
 
-- **Opens files instantly.** TextKit 2 NSTextView, no background indexing on launch. A 100 MB log opens without freezing the UI.
+- **Opens files instantly.** TextKit 2 NSTextView, no background indexing on launch. Large-file mode disables expensive live features; files above 128 MiB are rejected.
 - **Workspace, not document soup.** Open a folder, tabs persist, sidebar shows the file tree, split panes when you want them.
 - **Run code from a button.** `Run` discovers the right toolchain for the file (clang/gcc for C, swiftc for Swift, python3 for Python, node/deno for JS/TS, cargo for Rust, go for Go) and runs it in the integrated terminal. No tasks.json, no launch.json, no extension to install.
 - **Integrated terminal that actually feels like Terminal.app.** SwiftTerm-backed, real zsh, multiple tabs, cwd follows the workspace root, kills cleanly.
@@ -29,7 +29,7 @@ A native macOS text editor for developers. Built in SwiftUI and AppKit, not Elec
 - **Find / replace that doesn't blink.** In-file regex, in-folder with `.gitignore` respected, Command Palette and a fuzzy Go-to-File palette (⌘P) for everything else.
 - **Code intelligence from the tools you already have.** Completion and live diagnostics via the language servers on your box (clangd, sourcekit-lsp, gopls, pyright, rust-analyzer, typescript-language-server) — no marketplace, no install step. A zero-config `Check File` (⌘B) syntax-checks C/C++/Swift even without a server; errors and warnings surface in the status bar.
 - **Stays out of your way.** Format-on-save with your installed formatter, session restore, and live reload when a file changes on disk.
-- **Lives in macOS.** Native menus, Settings scene, Services menu, share extensions, Quick Look, Sparkle updates.
+- **Lives in macOS.** Native menus, Settings, Quick Look, and Sparkle updates. Liquid Glass on macOS 26 adapts to native materials on macOS 15.
 
 The point is the absence of bloat. No telemetry, no account, no LSP extension marketplace, no electron, no second runtime. Just the editor and the tools you already have on the box.
 
@@ -53,9 +53,9 @@ The point is the absence of bloat. No telemetry, no account, no LSP extension ma
 1. Download the latest `BriskEdit-<version>.dmg` from [GitHub Releases](https://github.com/jx-grxf/BriskEdit/releases/latest).
 2. Open the DMG and drag `BriskEdit.app` into Applications.
 3. Launch from Applications or `open -a BriskEdit`.
-4. First launch on an unsigned preview build: right-click `BriskEdit.app` → Open → confirm. Developer ID notarization is queued for the first paid release.
+4. Published releases are Developer ID signed and notarized. Local ad-hoc previews have a different trust identity.
 
-Requires macOS 26 or newer. No account, no cloud sync, no analytics, no backend.
+Version 0.6.0 requires macOS 15 or newer; the currently published 0.5.2 release requires macOS 26. No account, no cloud sync, no analytics, no backend.
 
 ## How `Run` works
 
@@ -77,11 +77,11 @@ The toolchain discovery and exec live in `RunService`. The Run button only ever 
 
 ## Safety
 
-- No background filesystem watcher beyond the active workspace root.
+- Open file tabs use filesystem watchers to detect external edits.
 - No telemetry, no analytics, no remote evaluation.
 - `Run` never executes on file save or autocomplete — only on the explicit button or `⌘R`.
-- The integrated terminal inherits a filtered environment by default.
-- Workspace state and recent files live in `~/Library/Application Support/BriskEdit` — `rm -rf` removes every trace.
+- The integrated terminal runs the local shell and its configured environment.
+- Workspace state and recent files use local app preferences. Recovery copies live in `~/Library/Application Support/BriskEdit/Drafts`.
 
 ## Build from source
 
@@ -112,26 +112,30 @@ BRISKEDIT_VERSION=0.1.0 ./script/package_dmg.sh
 
 ## Release pipeline
 
-GitHub Actions builds tagged releases: app bundle, DMG, Sparkle ZIP and appcast, signature verification, and (once Developer ID is configured) notarization + stapler validation. Full runbook in [docs/release.md](docs/release.md). Public release notes live in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+GitHub Actions builds tagged releases: app bundle, DMG, Sparkle ZIP and appcast, signature verification, notarization, and stapler validation. Full runbook in [docs/release.md](docs/release.md). Public release notes live in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 Distribution roadmap:
 
-- Developer ID signing and notarization once Apple Developer enrollment lands.
+- Developer ID signing and notarization shipped with 0.5.2.
 - Homebrew Cask submission after the first notarized release.
+
+## New in the 0.6.0 source tree
+
+- Recover unsaved drafts, including untitled files, as safe copies after unexpected exits.
+- Compare editor content with disk; review staged and unstaged Git diffs.
+- Find References through installed language servers.
+- Navigate tabs with ⇧⌘[ and ⇧⌘]; reopen closed tabs with ⇧⌘T.
+- Use macOS 15+, with availability-guarded Liquid Glass on macOS 26.
+
+Recovery is local and optional (Settings → General). Limits: 2 MiB per draft, 20 drafts / 20 MiB total, retained up to 14 days. It is a recovery aid, not a replacement for saving or backups. Oversized buffers are not snapshotted. The release workflow publishes only after the signed tag, tests, signing, notarization and feed checks pass.
 
 ## Roadmap
 
-- **MVP-0** (now): App shell, workspace, file tree, tabs, NSTextView editor with gutter, find/replace, Command Palette, Settings, Sparkle updates.
-- **MVP-1**: Integrated terminal (SwiftTerm), Markdown preview split, Run button with toolchain discovery.
-- **V1** (in progress): LSP client (completion + diagnostics ✅; hover/go-to-def next), find-in-folder ✅, format-on-save ✅, session restore ✅, live reload-on-change ✅, fuzzy Go-to-File ✅, diagnostics in the status bar ✅. Remaining: line-number gutter + git status in gutter (the old NSRulerView is incompatible with the TextKit 2 text view — needs a TextKit 2-native gutter), Tree-sitter syntax highlighting + folding.
-- **V1.5**: Themes, snippets, EditorConfig, multi-cursor.
-- **Later**: Debug Adapter Protocol, integrated build/run tasks, remote SSH, macro recorder.
-
-Explicitly **not** doing: third-party extension marketplace, telemetry, account system, cloud sync, AI-completion engine as a built-in.
+Next candidates are richer Git hunk review, safe LSP rename/code actions with edit preview, and additional language grammars. There is no extension marketplace, required account, cloud sync, or built-in AI-completion engine.
 
 ## Tech stack
 
-SwiftUI · AppKit (`NSTextView` with TextKit 2, `NSRulerView`) · macOS 26+ · `@Observable` · Swift 6 strict concurrency · Swift Package Manager (consumed via Xcode) · `xcodegen` for project generation · GitHub Actions on macOS · Sparkle for updates · SwiftTerm for the integrated terminal · swift-markdown for the preview · SwiftTreeSitter for syntax (V1).
+SwiftUI · AppKit (`NSTextView` with TextKit 2, a separate sibling gutter) · macOS 15+ · `@Observable` · Swift 6 strict concurrency · Swift Package Manager (consumed via Xcode) · `xcodegen` for project generation · GitHub Actions on macOS · Sparkle for updates · SwiftTerm for the integrated terminal · WKWebView Markdown preview · Neon/SwiftTreeSitter for Swift and JSON syntax.
 
 ## Contributing
 

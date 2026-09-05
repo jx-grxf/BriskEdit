@@ -7,6 +7,7 @@ extension WorkspaceModel {
     func startWatching(_ tab: EditorTab) {
         guard tab.previewKind == nil, let url = tab.document.fileURL else { return }
         let id = tab.id
+        LSPService.retainDocument(owner: id, language: tab.document.language, uri: url.absoluteString)
         watchers[id]?.cancel()
         watchers[id] = FileWatcher(url: url) { [weak self] in
             Task { @MainActor in await self?.handleExternalChange(id) }
@@ -21,20 +22,33 @@ extension WorkspaceModel {
     /// Unregisters the closed tab from the language server: drops its diagnostics
     /// handler and sends `didClose`. Only for file-backed tabs with an LSP.
     func releaseLSP(_ tab: EditorTab) {
-        guard tab.previewKind == nil, let url = tab.document.fileURL,
-              LSPService.config(for: tab.document.language) != nil else { return }
-        // Skip if the same file is still open in another tab of this window.
-        if tabs.contains(where: { $0.id != tab.id && $0.document.fileURL == url }) { return }
+        guard tab.previewKind == nil, let url = tab.document.fileURL else { return }
         let uri = url.absoluteString
         let language = tab.document.language
-        Task { await LSPService.shared.didClose(language: language, uri: uri) }
+        Task { await LSPService.shared.releaseDocument(owner: tab.id, language: language, uri: uri) }
     }
 
     func releaseLSPIfNeeded(uri: String?, language: SourceLanguage, replacementURL: URL?) {
         guard let uri,
-              replacementURL?.absoluteString != uri,
-              LSPService.config(for: language) != nil else { return }
-        Task { await LSPService.shared.didClose(language: language, uri: uri) }
+              replacementURL?.absoluteString != uri else { return }
+        guard let replacementURL,
+              let owner = tabs.first(where: { $0.document.fileURL == replacementURL })?.id else { return }
+        Task { await LSPService.shared.releaseDocument(owner: owner, language: language, uri: uri) }
+    }
+
+    /// Releases every tab owned by this window. WindowConfigurator calls this
+    /// from the native window-close callback, where view disappearance would be
+    /// too broad (tabs also disappear during ordinary SwiftUI transitions).
+    func releaseAllLSPDocuments() {
+        let documents = tabs.compactMap { tab -> (UUID, SourceLanguage, String)? in
+            guard tab.previewKind == nil, let url = tab.document.fileURL else { return nil }
+            return (tab.id, tab.document.language, url.absoluteString)
+        }
+        Task {
+            for (owner, language, uri) in documents {
+                await LSPService.shared.releaseDocument(owner: owner, language: language, uri: uri)
+            }
+        }
     }
 
     /// Reloads a clean buffer from disk; flags a dirty buffer for the reload

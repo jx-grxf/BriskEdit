@@ -72,11 +72,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        // Start the graceful LSP shutdown handshake now so servers receive
-        // `shutdown`/`exit`; `terminateAll` below remains the backstop.
-        Task { await LSPService.shared.shutdownAll() }
         let dirty = WorkspaceRegistry.models.filter(\.hasUnsavedChanges)
-        guard !dirty.isEmpty else { return .terminateNow }
+        guard !dirty.isEmpty else {
+            finishTermination(sender: sender)
+            return .terminateLater
+        }
 
         let alert = NSAlert()
         alert.messageText = "You have unsaved changes."
@@ -93,13 +93,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                         return
                     }
                 }
+                await LSPService.shared.shutdownAll()
                 sender.reply(toApplicationShouldTerminate: true)
             }
             return .terminateLater
         case .alertSecondButtonReturn:
-            return .terminateNow
+            Task { @MainActor in
+                for model in dirty { await model.discardDraftsForWindowClose() }
+                await LSPService.shared.shutdownAll()
+                sender.reply(toApplicationShouldTerminate: true)
+            }
+            return .terminateLater
         default:
             return .terminateCancel
+        }
+    }
+
+    private func finishTermination(sender: NSApplication) {
+        Task {
+            await LSPService.shared.shutdownAll()
+            sender.reply(toApplicationShouldTerminate: true)
         }
     }
 }

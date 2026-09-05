@@ -3,6 +3,7 @@ import Foundation
 // Workspace root, file-tree reloading and lazy child loading.
 extension WorkspaceModel {
     func setWorkspaceRoot(_ url: URL) {
+        markUserInteraction()
         rootURL = url
         RecentWorkspacesStore.shared.record(url)
         selectedSidebarURL = nil
@@ -20,6 +21,7 @@ extension WorkspaceModel {
     }
 
     func closeFolder() {
+        markUserInteraction()
         rootURL = nil
         selectedSidebarURL = nil
         expandedDirectories.removeAll()

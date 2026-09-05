@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CommandPaletteView: View {
     @Bindable var workspace: WorkspaceModel
+    var onSelect: ((EditorCommand) -> Void)?
     @State private var query: String = ""
     @State private var selection: EditorCommand.ID?
     @FocusState private var fieldFocused: Bool
@@ -53,7 +54,8 @@ struct CommandPaletteView: View {
 
     private func runSelection() {
         guard let id = selection, let command = results.first(where: { $0.id == id }) else { return }
+        if let onSelect { onSelect(command) }
+        else { command.perform(workspace) }
         workspace.showCommandPalette = false
-        command.perform(workspace)
     }
 }

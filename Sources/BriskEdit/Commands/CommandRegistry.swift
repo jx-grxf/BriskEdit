@@ -30,6 +30,21 @@ enum CommandRegistry {
         EditorCommand(id: "tab.reopen", title: "Reopen Closed Tab", group: "Tabs", shortcut: "⇧⌘T") { ws in
             ws.reopenClosedTab()
         },
+        EditorCommand(id: "tab.next", title: "Next Tab", group: "Tabs", shortcut: "⇧⌘]") { ws in
+            ws.selectAdjacentTab(offset: 1)
+        },
+        EditorCommand(id: "tab.previous", title: "Previous Tab", group: "Tabs", shortcut: "⇧⌘[") { ws in
+            ws.selectAdjacentTab(offset: -1)
+        },
+        EditorCommand(id: "file.compare", title: "Compare with Disk…", group: "File", shortcut: nil) { ws in
+            if let doc = ws.activeTab?.document { ws.review.compare(document: doc) }
+        },
+        EditorCommand(id: "file.recover", title: "Recover Drafts…", group: "File", shortcut: nil) { ws in
+            Task { await ws.loadRecoverableDrafts() }
+        },
+        EditorCommand(id: "code.references", title: "Find References…", group: "Code", shortcut: "⇧⌘R") { ws in
+            if let doc = ws.activeTab?.document { ws.review.findReferences(document: doc, root: ws.rootURL) }
+        },
         EditorCommand(id: "file.goto", title: "Go to File…", group: "File", shortcut: "⌘P") { ws in
             ws.showFileFinder = true
         },

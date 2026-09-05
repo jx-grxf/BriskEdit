@@ -21,11 +21,20 @@ cd "$(dirname "$0")/.."
 
 CHANNEL="${BRISKEDIT_UPDATE_CHANNEL:-stable}"
 BUILD="${BRISKEDIT_BUILD:-1}"
+[[ "$CHANNEL" == "stable" || "$CHANNEL" == "beta" ]] || { echo "error: update channel must be stable or beta" >&2; exit 1; }
+[[ "$BUILD" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}){0,2}$ ]] || { echo "error: Sparkle build must be a numeric CFBundleVersion" >&2; exit 1; }
 
 if [[ ! -d dist/BriskEdit.app ]]; then
   echo "error: dist/BriskEdit.app not found — run script/package_dmg.sh first" >&2
   exit 1
 fi
+
+INFO="dist/BriskEdit.app/Contents/Info.plist"
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")" == "$BRISKEDIT_VERSION" ]] || { echo "error: bundle version differs from appcast version" >&2; exit 1; }
+[[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")" == "$BUILD" ]] || { echo "error: bundle build differs from appcast build" >&2; exit 1; }
+MINIMUM_SYSTEM="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$INFO")"
+[[ "$MINIMUM_SYSTEM" =~ ^[0-9]+(\.[0-9]+){0,2}$ ]] || { echo "error: invalid minimum system version" >&2; exit 1; }
+./script/verify_release_metadata.sh
 
 mkdir -p dist/sparkle
 ZIP="dist/sparkle/BriskEdit-${BRISKEDIT_VERSION}.zip"
@@ -137,7 +146,7 @@ ${DESCRIPTION_BLOCK}
 ${CHANNEL_BLOCK}
       <sparkle:version>${BUILD}</sparkle:version>
       <sparkle:shortVersionString>${BRISKEDIT_VERSION}</sparkle:shortVersionString>
-      <sparkle:minimumSystemVersion>26.0</sparkle:minimumSystemVersion>
+      <sparkle:minimumSystemVersion>${MINIMUM_SYSTEM}</sparkle:minimumSystemVersion>
       <pubDate>${PUBDATE}</pubDate>
       <enclosure
         url="${DOWNLOAD_URL}"

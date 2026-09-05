@@ -34,7 +34,7 @@ fail() {
 if [[ -n "${BRISKEDIT_VERSION:-}" && "$BRISKEDIT_VERSION" != "$PROJECT_VERSION" ]]; then
   fail "requested version '$BRISKEDIT_VERSION' does not match project version '$PROJECT_VERSION'"
 fi
-if [[ -n "${BRISKEDIT_BUILD:-}" && ! "$BRISKEDIT_BUILD" =~ ^[1-9][0-9]*$ ]]; then
+if [[ -n "${BRISKEDIT_BUILD:-}" && ! "$BRISKEDIT_BUILD" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}){0,2}$ ]]; then
   fail "release build '$BRISKEDIT_BUILD' must be a positive integer"
 fi
 if [[ -n "${BRISKEDIT_RELEASE_TAG:-}" && "$BRISKEDIT_RELEASE_TAG" != "v$PROJECT_VERSION" ]]; then
