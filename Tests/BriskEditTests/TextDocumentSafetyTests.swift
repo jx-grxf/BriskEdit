@@ -107,4 +107,37 @@ final class TextDocumentSafetyTests: XCTestCase {
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         XCTAssertTrue(files.contains { $0.lastPathComponent == id.uuidString + ".json" })
     }
+
+    @MainActor
+    func testDeferredLineIndexRebuildUpdatesCursorForLargeBuffer() async throws {
+        let document = TextDocument.empty()
+        let text = String(repeating: "a\n", count: 60_000) + "tail"
+        document.applyEdit(text: text)
+
+        try await waitForLineIndex(document, location: text.utf16.count, expectedLine: 60_001)
+        XCTAssertEqual(document.cursorLine, 60_001)
+        XCTAssertEqual(document.cursorColumn, 5)
+    }
+
+    @MainActor
+    func testDeferredLineIndexRejectsStaleGeneration() async throws {
+        let document = TextDocument.empty()
+        document.applyEdit(text: String(repeating: "old\n", count: 30_000))
+        let latest = String(repeating: "x\n", count: 50_001) + "final"
+        document.applyEdit(text: latest)
+
+        try await waitForLineIndex(document, location: latest.utf16.count, expectedLine: 50_002)
+        XCTAssertEqual(document.cursorLine, 50_002)
+        XCTAssertEqual(document.cursorColumn, 6)
+    }
+    @MainActor
+    private func waitForLineIndex(_ document: TextDocument, location: Int, expectedLine: Int) async throws {
+        let deadline = ContinuousClock.now + .seconds(5)
+        repeat {
+            document.updateCursor(location: location)
+            if document.cursorLine == expectedLine { return }
+            try await Task.sleep(for: .milliseconds(20))
+        } while ContinuousClock.now < deadline
+    }
+
 }

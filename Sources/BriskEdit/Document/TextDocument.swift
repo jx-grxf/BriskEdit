@@ -28,7 +28,7 @@ final class TextDocument {
     private(set) var pendingReveal: PendingReveal?
     private(set) var revealToken: Int = 0
     private var lineStartOffsets: [Int] = [0]
-    private var lineIndexWork: DispatchWorkItem?
+    private var lineIndexWork: Task<Void, Never>?
     private var autosaveWork: DispatchWorkItem?
     private var recoveryTask: Task<Void, Never>?
     private var recoveryGeneration = 0
@@ -258,15 +258,22 @@ final class TextDocument {
         // large-file mode, where running this on the main actor would stall).
         let snapshot = text
         let revisionAtSchedule = revision
-        let work = DispatchWorkItem { [weak self] in
+        let worker = Task.detached(priority: .utility) { () -> [Int]? in
+            do { try await Task.sleep(for: .milliseconds(250)) }
+            catch { return nil }
+            guard !Task.isCancelled else { return nil }
             let offsets = TextDocument.computeLineStartOffsets(in: snapshot)
-            Task { @MainActor [weak self] in
-                guard let self, self.revision == revisionAtSchedule else { return }
+            return Task.isCancelled ? nil : offsets
+        }
+        lineIndexWork = Task { @MainActor [weak self] in
+            await withTaskCancellationHandler {
+                guard let offsets = await worker.value, !Task.isCancelled,
+                      let self, self.revision == revisionAtSchedule else { return }
                 self.lineStartOffsets = offsets
+            } onCancel: {
+                worker.cancel()
             }
         }
-        lineIndexWork = work
-        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 0.25, execute: work)
     }
 
     /// Points the document at a new on-disk location (e.g. after a rename)
