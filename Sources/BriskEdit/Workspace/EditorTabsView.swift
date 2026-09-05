@@ -684,21 +684,29 @@ private struct TabChip: View {
         // Native "front tab" look: the active tab reads as a raised surface
         // (matching the editor area) instead of an accent wash, with a thin
         // accent hairline along its top edge — the Xcode/Safari idiom.
-        .adaptiveChromeSurface(active: isActive)
         .overlay(alignment: .top) {
             Capsule().fill(.tint).frame(height: 2).padding(.horizontal, 8).opacity(isActive ? 1 : 0)
         }
         .overlay(alignment: .trailing) {
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .imageScale(.small)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color(nsColor: .labelColor))
+                    .frame(width: 20, height: 20)
+                    .background(isActive ? Color.primary.opacity(0.12) : Color.clear,
+                                in: Circle())
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .opacity(0.6)
-            .padding(.trailing, 10)
+            .opacity(isActive ? 1 : 0.65)
+            .padding(.trailing, 6)
+            .zIndex(10)
             .help("Close \(tab.document.displayName)")
             .accessibilityLabel("Close \(tab.document.displayName)")
         }
+        // Include the close control in the glass foreground. An overlay added
+        // after glass can be sampled as backdrop instead of staying readable.
+        .adaptiveChromeSurface(active: isActive)
         // Drag pulls the tab out (native `.draggable`, fires in the ScrollView).
         // The drag image is a small chip with the tab's name.
         .draggable(makeTransfer()) {

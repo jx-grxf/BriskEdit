@@ -41,9 +41,9 @@ struct FileTypeIcon: View {
     private var languageMark: some View {
         if let monogram = language.iconMonogram {
             Text(monogram)
-                .font(.system(size: size * (monogram.count > 2 ? 0.43 : 0.52), weight: .bold, design: .rounded))
+                .font(.system(size: size * (monogram.count > 2 ? 0.40 : 0.52), weight: .bold, design: .rounded))
                 .foregroundStyle(Self.tint(language))
-                .minimumScaleFactor(0.7)
+                .minimumScaleFactor(0.82)
                 .lineLimit(1)
                 .frame(width: size, height: size)
                 .background(Self.tint(language).opacity(0.14), in: RoundedRectangle(cornerRadius: size * 0.24))
@@ -71,14 +71,14 @@ struct FileTypeIcon: View {
         switch language {
         case .swift: .orange
         case .c, .cpp: .blue
-        case .javascript, .typescript: .yellow
+        case .javascript, .typescript: .orange
         case .php: .indigo
         case .python: .green
         case .rust, .lua: .brown
         case .markdown: .purple
-        case .json, .yaml, .xml, .toml, .ini: .cyan
+        case .json, .yaml, .xml, .toml, .ini: .teal
         case .html, .css, .scss, .less: .pink
-        case .shell, .perl: .mint
+        case .shell, .perl: .green
         case .go: .teal
         case .ruby: .red
         case .java, .kotlin: .orange
