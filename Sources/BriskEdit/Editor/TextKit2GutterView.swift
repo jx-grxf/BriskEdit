@@ -35,14 +35,14 @@ final class TextKit2GutterView: NSView {
         self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = theme.gutterBackground.cgColor
+        layer?.backgroundColor = (theme.vibrancy == .off ? theme.gutterBackground : NSColor.clear).cgColor
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { theme.vibrancy == .off }
 
     /// Repaint whenever Auto Layout (re)positions the gutter. The scroll view
     /// reaches its real size a layout pass *after* the editor first appears
@@ -57,7 +57,7 @@ final class TextKit2GutterView: NSView {
 
     func setTheme(_ theme: EditorTheme) {
         self.theme = theme
-        layer?.backgroundColor = theme.gutterBackground.cgColor
+        layer?.backgroundColor = (theme.vibrancy == .off ? theme.gutterBackground : NSColor.clear).cgColor
         needsDisplay = true
     }
 
@@ -95,8 +95,9 @@ final class TextKit2GutterView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        theme.gutterBackground.setFill()
-        dirtyRect.fill()
+        let background = theme.vibrancy == .off ? theme.gutterBackground : theme.gutterBackground.withAlphaComponent(0.18)
+        background.setFill()
+        dirtyRect.fill(using: .copy)
         foldHitRects.removeAll(keepingCapacity: true)
 
         guard let textView, let tlm = textView.textLayoutManager else { return }

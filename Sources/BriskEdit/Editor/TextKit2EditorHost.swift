@@ -1,36 +1,16 @@
 import AppKit
 import SwiftUI
 
-private final class EditorBackingView: NSView {
-    var fillColor: NSColor {
-        didSet {
-            layer?.backgroundColor = fillColor.cgColor
-            needsDisplay = true
-        }
-    }
-
-    init(fillColor: NSColor) {
-        self.fillColor = fillColor
-        super.init(frame: .zero)
-        wantsLayer = true
-        layer?.backgroundColor = fillColor.cgColor
-        layerContentsRedrawPolicy = .onSetNeedsDisplay
-    }
-
-    @available(*, unavailable)
-    required init?(coder: NSCoder) { fatalError() }
-
-    override var isOpaque: Bool { true }
-
-    override func draw(_ dirtyRect: NSRect) {
-        fillColor.setFill()
-        dirtyRect.fill()
-    }
-}
-
 struct TextKit2EditorHost: NSViewRepresentable {
     @Bindable var document: TextDocument
     let theme: EditorTheme
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    private var resolvedTheme: EditorTheme {
+        var resolved = theme
+        resolved.vibrancy = theme.vibrancy.resolved(reduceTransparency: reduceTransparency)
+        return resolved
+    }
     var showMinimap: Bool = true
     var showHoverTooltips: Bool = true
     var highlightDebounce: TimeInterval = 0.08
@@ -43,6 +23,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
     var onFindReferences: ((Int, Int) -> Void)?
 
     func makeNSView(context: Context) -> NSView {
+        let theme = resolvedTheme
         let textView = BriskCodeTextView(usingTextLayoutManager: true)
         textView.delegate = context.coordinator
         textView.string = document.text
@@ -95,9 +76,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
 
         let scrollView = NSScrollView()
         scrollView.borderType = .noBorder
-        scrollView.drawsBackground = true
+        scrollView.drawsBackground = theme.vibrancy == .off
         scrollView.backgroundColor = theme.background
-        scrollView.contentView.drawsBackground = true
+        scrollView.contentView.drawsBackground = theme.vibrancy == .off
         scrollView.contentView.backgroundColor = theme.background
         scrollView.hasVerticalScroller = true
         scrollView.hasHorizontalScroller = false
@@ -152,7 +133,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         minimap.invalidateContent()
         context.coordinator.minimap = minimap
 
-        let container = EditorBackingView(fillColor: theme.background)
+        let container = EditorBackingView(theme: theme)
         // Let SwiftUI own the container's frame (TAMIC = true, the AppKit
         // default — same as the PDF/QuickLook preview hosts). Keeping this
         // `false` left the container's *own* size undefined: its subviews are
@@ -205,6 +186,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
     }
 
     func updateNSView(_ container: NSView, context: Context) {
+        let theme = resolvedTheme
         guard let textView = context.coordinator.textView else { return }
         let coordinator = context.coordinator
         coordinator.document = document
@@ -219,7 +201,8 @@ struct TextKit2EditorHost: NSViewRepresentable {
         coordinator.updateInlineBlameEnabled(showInlineGitBlame)
         coordinator.refreshEditorConfig(fileURL: document.fileURL, workspaceRoot: workspaceRootURL)
         let previousTheme = coordinator.theme
-        let themeChanged = previousTheme != theme
+        let themeChanged = !previousTheme.hasSameTextAppearance(as: theme)
+        let surfaceChanged = previousTheme.vibrancy != theme.vibrancy
         coordinator.theme = theme
 
         // Re-applying the text view's static config (font, paragraph style,
@@ -230,11 +213,17 @@ struct TextKit2EditorHost: NSViewRepresentable {
         // changed; everything `configure` sets is otherwise constant.
         if themeChanged {
             configure(textView, theme: theme)
+        }
+        if themeChanged || surfaceChanged {
+            textView.drawsBackground = theme.vibrancy == .off
+            textView.needsDisplay = true
+            coordinator.scrollView?.drawsBackground = theme.vibrancy == .off
             coordinator.scrollView?.backgroundColor = theme.background
+            coordinator.scrollView?.contentView.drawsBackground = theme.vibrancy == .off
             coordinator.scrollView?.contentView.backgroundColor = theme.background
             coordinator.gutter?.setTheme(theme)
             coordinator.minimap?.setTheme(theme)
-            (container as? EditorBackingView)?.fillColor = theme.background
+            (container as? EditorBackingView)?.setTheme(theme)
         }
 
         // Toggle the minimap without rebuilding the editor.
@@ -305,7 +294,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
     }
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(document: document, theme: theme)
+        Coordinator(document: document, theme: resolvedTheme)
     }
 
     static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
@@ -318,7 +307,7 @@ struct TextKit2EditorHost: NSViewRepresentable {
         textView.isRichText = false
         textView.importsGraphics = false
         textView.allowsUndo = true
-        textView.drawsBackground = true
+        textView.drawsBackground = theme.vibrancy == .off
         textView.backgroundColor = theme.background
         textView.textColor = theme.foreground
         textView.insertionPointColor = theme.cursor

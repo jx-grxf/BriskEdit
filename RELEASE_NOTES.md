@@ -4,6 +4,7 @@
 
 ### Added
 
+- **Frosted editor backgrounds.** Choose Off, Subtle, Balanced, or Strong vibrancy in Appearance settings while keeping your syntax theme. Reduce Transparency and Low Power use a solid background.
 - **Recover unsaved drafts.** Local recovery copies include untitled files and restore as new copies. Recovery keeps up to 20 drafts, 2 MiB each and 20 MiB total, for up to 14 days; configure it in General settings.
 - **Compare with Disk.** Inspect a read-only diff before reloading or overwriting a file changed by another app.
 - **Find References.** Ask the installed language server for symbol references and open each result at its exact location. Unsupported servers report a clear explanation.

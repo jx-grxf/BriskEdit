@@ -168,6 +168,7 @@ private struct GeneralPreferencesView: View {
 // MARK: - Appearance
 
 private struct AppearancePreferencesView: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(Preferences.self) private var preferences
     @Environment(ThemeStore.self) private var themeStore
     @State private var importError: String?
@@ -212,6 +213,23 @@ private struct AppearancePreferencesView: View {
                 Text("Monospaced fonts installed on this Mac. Pick the face you want the editor to render code in.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            Section("Editor Background") {
+                Picker("Vibrancy", selection: $prefs.editorVibrancy) {
+                    ForEach(EditorVibrancy.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Softly blur the desktop behind the editor while keeping code sharp. Your color theme stays in place; changes apply immediately.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if prefs.editorVibrancy != .off, reduceTransparency || prefs.resolvedPerformanceMode == .lowPower {
+                    Label(reduceTransparency
+                          ? "Paused because Reduce Transparency is enabled in macOS."
+                          : "Paused in Low Power mode to reduce graphics work.", systemImage: "pause.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("Editor Chrome") {
                 Toggle("Show minimap", isOn: $prefs.showMinimap)

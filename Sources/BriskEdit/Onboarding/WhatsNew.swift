@@ -59,6 +59,7 @@ enum WhatsNew {
             Highlight(symbol: "arrow.triangle.branch", title: "Review Git changes", detail: "Read staged and unstaged diffs from Source Control. Navigate open tabs with Shift–Command–[ and ].", tint: .orange),
         ]),
         Section(name: "A calmer Mac experience", highlights: [
+            Highlight(symbol: "macwindow", title: "Frosted editor backgrounds", detail: "Choose Subtle, Balanced, or Strong vibrancy in Appearance while keeping your syntax theme. Reduce Transparency and Low Power switch to a solid background.", tint: .cyan),
             Highlight(symbol: "macwindow", title: "More Macs, native materials", detail: "Now supports macOS 15 and later, with Liquid Glass on macOS 26 and native material fallbacks on earlier systems.", tint: .blue),
             Highlight(symbol: "bolt", title: "Smoother editing", detail: "Folding analysis runs away from the UI. Cancelled searches stop their work, and window sizing respects your adjustments.", tint: .teal),
         ]),

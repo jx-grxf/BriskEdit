@@ -30,7 +30,7 @@ final class BriskCodeTextView: NSTextView {
         needsDisplay = true
     }
 
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { drawsBackground && backgroundColor.alphaComponent == 1 }
 
     override func updateTrackingAreas() {
         super.updateTrackingAreas()

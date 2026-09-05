@@ -27,7 +27,7 @@ final class MinimapView: NSView {
         self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = theme.background.cgColor
+        layer?.backgroundColor = (theme.vibrancy == .off ? theme.background : NSColor.clear).cgColor
     }
 
     @available(*, unavailable)
@@ -35,7 +35,7 @@ final class MinimapView: NSView {
 
     func setTheme(_ theme: EditorTheme) {
         self.theme = theme
-        layer?.backgroundColor = theme.background.cgColor
+        layer?.backgroundColor = (theme.vibrancy == .off ? theme.background : NSColor.clear).cgColor
         needsDisplay = true
     }
 
@@ -53,7 +53,7 @@ final class MinimapView: NSView {
     }
 
     override var isFlipped: Bool { true }
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { theme.vibrancy == .off }
 
     // MARK: - Content model
 
@@ -144,8 +144,9 @@ final class MinimapView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        theme.background.setFill()
-        bounds.fill()
+        let background = theme.vibrancy == .off ? theme.background : theme.background.withAlphaComponent(0.18)
+        background.setFill()
+        dirtyRect.fill(using: .copy)
         guard !lines.isEmpty else { return }
 
         let offset = minimapOffset()

@@ -12,6 +12,12 @@ struct WorkspaceWindow: View {
     @Environment(UpdateService.self) private var updates
     @Environment(\.openWindow) private var openWindow
     @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    private var hasVibrantEditor: Bool {
+        guard let tab = workspace.activeTab, tab.special == nil, tab.previewKind == nil else { return false }
+        return preferences.editorTheme.vibrancy.resolved(reduceTransparency: reduceTransparency) != .off
+    }
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -52,6 +58,7 @@ struct WorkspaceWindow: View {
             isDocumentEdited: workspace.hasUnsavedChanges,
             hasUnsavedChanges: workspace.hasUnsavedChanges,
             wantsFullSize: kind.restoresSession ? preferences.hasCompletedOnboarding : true,
+            hasVibrantEditor: hasVibrantEditor,
             tearOffWindowID: tearOffWindowID,
             saveAll: { await workspace.saveAllForQuit() },
             onClose: { workspace.releaseAllLSPDocuments() },
@@ -328,6 +335,7 @@ private struct WindowConfigurator: NSViewRepresentable {
     let hasUnsavedChanges: Bool
     /// Full-size when true; a centered medium frame while onboarding is showing.
     let wantsFullSize: Bool
+    let hasVibrantEditor: Bool
     /// When this is a torn-off secondary window, its UUID — used to look up the
     /// drop-point frame stashed by the source window.
     let tearOffWindowID: UUID?
@@ -348,12 +356,13 @@ private struct WindowConfigurator: NSViewRepresentable {
             let hasUnsaved = hasUnsavedChanges
             let isPrimary = isPrimaryWindow
             let fullSize = wantsFullSize
+            let vibrant = hasVibrantEditor
             let tearOffID = tearOffWindowID
             let save = saveAll
             let close = onClose
             let discard = discardDrafts
             DispatchQueue.main.async {
-                coordinator?.configure(window: window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, tearOffWindowID: tearOffID, saveAll: save, onClose: close, discardDrafts: discard)
+                coordinator?.configure(window: window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, hasVibrantEditor: vibrant, tearOffWindowID: tearOffID, saveAll: save, onClose: close, discardDrafts: discard)
             }
         }
         return view
@@ -365,19 +374,25 @@ private struct WindowConfigurator: NSViewRepresentable {
         let hasUnsaved = hasUnsavedChanges
         let isPrimary = isPrimaryWindow
         let fullSize = wantsFullSize
+        let vibrant = hasVibrantEditor
         let tearOffID = tearOffWindowID
         let save = saveAll
         let close = onClose
         let discard = discardDrafts
         DispatchQueue.main.async {
-            coordinator.configure(window: nsView.window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, tearOffWindowID: tearOffID, saveAll: save, onClose: close, discardDrafts: discard)
+            coordinator.configure(window: nsView.window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, hasVibrantEditor: vibrant, tearOffWindowID: tearOffID, saveAll: save, onClose: close, discardDrafts: discard)
         }
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.editorSurface?.setVibrant(false)
     }
 
     @MainActor
     final class Coordinator: NSObject, NSWindowDelegate {
         private weak var window: NSWindow?
         private weak var forwardee: NSWindowDelegate?
+        var editorSurface: EditorWindowSurface?
         private var hasUnsaved = false
         private var saveAll: () async -> Bool = { true }
         private var onClose: () -> Void = {}
@@ -392,7 +407,7 @@ private struct WindowConfigurator: NSViewRepresentable {
         /// rather than falling back to full-size.
         private var tearOffFrame: CGRect?
 
-        func configure(window: NSWindow?, isPrimaryWindow: Bool, isEdited: Bool, hasUnsaved: Bool, wantsFullSize: Bool, tearOffWindowID: UUID?, saveAll: @escaping () async -> Bool, onClose: @escaping () -> Void, discardDrafts: @escaping () async -> Void) {
+        func configure(window: NSWindow?, isPrimaryWindow: Bool, isEdited: Bool, hasUnsaved: Bool, wantsFullSize: Bool, hasVibrantEditor: Bool, tearOffWindowID: UUID?, saveAll: @escaping () async -> Bool, onClose: @escaping () -> Void, discardDrafts: @escaping () async -> Void) {
             guard let window else { return }
             // Capture the drop-point frame once; clear it from the coordinator so it
             // can't leak, but keep our sticky copy for the enforcement burst.
@@ -411,7 +426,9 @@ private struct WindowConfigurator: NSViewRepresentable {
                 DispatchQueue.main.async { window.close() }
                 return
             }
+            if self.window !== window { editorSurface = EditorWindowSurface(window: window) }
             self.window = window
+            editorSurface?.setVibrant(hasVibrantEditor)
             self.hasUnsaved = hasUnsaved
             self.saveAll = saveAll
             self.onClose = onClose

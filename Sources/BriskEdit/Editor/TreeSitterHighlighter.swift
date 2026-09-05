@@ -99,7 +99,7 @@ final class TreeSitterHighlighter {
     }
 
     func updateTheme(_ theme: EditorTheme) {
-        guard themeBox.theme != theme else { return }
+        guard !themeBox.theme.hasSameTextAppearance(as: theme) else { return }
         themeBox.theme = theme
         highlighter.invalidate(.all)
     }

@@ -56,6 +56,10 @@ struct EditorTabsView: View {
                     StatusBar(workspace: workspace)
                 }
             }
+            // Cover resize handles and safe-area gaps in the transparent window.
+            // The editor's behind-window material samples outside the window,
+            // independently of this solid backing for the surrounding chrome.
+            .background(Color(nsColor: preferences.editorTheme.background.withAlphaComponent(1)))
     }
 
     /// The editor (or empty state) stacked above the optional terminal panel.
