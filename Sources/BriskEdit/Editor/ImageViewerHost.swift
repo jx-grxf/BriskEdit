@@ -95,8 +95,21 @@ final class InteractiveImageView: NSView {
 
     func load(_ url: URL) {
         loadedURL = url
-        imageView.image = NSImage(contentsOf: url)
-        if let size = imageView.image?.size, size.width > 0, size.height > 0 {
+        apply(image: nil)
+        // Decoding runs off the main thread; a stale result for a superseded
+        // URL is dropped when it lands.
+        Task { @MainActor [weak self] in
+            let image = await Task.detached(priority: .userInitiated) {
+                DecodedObject(value: NSImage(contentsOf: url))
+            }.value.value
+            guard let self, self.loadedURL == url else { return }
+            self.apply(image: image)
+        }
+    }
+
+    private func apply(image: NSImage?) {
+        imageView.image = image
+        if let size = image?.size, size.width > 0, size.height > 0 {
             imageView.frame = NSRect(origin: .zero, size: size)
         } else {
             imageView.frame = .zero

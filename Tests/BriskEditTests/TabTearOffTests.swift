@@ -123,6 +123,28 @@ final class TabTearOffTests: XCTestCase {
         try XCTUnwrap(workspace.tabs.first { $0.document.fileURL?.lastPathComponent == name }).id
     }
 
+    func testSelectAdjacentTabWrapsWithoutReordering() async throws {
+        let workspace = try await makeWorkspace(withFiles: ["a.swift", "b.swift", "c.swift"], in: tempDirectory())
+        let order = workspace.tabs.map(\.id)
+        workspace.selectTab(order.last!)
+        workspace.selectAdjacentTab(offset: 1)
+        XCTAssertEqual(workspace.activeTabID, order.first)
+        workspace.selectAdjacentTab(offset: -1)
+        XCTAssertEqual(workspace.activeTabID, order.last)
+        XCTAssertEqual(workspace.tabs.map(\.id), order)
+    }
+
+    func testSelectAdjacentTabHandlesZeroAndOneTab() {
+        let empty = WorkspaceModel()
+        empty.selectAdjacentTab(offset: 1)
+        XCTAssertNil(empty.activeTabID)
+        empty.newUntitled()
+        let only = empty.activeTabID
+        empty.selectAdjacentTab(offset: -1)
+        XCTAssertEqual(empty.activeTabID, only)
+        XCTAssertEqual(empty.tabs.count, 1)
+    }
+
     func testMoveTabRightwardsLandsAfterTarget() async throws {
         let dir = try tempDirectory()
         let workspace = try await makeWorkspace(withFiles: ["a.swift", "b.swift", "c.swift", "d.swift"], in: dir)

@@ -60,7 +60,7 @@ struct TerminalPanel: View {
     /// Horizontal strip of open sessions; click to switch, trash to close.
     private var sessionList: some View {
         ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
+            AdaptiveGlassGroup { HStack(spacing: 6) {
                 ForEach(workspace.terminals) { terminal in
                     TerminalSessionChip(
                         name: terminal.name,
@@ -69,7 +69,7 @@ struct TerminalPanel: View {
                         onClose: { workspace.closeTerminal(terminal.id) }
                     )
                 }
-            }
+            } }
             .padding(.vertical, 3)
         }
         .frame(maxWidth: 360)
@@ -100,6 +100,7 @@ struct TerminalPanel: View {
                     )
                     .opacity(isActive ? 1 : 0)
                     .allowsHitTesting(isActive)
+                    .accessibilityHidden(!isActive)
                 }
             }
             .frame(minHeight: 160)
@@ -133,21 +134,21 @@ private struct TerminalSessionChip: View {
             }
             .buttonStyle(.borderless)
             .opacity(hovering || isActive ? 1 : 0)
+            .allowsHitTesting(hovering || isActive)
+            .accessibilityHidden(!(hovering || isActive))
             .help("Close \(name)")
             .accessibilityLabel("Close terminal \(name)")
         }
         .padding(.horizontal, 7)
         .padding(.vertical, 3)
-        .background(
-            RoundedRectangle(cornerRadius: 5)
-                .fill(isActive ? Color.accentColor.opacity(0.22) : Color.secondary.opacity(hovering ? 0.14 : 0))
-        )
+        .adaptiveChromeSurface(active: isActive || hovering)
         .overlay(
             RoundedRectangle(cornerRadius: 5)
                 .strokeBorder(isActive ? Color.accentColor.opacity(0.5) : .clear, lineWidth: 1)
         )
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
+        .accessibilityAction(named: Text("Close terminal \(name)"), onClose)
     }
 }
 

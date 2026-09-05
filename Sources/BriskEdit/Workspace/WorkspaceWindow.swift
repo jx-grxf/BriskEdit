@@ -7,9 +7,17 @@ struct WorkspaceWindow: View {
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
     @State private var didStartSession = false
     @State private var secretBanner: String?
+    @State private var pendingPaletteCommand: EditorCommand?
     @Environment(Preferences.self) private var preferences
     @Environment(UpdateService.self) private var updates
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+    private var hasVibrantEditor: Bool {
+        guard let tab = workspace.activeTab, tab.special == nil, tab.previewKind == nil else { return false }
+        return preferences.editorTheme.vibrancy.resolved(reduceTransparency: reduceTransparency) != .off
+    }
 
     var body: some View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
@@ -20,7 +28,7 @@ struct WorkspaceWindow: View {
         }
         .navigationSplitViewStyle(.balanced)
         .transaction { transaction in
-            if preferences.reduceMotion { transaction.disablesAnimations = true }
+            if preferences.reduceMotion || accessibilityReduceMotion { transaction.disablesAnimations = true }
         }
         .task {
             guard !didStartSession else { return }
@@ -50,8 +58,11 @@ struct WorkspaceWindow: View {
             isDocumentEdited: workspace.hasUnsavedChanges,
             hasUnsavedChanges: workspace.hasUnsavedChanges,
             wantsFullSize: kind.restoresSession ? preferences.hasCompletedOnboarding : true,
+            hasVibrantEditor: hasVibrantEditor,
             tearOffWindowID: tearOffWindowID,
-            saveAll: { await workspace.saveAllForQuit() }
+            saveAll: { await workspace.saveAllForQuit() },
+            onClose: { workspace.releaseAllLSPDocuments() },
+            discardDrafts: { await workspace.discardDraftsForWindowClose() }
         ))
         .overlay(alignment: .top) {
             if let banner = secretBanner {
@@ -119,11 +130,24 @@ struct WorkspaceWindow: View {
             DiscordPresenceController.shared.update(discordActivity)
         }
         .focusedSceneValue(\.workspace, workspace)
-        .sheet(isPresented: Bindable(workspace).showCommandPalette) {
-            CommandPaletteView(workspace: workspace)
+        .sheet(isPresented: Bindable(workspace).showCommandPalette, onDismiss: {
+            let command = pendingPaletteCommand
+            pendingPaletteCommand = nil
+            command?.perform(workspace)
+        }) {
+            CommandPaletteView(workspace: workspace, onSelect: { pendingPaletteCommand = $0 })
         }
         .sheet(isPresented: Bindable(workspace).showFileFinder) {
             FileFinderView(workspace: workspace)
+        }
+        .sheet(isPresented: Bindable(workspace).showDraftRecovery) {
+            DraftRecoveryView(workspace: workspace)
+        }
+        .sheet(isPresented: Bindable(workspace.review).showComparison) {
+            ComparisonView(review: workspace.review)
+        }
+        .sheet(isPresented: Bindable(workspace.review).showReferences) {
+            ReferencesView(workspace: workspace)
         }
         .sheet(isPresented: Bindable(workspace).showToolHealth) {
             ToolHealthPanel()
@@ -236,7 +260,7 @@ private struct SidebarActivityBar: View {
     }
 
     var body: some View {
-        HStack(spacing: 2) {
+        AdaptiveGlassGroup { HStack(spacing: 4) {
             ForEach(visibleItems) { item in
                 let isActive = selection == item.tab
                 Button {
@@ -247,10 +271,7 @@ private struct SidebarActivityBar: View {
                         .symbolVariant(isActive ? .fill : .none)
                         .frame(width: 30, height: 26)
                         .foregroundStyle(isActive ? Color.accentColor : Color.secondary)
-                        .background(
-                            RoundedRectangle(cornerRadius: 6, style: .continuous)
-                                .fill(Color.accentColor.opacity(isActive ? 0.14 : 0))
-                        )
+                        .adaptiveChromeSurface(active: isActive)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -259,7 +280,7 @@ private struct SidebarActivityBar: View {
                 .accessibilityAddTraits(isActive ? [.isSelected] : [])
             }
             Spacer(minLength: 0)
-        }
+        } }
         .animation(.easeInOut(duration: 0.12), value: selection)
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
@@ -314,10 +335,13 @@ private struct WindowConfigurator: NSViewRepresentable {
     let hasUnsavedChanges: Bool
     /// Full-size when true; a centered medium frame while onboarding is showing.
     let wantsFullSize: Bool
+    let hasVibrantEditor: Bool
     /// When this is a torn-off secondary window, its UUID — used to look up the
     /// drop-point frame stashed by the source window.
     let tearOffWindowID: UUID?
     let saveAll: () async -> Bool
+    let onClose: () -> Void
+    let discardDrafts: () async -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -332,10 +356,13 @@ private struct WindowConfigurator: NSViewRepresentable {
             let hasUnsaved = hasUnsavedChanges
             let isPrimary = isPrimaryWindow
             let fullSize = wantsFullSize
+            let vibrant = hasVibrantEditor
             let tearOffID = tearOffWindowID
             let save = saveAll
+            let close = onClose
+            let discard = discardDrafts
             DispatchQueue.main.async {
-                coordinator?.configure(window: window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, tearOffWindowID: tearOffID, saveAll: save)
+                coordinator?.configure(window: window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, hasVibrantEditor: vibrant, tearOffWindowID: tearOffID, saveAll: save, onClose: close, discardDrafts: discard)
             }
         }
         return view
@@ -347,19 +374,31 @@ private struct WindowConfigurator: NSViewRepresentable {
         let hasUnsaved = hasUnsavedChanges
         let isPrimary = isPrimaryWindow
         let fullSize = wantsFullSize
+        let vibrant = hasVibrantEditor
         let tearOffID = tearOffWindowID
         let save = saveAll
+        let close = onClose
+        let discard = discardDrafts
         DispatchQueue.main.async {
-            coordinator.configure(window: nsView.window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, tearOffWindowID: tearOffID, saveAll: save)
+            coordinator.configure(window: nsView.window, isPrimaryWindow: isPrimary, isEdited: edited, hasUnsaved: hasUnsaved, wantsFullSize: fullSize, hasVibrantEditor: vibrant, tearOffWindowID: tearOffID, saveAll: save, onClose: close, discardDrafts: discard)
         }
+    }
+
+    static func dismantleNSView(_ nsView: NSView, coordinator: Coordinator) {
+        coordinator.editorSurface?.setVibrant(false)
     }
 
     @MainActor
     final class Coordinator: NSObject, NSWindowDelegate {
         private weak var window: NSWindow?
         private weak var forwardee: NSWindowDelegate?
+        var editorSurface: EditorWindowSurface?
         private var hasUnsaved = false
         private var saveAll: () async -> Bool = { true }
+        private var onClose: () -> Void = {}
+        private var discardDrafts: () async -> Void = {}
+        private var isPrimary = false
+        private var didConfigureFrameAutosave = false
         /// nil until the first frame is applied; then tracks whether we last sized
         /// the window full or to the medium onboarding frame.
         private var appliedFullSize: Bool?
@@ -368,7 +407,7 @@ private struct WindowConfigurator: NSViewRepresentable {
         /// rather than falling back to full-size.
         private var tearOffFrame: CGRect?
 
-        func configure(window: NSWindow?, isPrimaryWindow: Bool, isEdited: Bool, hasUnsaved: Bool, wantsFullSize: Bool, tearOffWindowID: UUID?, saveAll: @escaping () async -> Bool) {
+        func configure(window: NSWindow?, isPrimaryWindow: Bool, isEdited: Bool, hasUnsaved: Bool, wantsFullSize: Bool, hasVibrantEditor: Bool, tearOffWindowID: UUID?, saveAll: @escaping () async -> Bool, onClose: @escaping () -> Void, discardDrafts: @escaping () async -> Void) {
             guard let window else { return }
             // Capture the drop-point frame once; clear it from the coordinator so it
             // can't leak, but keep our sticky copy for the enforcement burst.
@@ -387,15 +426,24 @@ private struct WindowConfigurator: NSViewRepresentable {
                 DispatchQueue.main.async { window.close() }
                 return
             }
+            if self.window !== window { editorSurface = EditorWindowSurface(window: window) }
             self.window = window
+            editorSurface?.setVibrant(hasVibrantEditor)
             self.hasUnsaved = hasUnsaved
             self.saveAll = saveAll
+            self.onClose = onClose
+            self.discardDrafts = discardDrafts
+            self.isPrimary = isPrimaryWindow
             window.isDocumentEdited = isEdited
             if window.delegate !== self {
                 forwardee = window.delegate
                 window.delegate = self
             }
             applyFrameIfNeeded(window, wantsFullSize: wantsFullSize)
+            if wantsFullSize, isPrimaryWindow, !didConfigureFrameAutosave {
+                window.setFrameAutosaveName("BriskEdit.primary")
+                didConfigureFrameAutosave = true
+            }
             installTitleClickHook(on: window)
         }
 
@@ -408,6 +456,7 @@ private struct WindowConfigurator: NSViewRepresentable {
             let isFirstApply = (appliedFullSize == nil)
             appliedFullSize = wantsFullSize
             if wantsFullSize {
+                if isFirstApply, isPrimary, window.setFrameUsingName("BriskEdit.primary") { return }
                 if isFirstApply {
                     enforceFullSizeFrame(on: window)
                 } else {
@@ -418,21 +467,8 @@ private struct WindowConfigurator: NSViewRepresentable {
             }
         }
 
-        /// Hold the medium onboarding frame across SwiftUI's settling passes (its
-        /// `defaultSize` is full-screen, so it tries to grow the window back).
-        /// Each re-apply bails if onboarding finished meanwhile.
         private func enforceOnboardingFrame(on window: NSWindow) {
-            let delays: [Double] = [0, 0.05, 0.12, 0.25, 0.4, 0.6, 0.85, 1.2]
-            for delay in delays {
-                if delay == 0 {
-                    applyOnboardingFrame(to: window)
-                } else {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak window] in
-                        guard let self, let window, self.appliedFullSize == false else { return }
-                        self.applyOnboardingFrame(to: window)
-                    }
-                }
-            }
+            applyOnboardingFrame(to: window)
         }
 
         /// A centered, focused frame shown while the onboarding sheet is up.
@@ -463,24 +499,10 @@ private struct WindowConfigurator: NSViewRepresentable {
             }
         }
 
-        /// SwiftUI resizes the window to its content's ideal size *after* our first
-        /// pass, and the exact moment varies — a single re-apply (or even two)
-        /// loses that race and the window opens small. Re-apply across a ~1.2s
-        /// settling window so we win regardless of when SwiftUI settles;
-        /// `applyFullSizeFrame` is a no-op once the frame already matches, so this
-        /// stops touching the window the instant it's correct.
+        // Apply initial placement once. Delayed enforcement must never undo a
+        // user's resize or move while the window is becoming interactive.
         private func enforceFullSizeFrame(on window: NSWindow) {
-            let delays: [Double] = [0, 0.05, 0.12, 0.25, 0.4, 0.6, 0.85, 1.2]
-            for delay in delays {
-                if delay == 0 {
-                    applyFullSizeFrame(to: window)
-                } else {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self, weak window] in
-                        guard let self, let window else { return }
-                        self.applyFullSizeFrame(to: window)
-                    }
-                }
-            }
+            applyFullSizeFrame(to: window)
         }
 
         private func applyFullSizeFrame(to window: NSWindow) {
@@ -551,6 +573,11 @@ private struct WindowConfigurator: NSViewRepresentable {
             return nil
         }
 
+        func windowWillClose(_ notification: Notification) {
+            onClose()
+            forwardee?.windowWillClose?(notification)
+        }
+
         func windowShouldClose(_ sender: NSWindow) -> Bool {
             guard hasUnsaved else { return true }
             let alert = NSAlert()
@@ -567,7 +594,12 @@ private struct WindowConfigurator: NSViewRepresentable {
                 }
                 return false
             case .alertSecondButtonReturn:
-                return true
+                let discard = discardDrafts
+                Task { @MainActor in
+                    await discard()
+                    sender.close()
+                }
+                return false
             default:
                 return false
             }
@@ -653,7 +685,6 @@ private struct RunButton: View {
         .tint(.green)
         .controlSize(.regular)
         .disabled(!isRunnable)
-        .keyboardShortcut("r", modifiers: .command)
         .help(isRunnable ? "Compile & run in terminal" : "Open a runnable file to enable Run")
     }
 }

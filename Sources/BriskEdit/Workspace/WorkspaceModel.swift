@@ -9,6 +9,7 @@ import Observation
 @MainActor
 @Observable
 final class WorkspaceModel {
+    let review = WorkspaceReviewModel()
     var rootURL: URL?
     var tabs: [EditorTab] = []
     var activeTabID: EditorTab.ID?
@@ -74,6 +75,10 @@ final class WorkspaceModel {
     /// single trailing re-run.
     @ObservationIgnored var isRefreshingGitDecorations = false
     @ObservationIgnored var gitDecorationsRefreshPending = false
+    @ObservationIgnored private var interactionGeneration = 0
+    @ObservationIgnored var sessionDocumentLoader: @Sendable (URL) async throws -> TextDocument = { try await TextDocument.load(from: $0) }
+    var recoveredDrafts: [RecoverableDraft] = []
+    var showDraftRecovery = false
 
     init() {
         WorkspaceRegistry.register(self)
@@ -83,8 +88,7 @@ final class WorkspaceModel {
     /// changes, but restore is controlled by the user's startup preference.
     func startPrimarySession(restoreLastWorkspace: Bool) async {
         persistsSession = true
-        guard restoreLastWorkspace else { return }
-        if let path = UserDefaults.standard.string(forKey: Keys.lastWorkspaceRoot) {
+        if restoreLastWorkspace, let path = UserDefaults.standard.string(forKey: Keys.lastWorkspaceRoot) {
             let url = URL(fileURLWithPath: path)
             if FileManager.default.fileExists(atPath: url.path) {
                 rootURL = url
@@ -92,7 +96,8 @@ final class WorkspaceModel {
                 RecentWorkspacesStore.shared.record(url)
             }
         }
-        await restoreSession()
+        if restoreLastWorkspace { await restoreSession() }
+        await loadRecoverableDrafts()
     }
 
     var hasUnsavedChanges: Bool {
@@ -109,20 +114,75 @@ final class WorkspaceModel {
     /// Reopens the file tabs that were open when the app last quit. Skips files
     /// that no longer exist and restores the previously active tab. No-op once
     /// tabs are already present, so it never clobbers a window in use.
+    ///
+    /// All files load concurrently in a task group; the resulting tabs keep the
+    /// saved order, and the previously active tab is selected afterwards.
     func restoreSession() async {
         guard tabs.isEmpty else { return }
+        let generation = interactionGeneration
         let defaults = UserDefaults.standard
         let paths = defaults.stringArray(forKey: Keys.openSessionFiles) ?? []
         guard !paths.isEmpty else { return }
         let activePath = defaults.string(forKey: Keys.activeSessionFile)
-        for path in paths where FileManager.default.fileExists(atPath: path) {
-            await openFile(at: URL(fileURLWithPath: path))
+        let loader = sessionDocumentLoader
+
+        var seen = Set<URL>()
+        let urls: [URL] = paths
+            .map { URL(fileURLWithPath: $0) }
+            .filter { FileManager.default.fileExists(atPath: $0.path) && seen.insert($0).inserted }
+
+        var loaded = [Result<TextDocument, Error>?](repeating: nil, count: urls.count)
+        let prioritized = urls.indices.sorted { lhs, rhs in
+            (urls[lhs].path == activePath ? 0 : 1) < (urls[rhs].path == activePath ? 0 : 1)
         }
+        for batchStart in stride(from: 0, to: prioritized.count, by: 4) {
+            let batch = Array(prioritized[batchStart..<min(batchStart + 4, prioritized.count)])
+            await withTaskGroup(of: (Int, Result<TextDocument, Error>?).self) { group in
+                for index in batch {
+                    let url = urls[index]
+                    group.addTask {
+                        if PreviewKind.previewKind(for: url) != nil { return (index, nil) }
+                        do { return (index, .success(try await loader(url))) }
+                        catch { return (index, .failure(error)) }
+                    }
+                }
+                for await (index, result) in group { loaded[index] = result }
+            }
+            guard interactionGeneration == generation, tabs.isEmpty else { return }
+        }
+
+        guard interactionGeneration == generation, tabs.isEmpty else { return }
+
+        for (index, result) in loaded.enumerated() {
+            let url = urls[index]
+            if let kind = PreviewKind.previewKind(for: url) {
+                tabs.append(EditorTab.preview(kind))
+                continue
+            }
+            switch result {
+            case .success(let doc):
+                doc.autosaveFailureHandler = { [weak self, weak doc] error in
+                    guard let doc else { return }
+                    self?.lastError = "Could not autosave \(doc.displayName): \(error.localizedDescription)"
+                }
+                let tab = EditorTab(document: doc)
+                tabs.append(tab)
+                startWatching(tab)
+            case .failure(let error):
+                NSLog("BriskEdit: failed to load %@: %@", url.path, String(describing: error))
+                lastError = "Could not open \(url.lastPathComponent): \(error.localizedDescription)"
+            case .none:
+                break
+            }
+        }
+        activeTabID = tabs.last?.id
         if let activePath, let match = tabs.first(where: { $0.document.fileURL?.path == activePath }) {
             activeTabID = match.id
         }
         persistSession()
     }
+
+    func markUserInteraction() { interactionGeneration &+= 1 }
 
     /// Records the open file tabs and active tab so the next launch can restore
     /// them. Untitled (URL-less) and the encoding of each tab are intentionally

@@ -8,6 +8,10 @@ import AppKit
 /// geometry, so it can't blank the editor.
 final class TextKit2GutterView: NSView {
     weak var textView: NSTextView?
+    /// Snapshot of the document's line-start offsets, supplied by the host
+    /// (cached per revision) so the 0-based line of a layout offset is an
+    /// O(log n) binary search instead of an O(n) substring walk per frame.
+    var lineStartsProvider: (() -> [Int])?
     /// Code-folding state (foldable regions + which are collapsed). The gutter
     /// draws a chevron on each header line and toggles on click.
     weak var folding: FoldingController?
@@ -19,6 +23,9 @@ final class TextKit2GutterView: NSView {
     private var diagnostics: [Int: Diagnostic.Severity] = [:]
     /// Clickable chevron rects captured during the last draw, keyed by 1-based line.
     private var foldHitRects: [(line: Int, rect: NSRect)] = []
+    /// Consecutive zero-height-viewport paints; bounds the deferred re-mark in
+    /// draw(_:) so a persistently unmeasured viewport can't spin the main thread.
+    private var zeroHeightPaints = 0
 
     /// Fixed width — enough for ~5 digits at typical code sizes, plus a small
     /// leading column for the diagnostic dot so it never touches the numbers.
@@ -28,14 +35,14 @@ final class TextKit2GutterView: NSView {
         self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = theme.gutterBackground.cgColor
+        layer?.backgroundColor = (theme.vibrancy == .off ? theme.gutterBackground : NSColor.clear).cgColor
     }
 
     @available(*, unavailable)
     required init?(coder: NSCoder) { fatalError() }
 
     override var isFlipped: Bool { true }
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { theme.vibrancy == .off }
 
     /// Repaint whenever Auto Layout (re)positions the gutter. The scroll view
     /// reaches its real size a layout pass *after* the editor first appears
@@ -50,7 +57,7 @@ final class TextKit2GutterView: NSView {
 
     func setTheme(_ theme: EditorTheme) {
         self.theme = theme
-        layer?.backgroundColor = theme.gutterBackground.cgColor
+        layer?.backgroundColor = (theme.vibrancy == .off ? theme.gutterBackground : NSColor.clear).cgColor
         needsDisplay = true
     }
 
@@ -88,8 +95,9 @@ final class TextKit2GutterView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        theme.gutterBackground.setFill()
-        dirtyRect.fill()
+        let background = theme.vibrancy == .off ? theme.gutterBackground : theme.gutterBackground.withAlphaComponent(0.18)
+        background.setFill()
+        dirtyRect.fill(using: .copy)
         foldHitRects.removeAll(keepingCapacity: true)
 
         guard let textView, let tlm = textView.textLayoutManager else { return }
@@ -101,13 +109,16 @@ final class TextKit2GutterView: NSView {
         // display afterwards, it would stay blank until the next unrelated edit
         // or scroll. So when we're attached to a window but the viewport isn't
         // measured yet, skip this paint and ask for another once layout settles
-        // instead of leaving an empty gutter behind.
+        // instead of leaving an empty gutter behind. The retry is capped so a
+        // persistently unmeasured viewport can't spin the main thread.
         guard visible.height > 0 else {
-            if window != nil {
+            if window != nil, zeroHeightPaints < 5 {
+                zeroHeightPaints += 1
                 DispatchQueue.main.async { [weak self] in self?.needsDisplay = true }
             }
             return
         }
+        zeroHeightPaints = 0
 
         let nsString = textView.string as NSString
         let numberFont = NSFont.monospacedDigitSystemFont(ofSize: max(9, theme.fontSize - 1), weight: .regular)
@@ -121,7 +132,7 @@ final class TextKit2GutterView: NSView {
             return
         }
         let startLocation = tlm.offset(from: tlm.documentRange.location, to: startFragment.rangeInElement.location)
-        var line = lineIndex(in: nsString, upTo: startLocation) + 1
+        var line = Self.lineIndex(upTo: startLocation, in: lineStartsProvider.map { $0() } ?? [0]) + 1
 
         var lastFragment: NSTextLayoutFragment?
 
@@ -228,16 +239,17 @@ final class TextKit2GutterView: NSView {
     }
 
     /// 0-based line index of `location`, which always sits on a paragraph
-    /// boundary (a layout-fragment start). Equals the number of lines fully
-    /// contained in `[0, location)`.
-    private func lineIndex(in string: NSString, upTo location: Int) -> Int {
-        let end = min(location, string.length)
-        guard end > 0 else { return 0 }
-        var count = 0
-        string.enumerateSubstrings(in: NSRange(location: 0, length: end), options: [.byLines, .substringNotRequired]) { _, _, _, _ in
-            count += 1
+    /// boundary (a layout-fragment start). Equals the number of line starts at
+    /// or before `location` — the same binary search `TextDocument.updateCursor`
+    /// uses over its incremental offset array.
+    private static func lineIndex(upTo location: Int, in offsets: [Int]) -> Int {
+        var low = 0
+        var high = offsets.count
+        while low < high {
+            let mid = (low + high) / 2
+            if offsets[mid] <= location { low = mid + 1 } else { high = mid }
         }
-        return count
+        return max(0, low - 1)
     }
 }
 

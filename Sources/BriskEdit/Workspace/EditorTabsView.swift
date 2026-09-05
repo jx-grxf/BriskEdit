@@ -25,6 +25,9 @@ struct EditorTabsView: View {
 
     var body: some View {
         editorArea
+            .onChange(of: workspace.activeTab?.document.language) {
+                if let tab = workspace.activeTab { workspace.startWatching(tab) }
+            }
             // The open-files tab strip and the status bar are pinned as
             // safe-area *insets* rather than plain VStack siblings. On macOS 26
             // (Tahoe) a code tab's `NSTextView`/`NSScrollView`
@@ -53,6 +56,10 @@ struct EditorTabsView: View {
                     StatusBar(workspace: workspace)
                 }
             }
+            // Cover resize handles and safe-area gaps in the transparent window.
+            // The editor's behind-window material samples outside the window,
+            // independently of this solid backing for the surrounding chrome.
+            .background(Color(nsColor: preferences.editorTheme.background.withAlphaComponent(1)))
     }
 
     /// The editor (or empty state) stacked above the optional terminal panel.
@@ -69,9 +76,17 @@ struct EditorTabsView: View {
                     if isVisible {
                         TerminalResizeHandle()
                             .gesture(resizeTerminalGesture(maxHeight: proxy.size.height - 180))
+                            .modifier(AccessibleResize(label: "Terminal height", value: terminalHeight) { delta in
+                                storedTerminalHeight = min(max(terminalHeight + delta, 140), max(180, proxy.size.height - 180))
+                            })
                     }
+                    // Keep the terminal at a stable nonzero height even while
+                    // hidden: collapsing its frame would resize the live PTY
+                    // (SIGWINCH) and wreck running TUI sessions. The inner fixed
+                    // frame pins SwiftTerm's size; only the layout slot collapses.
                     TerminalPanel(workspace: workspace)
-                        .frame(height: isVisible ? clampedTerminalHeight(maxHeight: proxy.size.height - 180) : 0)
+                        .frame(height: clampedTerminalHeight(maxHeight: proxy.size.height - 180))
+                        .frame(height: isVisible ? clampedTerminalHeight(maxHeight: proxy.size.height - 180) : 0, alignment: .top)
                         .opacity(isVisible ? 1 : 0)
                         .allowsHitTesting(isVisible)
                         .accessibilityHidden(!isVisible)
@@ -87,7 +102,9 @@ struct EditorTabsView: View {
         if let tab = workspace.activeTab {
             VStack(spacing: 0) {
                 if tab.document.externalChangePending {
-                    ExternalChangeBanner(document: tab.document)
+                    ExternalChangeBanner(document: tab.document,
+                        onCompare: { workspace.review.compare(document: tab.document) },
+                        onOverwrite: { Task { await workspace.saveActiveTab() } })
                 }
                 HStack(spacing: 0) {
                     editorSurface(for: tab, availableWidth: width)
@@ -96,6 +113,9 @@ struct EditorTabsView: View {
                     if let splitContent = workspace.splitPreviewContent {
                         PreviewSplitHandle()
                             .gesture(resizePreviewGesture(maxWidth: width - 360))
+                            .modifier(AccessibleResize(label: "Preview width", value: previewSplitWidth) { delta in
+                                storedPreviewSplitWidth = min(max(previewSplitWidth + delta, 240), max(280, width - 360))
+                            })
                         SplitPreviewPane(
                             content: splitContent,
                             markdownDocument: markdownDocument(for: splitContent),
@@ -203,12 +223,17 @@ struct EditorTabsView: View {
             HStack(spacing: 0) {
                 TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, showInlineGitBlame: preferences.effectiveShowInlineGitBlame, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
+                }, onFindReferences: { line, character in
+                    workspace.review.findReferences(document: tab.document, root: workspace.rootURL, line: line, character: character)
                 })
                     .id(tab.id)
                     .frame(minWidth: 360)
                     .layoutPriority(1)
                 PreviewSplitHandle()
                     .gesture(resizeMarkdownGesture(maxWidth: availableWidth - 360))
+                    .modifier(AccessibleResize(label: "Markdown preview width", value: markdownPreviewWidth) { delta in
+                        storedMarkdownPreviewWidth = min(max(markdownPreviewWidth + delta, 260), max(300, availableWidth - 360))
+                    })
                 MarkdownPreview(
                     document: tab.document,
                     renderDebounceMilliseconds: preferences.markdownPreviewDebounceMilliseconds,
@@ -221,6 +246,8 @@ struct EditorTabsView: View {
         } else {
             TextKit2EditorHost(document: tab.document, theme: preferences.editorTheme, showMinimap: preferences.effectiveShowMinimap, showHoverTooltips: preferences.effectiveShowHoverTooltips, highlightDebounce: preferences.highlightDebounce, gitDiffDebounce: preferences.gitDiffDebounce, showInlineGitBlame: preferences.effectiveShowInlineGitBlame, workspaceRootURL: workspace.rootURL, onOpenLocation: { url, line, column in
                     Task { await workspace.openFile(at: url, line: line, column: column) }
+                }, onFindReferences: { line, character in
+                    workspace.review.findReferences(document: tab.document, root: workspace.rootURL, line: line, character: character)
                 })
                 .id(tab.id)
                 .frame(minWidth: 360)
@@ -249,6 +276,9 @@ struct EditorTabsView: View {
 /// the user discard their edits and load the disk version, or keep editing.
 private struct ExternalChangeBanner: View {
     let document: TextDocument
+    let onCompare: () -> Void
+    let onOverwrite: () -> Void
+    @State private var confirmReload = false
 
     var body: some View {
         HStack(spacing: 10) {
@@ -257,17 +287,19 @@ private struct ExternalChangeBanner: View {
             Text("“\(document.displayName)” changed on disk. You have unsaved edits.")
                 .font(.callout)
             Spacer()
-            Button("Reload from Disk") {
-                Task { await document.reloadFromDisk() }
-            }
-            Button("Keep Mine") {
-                document.externalChangePending = false
-            }
+            Button("Compare", action: onCompare)
+            Button("Reload…") { confirmReload = true }
+            Button("Overwrite…", action: onOverwrite)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .background(.orange.opacity(0.12))
         .overlay(alignment: .bottom) { Divider() }
+        .confirmationDialog("Replace unsaved edits with the disk version?", isPresented: $confirmReload,
+                            titleVisibility: .visible) {
+            Button("Reload from Disk", role: .destructive) { Task { await document.reloadFromDisk() } }
+            Button("Cancel", role: .cancel) {}
+        }
     }
 }
 
@@ -407,7 +439,7 @@ private struct TabStrip: View {
         HStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 0) {
+                    AdaptiveGlassGroup { HStack(spacing: 3) {
                         ForEach(workspace.tabs) { tab in
                             TabChip(
                                 tab: tab,
@@ -422,13 +454,13 @@ private struct TabStrip: View {
                                         Task { await workspace.openInSplitScreen(url) }
                                     }
                                 },
-                                makeTransfer: { makeTabTransfer(tabID: tab.id, source: workspace) },
+                                source: workspace,
                                 onReorder: { draggedID in reorder(draggedID, toPositionOf: tab.id) }
                             )
                             .id(tab.id)
                             Divider().frame(height: 18)
                         }
-                    }
+                    } }
                     // Glide tabs into their new slot on reorder instead of snapping.
                     // Keyed on the id-order so it only fires when the sequence changes.
                     .animation(.spring(response: 0.3, dampingFraction: 0.82), value: workspace.tabs.map(\.id))
@@ -439,7 +471,7 @@ private struct TabStrip: View {
                 // Hard scroll edge so tabs are cut crisply at the strip's bounds
                 // instead of the macOS 26 soft fade, which let them bleed *under*
                 // the translucent sidebar when scrolled.
-                .scrollEdgeEffectStyle(.hard, for: .horizontal)
+                .adaptiveScrollEdge()
                 .background(GeometryReader { geo in
                     Color.clear.preference(key: TabStripWidthKey.self, value: geo.size.width)
                 })
@@ -545,7 +577,7 @@ private struct BreadcrumbBar: View {
             }
             .padding(.horizontal, 12)
         }
-        .scrollEdgeEffectStyle(.hard, for: .horizontal)
+        .adaptiveScrollEdge()
         .frame(height: 24)
         .background(.bar)
     }
@@ -602,7 +634,7 @@ private struct BreadcrumbBar: View {
     }
 }
 
-private struct TabChip: View {
+struct TabChip: View {
     let tab: EditorTab
     let isActive: Bool
     let onSelect: () -> Void
@@ -611,76 +643,38 @@ private struct TabChip: View {
     let onCloseRight: () -> Void
     let onCloseAll: () -> Void
     let onOpenSplitPreview: () -> Void
-    /// Builds the `.draggable` payload for the tab (registers the in-flight drag
-    /// with the coordinator).
-    let makeTransfer: () -> TabTransfer
+    let source: WorkspaceModel
     /// Reorders the dragged tab (its id) to this chip's slot — in-strip reorder.
     let onReorder: (UUID) -> Void
     @State private var isDropTargeted = false
 
     var body: some View {
-        // The chip is a plain hittable surface (not a `Button`): a SwiftUI
-        // `Button` swallows drag events. Selection is a simultaneous `TapGesture`;
-        // the drag is `.draggable` — the exact native drag path the file tree uses
-        // (`.draggable(node.url)`), which is the only mechanism that fires inside
-        // the tab strip's `ScrollView` (`.onDrag` and a `DragGesture` both stayed
-        // inert there). `contentShape` makes the whole area (incl. padding and the
-        // trailing reserve) hittable; the close button overlays the reserve on top
-        // so it still gets its own clicks.
-        HStack(spacing: 6) {
-            if let special = tab.special {
-                Image(systemName: special.symbol)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.tint)
-                    .frame(width: 14)
-            } else {
-                FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
-            }
-            Text(tab.displayTitle)
-                .foregroundStyle(isActive ? .primary : .secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
-            if tab.special == nil, tab.document.isDirty {
-                Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
-            }
-        }
-        .padding(.leading, 10)
-        .padding(.trailing, 28)
-        .frame(height: DesignTokens.Chrome.tabStripHeight)
-        .contentShape(Rectangle())
-        .accessibilityLabel("Select \(tab.displayTitle)")
-        .accessibilityAddTraits(.isButton)
-        .animation(.easeInOut(duration: 0.15), value: isActive)
-        // Native "front tab" look: the active tab reads as a raised surface
-        // (matching the editor area) instead of an accent wash, with a thin
-        // accent hairline along its top edge — the Xcode/Safari idiom.
-        .background {
-            Color(nsColor: .controlBackgroundColor).opacity(isActive ? 1 : 0)
-        }
-        .overlay(alignment: .top) {
-            Rectangle().fill(.tint).frame(height: 2).opacity(isActive ? 1 : 0)
-        }
-        .overlay(alignment: .trailing) {
+        HStack(spacing: 0) {
+            selectionSurface
+                .modifier(TabDragLifecycle(tabID: tab.id, source: source, preview: TabDragPreview(tab: tab)))
             Button(action: onClose) {
                 Image(systemName: "xmark")
-                    .imageScale(.small)
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(Color(nsColor: .labelColor))
+                    .frame(width: 20, height: 20)
+                    .background(isActive ? Color.primary.opacity(0.12) : Color.clear, in: Circle())
+                    .contentShape(Circle())
             }
             .buttonStyle(.plain)
-            .opacity(0.6)
-            .padding(.trailing, 10)
-            .help("Close \(tab.document.displayName)")
-            .accessibilityLabel("Close \(tab.document.displayName)")
+            .opacity(isActive ? 1 : 0.65)
+            .padding(.trailing, 6)
+            .accessibilityIdentifier("tab.close." + tab.id.uuidString)
+            .help("Close \(tab.displayTitle)")
+            .accessibilityLabel("Close \(tab.displayTitle)")
         }
-        // Drag pulls the tab out (native `.draggable`, fires in the ScrollView).
-        // The drag image is a small chip with the tab's name.
-        .draggable(makeTransfer()) {
-            TabDragPreview(tab: tab)
+        .frame(height: DesignTokens.Chrome.tabStripHeight)
+        .overlay(alignment: .top) {
+            Capsule().fill(.tint).frame(height: 2).padding(.horizontal, 8).opacity(isActive ? 1 : 0)
+                .allowsHitTesting(false)
         }
-        // Selection is a *simultaneous* TapGesture, NOT `.onTapGesture`: on macOS
-        // `.onTapGesture` wins the mouse-down arbitration and blocks the drag from
-        // ever starting. A simultaneous tap runs alongside the drag instead.
-        .simultaneousGesture(TapGesture().onEnded { onSelect() })
+        // Glass includes both controls, but the close button is outside the
+        // selection gesture and drag source. One click has exactly one action.
+        .adaptiveChromeSurface(active: isActive)
         // Dropping a tab onto this chip reorders it into this slot (in-strip
         // reorder). A drop within the same window no-ops in `finishDrag`, so the
         // reorder and tear-off paths don't fight. The leading bar shows where the
@@ -710,6 +704,35 @@ private struct TabChip: View {
                 Button("Open in Split Preview") { onOpenSplitPreview() }
             }
         }
+    }
+
+    private var selectionSurface: some View {
+        HStack(spacing: 6) {
+            if let special = tab.special {
+                Image(systemName: special.symbol)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.tint)
+                    .frame(width: 14)
+            } else {
+                FileTypeIcon(url: tab.document.fileURL, isDirectory: false, language: tab.document.language, size: 14)
+            }
+            Text(tab.displayTitle)
+                .foregroundStyle(isActive ? .primary : .secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .frame(minWidth: 80, idealWidth: 140, maxWidth: DesignTokens.Chrome.labelMaxWidth, alignment: .leading)
+            if tab.special == nil, tab.document.isDirty {
+                Circle().frame(width: 6, height: 6).foregroundStyle(.tint)
+            }
+        }
+        .padding(.leading, 10)
+        .padding(.trailing, 6)
+        .frame(height: DesignTokens.Chrome.tabStripHeight)
+        .contentShape(Rectangle())
+        .accessibilityLabel("Select \(tab.displayTitle)")
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction { onSelect() }
+        .simultaneousGesture(TapGesture().onEnded { onSelect() })
     }
 }
 
@@ -844,6 +867,7 @@ private struct StatusBar: View {
 private struct GitStatusBarView: View {
     let root: URL?
     @State private var status: GitStatus?
+    @State private var window: NSWindow?
 
     var body: some View {
         Group {
@@ -872,7 +896,11 @@ private struct GitStatusBarView: View {
         .onReceive(NotificationCenter.default.publisher(for: .gitDidChange)) { _ in
             Task { await reload() }
         }
-        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { _ in
+        // Only this window's activation refreshes the status; a global
+        // subscription made every window shell out `git status` on every key-up.
+        .background(WindowAccessor { window = $0 })
+        .onReceive(NotificationCenter.default.publisher(for: NSWindow.didBecomeKeyNotification)) { note in
+            guard (note.object as? NSWindow) === window else { return }
             Task { await reload() }
         }
     }
@@ -926,5 +954,33 @@ private struct IntelliSenseStatusView: View {
         case .missing: Color.orange
         case .unsupported: Color.secondary
         }
+    }
+}
+
+private struct AccessibleResize: ViewModifier {
+    let label: String
+    let value: Double
+    let adjust: (Double) -> Void
+    @FocusState private var focused: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .focusable().focused($focused)
+            .overlay { if focused { Rectangle().strokeBorder(Color.accentColor, lineWidth: 2) } }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(label)
+            .accessibilityValue("\(Int(value)) points")
+            .accessibilityHint("Use the arrow keys to resize in 24-point steps.")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: adjust(24)
+                case .decrement: adjust(-24)
+                @unknown default: break
+                }
+            }
+            .onKeyPress(.rightArrow) { adjust(24); return .handled }
+            .onKeyPress(.upArrow) { adjust(24); return .handled }
+            .onKeyPress(.leftArrow) { adjust(-24); return .handled }
+            .onKeyPress(.downArrow) { adjust(-24); return .handled }
     }
 }

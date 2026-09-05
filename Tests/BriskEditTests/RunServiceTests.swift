@@ -61,6 +61,22 @@ final class RunServiceTests: XCTestCase {
         XCTAssertTrue(RunService.requiresSaveBeforeRun(document: document, workspaceRoot: root))
     }
 
+    func testResolveGoModuleRunsFromNestedModuleRoot() async throws {
+        let workspace = try makeTemporaryDirectory()
+        let moduleRoot = workspace.appendingPathComponent("Tools/Worker", isDirectory: true)
+        let source = moduleRoot.appendingPathComponent("cmd/main.go")
+        try FileManager.default.createDirectory(at: source.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try "module example.com/worker\n".write(to: moduleRoot.appendingPathComponent("go.mod"), atomically: true, encoding: .utf8)
+        try "package main\nfunc main() {}\n".write(to: source, atomically: true, encoding: .utf8)
+
+        let document = TextDocument(fileURL: source, text: "package main\nfunc main() {}\n", encoding: .utf8)
+        let command = try await RunService.resolve(document: document, workspaceRoot: workspace)
+
+        XCTAssertEqual(command.title, "go run")
+        XCTAssertEqual(command.cwd, moduleRoot)
+        XCTAssertEqual(command.shellLine, "go run .")
+    }
+
     func testDirtyCSourceMaterializesBesideFileForLocalHeaders() async throws {
         let root = try makeTemporaryDirectory()
         let source = root.appendingPathComponent("main.c")

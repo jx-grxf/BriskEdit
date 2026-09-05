@@ -61,11 +61,33 @@ enum ToolHealthService {
     ]
 
     static func snapshot() async -> [ToolHealthItem] {
-        await Task.detached(priority: .utility) {
-            descriptors.map { descriptor in
-                ToolHealthItem(descriptor: descriptor, path: probe(descriptor.probeCommand))
+        await withTaskGroup(of: (Int, ToolHealthItem).self) { group in
+            var nextIndex = 0
+            let parallelism = min(4, descriptors.count)
+            for _ in 0..<parallelism {
+                let index = nextIndex
+                nextIndex += 1
+                let descriptor = descriptors[index]
+                group.addTask {
+                    let path = await Task.detached(priority: .utility) { probe(descriptor.probeCommand) }.value
+                    return (index, ToolHealthItem(descriptor: descriptor, path: path))
+                }
             }
-        }.value
+            var results = [ToolHealthItem?](repeating: nil, count: descriptors.count)
+            for await (index, item) in group {
+                results[index] = item
+                if nextIndex < descriptors.count {
+                    let queuedIndex = nextIndex
+                    nextIndex += 1
+                    let descriptor = descriptors[queuedIndex]
+                    group.addTask {
+                        let path = await Task.detached(priority: .utility) { probe(descriptor.probeCommand) }.value
+                        return (queuedIndex, ToolHealthItem(descriptor: descriptor, path: path))
+                    }
+                }
+            }
+            return results.compactMap { $0 }
+        }
     }
 
     static func descriptor(id: String) -> ToolDescriptor? {

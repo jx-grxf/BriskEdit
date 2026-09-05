@@ -1,6 +1,35 @@
 import AppKit
 import SwiftUI
 
+enum EditorVibrancy: String, CaseIterable, Identifiable, Sendable {
+    case off, subtle, balanced, strong
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .off: "Off"
+        case .subtle: "Subtle"
+        case .balanced: "Balanced"
+        case .strong: "Strong"
+        }
+    }
+
+    /// Additional theme tint above the system's own frosted material. Strong
+    /// must leave the native blur visible instead of covering it with dark paint.
+    var tintOpacity: CGFloat {
+        switch self {
+        case .off: 1
+        case .subtle: 0.60
+        case .balanced: 0.36
+        case .strong: 0.16
+        }
+    }
+
+    func resolved(reduceTransparency: Bool, lowPower: Bool = false) -> Self {
+        reduceTransparency || lowPower ? .off : self
+    }
+}
+
 struct EditorTheme: Sendable, Equatable {
     var fontSize: CGFloat
     var fontName: String
@@ -28,6 +57,14 @@ struct EditorTheme: Sendable, Equatable {
     var showGitGutter: Bool = true
     /// Draw and enable code-folding chevrons in the gutter. User-toggleable.
     var showCodeFolding: Bool = true
+    var vibrancy: EditorVibrancy = .off
+
+    /// Surface-only changes must not reconfigure TextKit or rebuild highlighting.
+    func hasSameTextAppearance(as other: EditorTheme) -> Bool {
+        var copy = self
+        copy.vibrancy = other.vibrancy
+        return copy == other
+    }
 
     var nsFont: NSFont {
         NSFont(name: fontName, size: fontSize) ?? .monospacedSystemFont(ofSize: fontSize, weight: .regular)
@@ -50,7 +87,8 @@ struct EditorTheme: Sendable, Equatable {
         tabWidth: Int,
         usesSpacesForTabs: Bool,
         showGitGutter: Bool,
-        showCodeFolding: Bool
+        showCodeFolding: Bool,
+        vibrancy: EditorVibrancy = .off
     ) -> EditorTheme {
         EditorTheme(
             fontSize: fontSize,
@@ -76,7 +114,8 @@ struct EditorTheme: Sendable, Equatable {
             tabWidth: tabWidth,
             usesSpacesForTabs: usesSpacesForTabs,
             showGitGutter: showGitGutter,
-            showCodeFolding: showCodeFolding
+            showCodeFolding: showCodeFolding,
+            vibrancy: vibrancy
         )
     }
 

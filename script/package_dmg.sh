@@ -3,7 +3,7 @@
 #
 # Inputs (env):
 #   BRISKEDIT_VERSION              required, e.g. 0.1.0
-#   BRISKEDIT_BUILD                optional, defaults to 1
+#   BRISKEDIT_BUILD                optional, defaults to the version-derived build
 #   BRISKEDIT_SPARKLE_PUBLIC_KEY   optional, embeds into Info.plist when present
 #   BRISKEDIT_SIGN_IDENTITY        optional, Developer ID Application identity
 #   BRISKEDIT_UPDATE_CHANNEL       optional, stable or beta
@@ -19,7 +19,7 @@ if [[ -z "${BRISKEDIT_VERSION:-}" ]]; then
   echo "error: BRISKEDIT_VERSION is required" >&2
   exit 1
 fi
-BUILD="${BRISKEDIT_BUILD:-1}"
+BUILD="${BRISKEDIT_BUILD:-$(./script/release_build_number.sh "$BRISKEDIT_VERSION")}"
 
 if ! command -v xcodegen >/dev/null 2>&1; then
   echo "error: xcodegen is required" >&2

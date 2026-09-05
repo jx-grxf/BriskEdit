@@ -43,6 +43,9 @@ jobs:
           fi
           bash -n script/*.sh
 
+      - name: Test release scripts
+        run: python3 -m unittest Tests/test_release_scripts.py
+
       - name: Validate release metadata and package lock
         run: ./script/verify_release_metadata.sh
 
@@ -146,6 +149,9 @@ jobs:
 
       - name: Install xcodegen
         run: brew install xcodegen
+
+      - name: Test appcast verifier
+        run: python3 -m unittest Tests/test_release_scripts.py
 
       - name: Generate locked Xcode project
         run: ./script/prepare_xcode_project.sh

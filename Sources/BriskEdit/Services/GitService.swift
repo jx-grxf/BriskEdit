@@ -62,6 +62,37 @@ struct GitResult: Sendable {
     let output: String
 }
 
+enum GitServiceError: LocalizedError, Sendable {
+    case fileOutsideRepository
+    case commandFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .fileOutsideRepository: "The file is outside this repository."
+        case .commandFailed(let message): message.isEmpty ? "Git diff failed." : message
+        }
+    }
+}
+
+private actor GitMutationGate {
+    static let shared = GitMutationGate()
+    private var tails: [String: (id: UUID, task: Task<GitResult, Never>)] = [:]
+
+    func run(root: URL, operation: @escaping @Sendable () async -> GitResult) async -> GitResult {
+        let key = root.resolvingSymlinksInPath().standardizedFileURL.path
+        let previous = tails[key]?.task
+        let id = UUID()
+        let task = Task {
+            _ = await previous?.value
+            return await operation()
+        }
+        tails[key] = (id, task)
+        let result = await task.value
+        if tails[key]?.id == id { tails[key] = nil }
+        return result
+    }
+}
+
 /// VCS status of a single file, used to decorate file-tree rows.
 enum GitDecoration: String, Sendable {
     case modified, added, untracked, deleted, renamed, conflicted
@@ -275,50 +306,52 @@ enum GitService {
     }
 
     @discardableResult
-    static func stage(_ path: String, root: URL) async -> Bool {
-        await runVoid(["-C", root.path, "add", "--", path])
+    static func stage(_ path: String, root: URL) async -> GitResult {
+        await runMutation(root: root, args: ["-C", root.path, "add", "--", path])
     }
 
     @discardableResult
-    static func stageAll(root: URL) async -> Bool {
-        await runVoid(["-C", root.path, "add", "-A"])
+    static func stageAll(root: URL) async -> GitResult {
+        await runMutation(root: root, args: ["-C", root.path, "add", "-A"])
     }
 
     @discardableResult
-    static func unstage(_ path: String, root: URL) async -> Bool {
-        await runVoid(["-C", root.path, "restore", "--staged", "--", path])
+    static func unstage(_ path: String, root: URL) async -> GitResult {
+        await runMutation(root: root, args: ["-C", root.path, "restore", "--staged", "--", path])
     }
 
     /// Discards working-tree changes for a tracked file (destructive — the
     /// caller is expected to confirm first).
     @discardableResult
-    static func discard(_ path: String, root: URL) async -> Bool {
-        await runVoid(["-C", root.path, "restore", "--", path])
+    static func discard(_ path: String, root: URL) async -> GitResult {
+        await runMutation(root: root, args: ["-C", root.path, "restore", "--", path])
     }
 
     @discardableResult
-    static func commit(message: String, root: URL) async -> Bool {
-        await runVoid(["-C", root.path, "commit", "-m", message])
+    static func commit(message: String, root: URL) async -> GitResult {
+        await runMutation(root: root, args: ["-C", root.path, "commit", "-m", message])
     }
 
     /// Pushes the current branch. If it has no upstream yet, retries with
     /// `-u origin HEAD` so the first push from a fresh branch just works.
     static func push(root: URL) async -> GitResult {
-        let first = await runResult(["-C", root.path, "push"])
-        if first.ok { return first }
-        let lower = first.output.lowercased()
-        if lower.contains("no upstream") || lower.contains("has no upstream") || lower.contains("set-upstream") {
-            return await runResult(["-C", root.path, "push", "-u", "origin", "HEAD"])
+        await GitMutationGate.shared.run(root: root) {
+            let first = await runResult(["-C", root.path, "push"])
+            if first.ok { return first }
+            let lower = first.output.lowercased()
+            if lower.contains("no upstream") || lower.contains("has no upstream") || lower.contains("set-upstream") {
+                return await runResult(["-C", root.path, "push", "-u", "origin", "HEAD"])
+            }
+            return first
         }
-        return first
     }
 
     static func pull(root: URL) async -> GitResult {
-        await runResult(["-C", root.path, "pull", "--ff-only"])
+        await runMutation(root: root, args: ["-C", root.path, "pull", "--ff-only"])
     }
 
     static func fetch(root: URL) async -> GitResult {
-        await runResult(["-C", root.path, "fetch", "--prune"])
+        await runMutation(root: root, args: ["-C", root.path, "fetch", "--prune"])
     }
 
     /// Local branches, current branch first.
@@ -366,19 +399,36 @@ enum GitService {
     }
 
     static func checkout(_ branch: String, root: URL) async -> GitResult {
-        await runResult(["-C", root.path, "checkout", branch])
+        await runMutation(root: root, args: ["-C", root.path, "checkout", branch])
     }
 
     static func createBranch(_ name: String, root: URL) async -> GitResult {
-        await runResult(["-C", root.path, "checkout", "-b", name])
+        await runMutation(root: root, args: ["-C", root.path, "checkout", "-b", name])
     }
 
-    private static func runVoid(_ args: [String]) async -> Bool {
-        await Task.detached(priority: .utility) { run(args) != nil }.value
+    /// Textual patch for the source-control diff viewer. A staged diff compares
+    /// HEAD with the index; an unstaged diff compares the index with the worktree.
+    static func diffText(for fileURL: URL, root: URL, staged: Bool) async throws -> String {
+        let canonicalRoot = root.resolvingSymlinksInPath().standardizedFileURL
+        let canonicalFile = fileURL.resolvingSymlinksInPath().standardizedFileURL
+        guard canonicalFile.path.hasPrefix(canonicalRoot.path + "/") else {
+            throw GitServiceError.fileOutsideRepository
+        }
+        let relativePath = String(canonicalFile.path.dropFirst(canonicalRoot.path.count + 1))
+        var args = ["-C", canonicalRoot.path, "diff", "--no-ext-diff", "--no-color"]
+        if staged { args.append("--cached") }
+        args.append(contentsOf: ["--", relativePath])
+        let result = await runResult(args)
+        guard result.ok else { throw GitServiceError.commandFailed(result.output) }
+        return result.output
+    }
+
+    private static func runMutation(root: URL, args: [String]) async -> GitResult {
+        await GitMutationGate.shared.run(root: root) { await runResult(args) }
     }
 
     /// Runs git capturing stdout+stderr and the exit status — for operations
-    /// whose failure the UI should surface (push/pull/checkout).
+    /// whose failure the UI should surface.
     private static func runResult(_ args: [String]) async -> GitResult {
         await Task.detached(priority: .utility) { () -> GitResult in
             guard let result = BoundedProcessRunner.run(
@@ -404,7 +454,8 @@ enum GitService {
         return await Task.detached(priority: .utility) { () -> GitDiff? in
             guard let root = run(["-C", dir, "rev-parse", "--show-toplevel"])?
                 .trimmingCharacters(in: .whitespacesAndNewlines), !root.isEmpty else { return nil }
-            let relative = path.hasPrefix(root + "/") ? String(path.dropFirst(root.count + 1)) : fileURL.lastPathComponent
+            guard path.hasPrefix(root + "/") else { return nil }
+            let relative = String(path.dropFirst(root.count + 1))
 
             // HEAD version of the file. Missing → file is new/untracked; mark
             // every line as added only when Git already tracks it (staged add).
@@ -415,7 +466,10 @@ enum GitService {
                 guard run(["-C", root, "ls-files", "--error-unmatch", "--", relative]) != nil else {
                     return nil
                 }
-                let count = currentText.isEmpty ? 0 : currentText.components(separatedBy: "\n").count
+                var count = currentText.isEmpty ? 0 : currentText.components(separatedBy: "\n").count
+                // A trailing newline doesn't start another line; without this
+                // the last marked line would sit past EOF.
+                if count > 0 && currentText.hasSuffix("\n") { count -= 1 }
                 var diff = GitDiff()
                 for line in 1...max(1, count) where count > 0 { diff.lineKinds[line] = .added }
                 return diff

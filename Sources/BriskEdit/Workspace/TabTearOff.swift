@@ -14,14 +14,9 @@ import UniformTypeIdentifiers
 /// 2. **Window lookup.** Each live window registers its `WorkspaceModel`, so a
 ///    drop can be routed into whatever window sits under the cursor.
 ///
-/// The drag itself is SwiftUI's native `.draggable` (`makeTabTransfer`) — the
-/// exact drag path the file tree uses (`.draggable(node.url)`), which is the only
-/// mechanism that actually fires inside the tab strip's `ScrollView` (legacy
-/// `.onDrag`, hand-rolled `DragGesture`s and `NSDraggingSession`s all stayed
-/// inert there). `.draggable` gives no end callback, and SwiftUI doesn't release
-/// the `Transferable` payload at a usable moment, so we detect the session end
-/// ourselves: while a drag is in flight we poll the physical mouse button and
-/// route the instant it releases, by hit-testing the cursor's release point.
+/// SwiftUI supplies the native drag. On macOS 26 its session callbacks drive
+/// routing; the macOS 15 fallback observes a real drag in the label's bounds.
+/// Constructing a transfer value must never change window or drag state.
 @MainActor
 final class TabTearOffCoordinator {
     static let shared = TabTearOffCoordinator()
@@ -48,18 +43,37 @@ final class TabTearOffCoordinator {
     private var inFlightSource: Weak<WorkspaceModel>?
     /// Polls the mouse button while a drag is live; fires `finishDrag` on release.
     private var endPollTimer: Timer?
+    private var escapeMonitor: Any?
 
-    private init() {}
+    var hasActiveDrag: Bool { inFlightTabID != nil }
+
+    init() {}
 
     // MARK: - In-flight drag (started by `.draggable`)
 
-    func beginDrag(tabID: UUID, source: WorkspaceModel) {
+    func beginDrag(tabID: UUID, source: WorkspaceModel, pollsForEnd: Bool = false) {
+        guard source.tabs.contains(where: { $0.id == tabID }) else { return }
+        cancelDrag()
         inFlightTabID = tabID
         inFlightSource = Weak(source)
-        startEndPolling()
+        escapeMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            if event.keyCode == 53 { self?.cancelDrag() }
+            return event
+        }
+        if pollsForEnd { startEndPolling() }
     }
 
-    /// `.draggable` has no end callback, so we watch the physical mouse button:
+    func cancelDrag(tabID: UUID? = nil) {
+        if let tabID, tabID != inFlightTabID { return }
+        inFlightTabID = nil
+        inFlightSource = nil
+        endPollTimer?.invalidate()
+        endPollTimer = nil
+        if let escapeMonitor { NSEvent.removeMonitor(escapeMonitor) }
+        escapeMonitor = nil
+    }
+
+    /// macOS 15 fallback: watch the physical mouse button after a real drag:
     /// the drag begins with it held down, and the session ends the moment it's
     /// released. The timer is registered in both the common and event-tracking
     /// run-loop modes so it ticks whether or not the drag loop has taken over —
@@ -88,15 +102,11 @@ final class TabTearOffCoordinator {
     /// (back into the source window is a no-op); over empty desktop → tear off into
     /// a new window at that point.
     func finishDrag() {
-        endPollTimer?.invalidate()
-        endPollTimer = nil
         guard let tabID = inFlightTabID, let source = inFlightSource?.value else {
-            inFlightTabID = nil
-            inFlightSource = nil
+            cancelDrag()
             return
         }
-        inFlightTabID = nil
-        inFlightSource = nil
+        cancelDrag()
 
         let dropPoint = NSEvent.mouseLocation
         if let target = dropTarget(at: dropPoint) {
@@ -126,10 +136,7 @@ final class TabTearOffCoordinator {
               source !== target,
               let tab = source.detachTabForMove(tabID) else { return false }
         target.insertMovedTab(tab, before: targetID)
-        inFlightTabID = nil
-        inFlightSource = nil
-        endPollTimer?.invalidate()
-        endPollTimer = nil
+        cancelDrag()
         return true
     }
 
@@ -238,20 +245,101 @@ struct TabTransfer: Transferable {
     }
 }
 
-/// Starts a tab drag: registers the in-flight tab with the coordinator and returns
-/// the `.draggable` payload. Mirrors the file tree's native `.draggable(node.url)`
-/// — the only drag mechanism that fires inside the tab strip's `ScrollView`.
-///
-/// `.draggable` evaluates its payload autoclosure when the drag actually begins,
-/// so the left button is down by then; we guard on that so a stray eager
-/// evaluation (no button held) can't arm a phantom drag that the end-poll would
-/// immediately "finish" and teleport a tab.
-@MainActor
-func makeTabTransfer(tabID: UUID, source: WorkspaceModel) -> TabTransfer {
-    if NSEvent.pressedMouseButtons & 0x1 != 0 {
-        TabTearOffCoordinator.shared.beginDrag(tabID: tabID, source: source)
+/// Restricts dragging to the tab label. Its close button is a sibling control.
+struct TabDragLifecycle<Preview: View>: ViewModifier {
+    let tabID: UUID
+    let source: WorkspaceModel
+    let preview: Preview
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(macOS 26.0, *) {
+            content
+                .draggable(TabTransfer(tabID: tabID)) { preview }
+                .onDragSessionUpdated { session in
+                    switch session.phase {
+                    case .initial:
+                        TabTearOffCoordinator.shared.beginDrag(tabID: tabID, source: source)
+                    case .ended(let operation):
+                        if operation == .cancel || operation == .forbidden {
+                            if NSEvent.pressedMouseButtons & 0x1 != 0 {
+                                TabTearOffCoordinator.shared.cancelDrag()
+                            } else {
+                                TabTearOffCoordinator.shared.finishDrag()
+                            }
+                        }
+                    case .dataTransferCompleted:
+                        TabTearOffCoordinator.shared.finishDrag()
+                    default:
+                        break
+                    }
+                }
+        } else {
+            content
+                .draggable(TabTransfer(tabID: tabID)) { preview }
+                .background(LegacyTabDragObserver(tabID: tabID, source: source))
+        }
     }
-    return TabTransfer(tabID: tabID)
+}
+
+/// macOS 15 has no SwiftUI drag-session callback. Observe only mouse drags that
+/// began inside this label, without consuming events from the native drag source.
+private struct LegacyTabDragObserver: NSViewRepresentable {
+    let tabID: UUID
+    let source: WorkspaceModel
+
+    func makeNSView(context: Context) -> TrackingView { TrackingView() }
+
+    func updateNSView(_ view: TrackingView, context: Context) {
+        view.onBegin = { [weak source] window in
+            guard let source else { return }
+            TabTearOffCoordinator.shared.register(window: window, workspace: source)
+            TabTearOffCoordinator.shared.beginDrag(tabID: tabID, source: source, pollsForEnd: true)
+        }
+    }
+
+    static func dismantleNSView(_ view: TrackingView, coordinator: ()) { view.stopMonitoring() }
+
+    final class TrackingView: NSView {
+        var onBegin: ((NSWindow) -> Void)?
+        private var monitor: Any?
+        private var mouseDownPoint: NSPoint?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stopMonitoring()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .leftMouseDragged, .leftMouseUp]) { [weak self] event in
+                self?.observe(event)
+                return event
+            }
+        }
+
+        func stopMonitoring() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+            mouseDownPoint = nil
+        }
+
+        private func observe(_ event: NSEvent) {
+            guard let window, event.window === window else { return }
+            let point = convert(event.locationInWindow, from: nil)
+            switch event.type {
+            case .leftMouseDown:
+                mouseDownPoint = bounds.contains(point) ? point : nil
+            case .leftMouseDragged:
+                guard let origin = mouseDownPoint, hypot(point.x - origin.x, point.y - origin.y) >= 6 else { return }
+                mouseDownPoint = nil
+                onBegin?(window)
+            case .leftMouseUp:
+                mouseDownPoint = nil
+            default:
+                break
+            }
+        }
+    }
 }
 
 /// Reports the `NSWindow` hosting a SwiftUI view, so the tab strip can tell

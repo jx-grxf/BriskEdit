@@ -8,6 +8,10 @@ struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
 
     var body: some Commands {
+        // ⌘P belongs to "Go to File…"; drop the system Print item so it no
+        // longer competes for the same shortcut.
+        CommandGroup(replacing: .printItem) {}
+
         CommandGroup(replacing: .newItem) {
             Button("New File") {
                 workspace?.newUntitled()
@@ -30,10 +34,19 @@ struct AppCommands: Commands {
             .keyboardShortcut("o", modifiers: [.command, .shift])
 
             Menu("Open Recent") {
+                let files = RecentWorkspacesStore.shared.files
                 let folders = RecentWorkspacesStore.shared.folders
-                if folders.isEmpty {
+
+                if files.isEmpty && folders.isEmpty {
                     Button("No Recent Folders") {}.disabled(true)
                 } else {
+                    ForEach(files, id: \.self) { url in
+                        Button(url.lastPathComponent) { openRecentFile(url) }
+                            .help(url.path)
+                    }
+                    if !files.isEmpty && !folders.isEmpty {
+                        Divider()
+                    }
                     ForEach(folders, id: \.self) { url in
                         Button(url.lastPathComponent) { openRecent(url) }
                             .help(url.path)
@@ -67,7 +80,20 @@ struct AppCommands: Commands {
             }
             .disabled(workspace?.tabs.isEmpty != false)
 
+            Button("Reopen Closed Tab") {
+                workspace?.reopenClosedTab()
+            }
+            .keyboardShortcut("t", modifiers: [.command, .shift])
+            .disabled(ClosedTabHistory.shared.urls.isEmpty)
+
             Divider()
+
+            Button("Previous Tab") { workspace?.selectAdjacentTab(offset: -1) }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
+                .disabled((workspace?.tabs.count ?? 0) < 2)
+            Button("Next Tab") { workspace?.selectAdjacentTab(offset: 1) }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+                .disabled((workspace?.tabs.count ?? 0) < 2)
 
             Button("Move Tab Left") {
                 workspace?.moveActiveTab(by: -1)
@@ -83,6 +109,13 @@ struct AppCommands: Commands {
         }
 
         CommandGroup(after: .saveItem) {
+            Button("Compare with Disk…") {
+                if let document = workspace?.activeTab?.document { workspace?.review.compare(document: document) }
+            }
+            .disabled(workspace?.activeTab?.document.fileURL == nil || workspace?.activeTab?.previewKind != nil)
+            Button("Recover Drafts…") { Task { await workspace?.loadRecoverableDrafts() } }
+                .disabled(workspace == nil)
+            Divider()
             Button("Save") {
                 Task { await workspace?.saveActiveTab() }
             }
@@ -103,6 +136,14 @@ struct AppCommands: Commands {
         }
 
         CommandMenu("Go") {
+            Button("Find References…") {
+                if let workspace, let document = workspace.activeTab?.document {
+                    workspace.review.findReferences(document: document, root: workspace.rootURL)
+                }
+            }
+            .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(workspace?.activeTab?.document.fileURL == nil || workspace?.activeTab?.previewKind != nil)
+            Divider()
             Button("Go to File…") {
                 workspace?.showFileFinder = true
             }
@@ -250,6 +291,22 @@ struct AppCommands: Commands {
                 }
             }
         }
+    }
+
+    @MainActor
+    private func openRecentFile(_ url: URL) {
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            NSSound.beep()
+            return
+        }
+        // Files open into the current workspace; without a focused window there
+        // is nothing to open into (folders get a fresh window instead, since a
+        // folder *is* a window's root).
+        guard let workspace else {
+            NSSound.beep()
+            return
+        }
+        Task { await workspace.openFile(at: url) }
     }
 
     @MainActor

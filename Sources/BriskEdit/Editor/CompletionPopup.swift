@@ -90,11 +90,15 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
             hide()
             return
         }
+        let selectedIdentity = items.indices.contains(tableView.selectedRow)
+            ? items[tableView.selectedRow].stableIdentity
+            : nil
         self.items = items
         tableView.reloadData()
-        if tableView.selectedRow < 0 || tableView.selectedRow >= items.count {
-            tableView.selectRowIndexes([0], byExtendingSelection: false)
-        }
+        let selectedIndex = selectedIdentity.flatMap { identity in
+            items.firstIndex { $0.stableIdentity == identity }
+        } ?? 0
+        tableView.selectRowIndexes([selectedIndex], byExtendingSelection: false)
 
         let visibleRows = min(items.count, maxVisibleRows)
         let height = CGFloat(visibleRows) * rowHeight + 8
@@ -126,6 +130,11 @@ final class CompletionPopup: NSObject, NSTableViewDataSource, NSTableViewDelegat
 
     func hide() {
         guard panel.isVisible else { return }
+        panel.orderOut(nil)
+    }
+
+    func detach() {
+        panel.parent?.removeChildWindow(panel)
         panel.orderOut(nil)
     }
 

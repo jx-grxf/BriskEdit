@@ -79,4 +79,20 @@ extension WorkspaceModel {
             self.isLoadingOutline = false
         }
     }
+
+    /// Resolves project references for a zero-based LSP position in the active
+    /// document. Presentation and navigation stay with the caller.
+    func findReferences(line: Int, character: Int) async throws -> [LSPLocation] {
+        guard let document = activeTab?.document, let url = document.fileURL else {
+            throw LSPService.FeatureError.requestFailed("Find References")
+        }
+        return try await LSPService.shared.references(
+            language: document.language,
+            uri: url.absoluteString,
+            text: document.text,
+            line: line,
+            character: character,
+            root: rootURL?.path ?? url.deletingLastPathComponent().path
+        )
+    }
 }

@@ -13,8 +13,10 @@ final class MinimapView: NSView {
 
     private var theme: EditorTheme
     /// Cached line lengths/word-runs so a scroll redraw doesn't re-scan the text.
+    /// Rebuilt off the main thread; the draw pass only consumes the snapshot.
     private var lines: [LineGlyphs] = []
-    private var contentDirty = true
+    private var rebuildTask: Task<Void, Never>?
+    private var rebuildGeneration = 0
 
     private let lineHeight: CGFloat = 3.0
     private let lineGap: CGFloat = 1.0
@@ -25,7 +27,7 @@ final class MinimapView: NSView {
         self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
-        layer?.backgroundColor = theme.background.cgColor
+        layer?.backgroundColor = (theme.vibrancy == .off ? theme.background : NSColor.clear).cgColor
     }
 
     @available(*, unavailable)
@@ -33,15 +35,16 @@ final class MinimapView: NSView {
 
     func setTheme(_ theme: EditorTheme) {
         self.theme = theme
-        layer?.backgroundColor = theme.background.cgColor
-        contentDirty = true
+        layer?.backgroundColor = (theme.vibrancy == .off ? theme.background : NSColor.clear).cgColor
         needsDisplay = true
     }
 
-    /// The text changed — rebuild the cached line model on the next draw.
+    /// The text changed — rebuild the cached line model off the main thread and
+    /// repaint once the snapshot lands. The overview may lag a beat behind very
+    /// rapid typing, which is fine for a zoomed-out map.
     func invalidateContent() {
-        contentDirty = true
         needsDisplay = true
+        scheduleRebuild()
     }
 
     /// The viewport scrolled/resized — only the overlay moved.
@@ -50,20 +53,40 @@ final class MinimapView: NSView {
     }
 
     override var isFlipped: Bool { true }
-    override var isOpaque: Bool { true }
+    override var isOpaque: Bool { theme.vibrancy == .off }
 
     // MARK: - Content model
 
     private struct Run { let start: Int; let length: Int }
     private struct LineGlyphs { let runs: [Run] }
 
-    private func rebuildIfNeeded() {
-        guard contentDirty else { return }
-        contentDirty = false
-        lines.removeAll(keepingCapacity: true)
-        guard let text = textView?.string, text.utf16.count <= 2_000_000 else { return }
+    private func scheduleRebuild() {
+        rebuildTask?.cancel()
+        guard let text = textView?.string else { return }
+        guard text.utf16.count <= 2_000_000 else {
+            rebuildGeneration += 1
+            rebuildTask = nil
+            lines = []
+            return
+        }
+        rebuildGeneration += 1
+        let generation = rebuildGeneration
+        let maxColumns = maxColumns
+        rebuildTask = Task.detached(priority: .utility) {
+            let glyphs = Self.buildLineGlyphs(in: text, maxColumns: maxColumns)
+            await MainActor.run { [weak self] in
+                guard let self, self.rebuildGeneration == generation else { return }
+                self.lines = glyphs
+                self.needsDisplay = true
+            }
+        }
+    }
+
+    private nonisolated static func buildLineGlyphs(in text: String, maxColumns: Int) -> [LineGlyphs] {
         let ns = text as NSString
-        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines]) { [maxColumns] line, _, _, _ in
+        var glyphs: [LineGlyphs] = []
+        glyphs.reserveCapacity(ns.length / 24)
+        ns.enumerateSubstrings(in: NSRange(location: 0, length: ns.length), options: [.byLines]) { line, _, _, _ in
             let chars = (line ?? "") as NSString
             var runs: [Run] = []
             var col = 0
@@ -79,8 +102,9 @@ final class MinimapView: NSView {
                 col += 1
             }
             if runStart >= 0 { runs.append(Run(start: runStart, length: col - runStart)) }
-            self.lines.append(LineGlyphs(runs: runs))
+            glyphs.append(LineGlyphs(runs: runs))
         }
+        return glyphs
     }
 
     // MARK: - Geometry
@@ -120,9 +144,9 @@ final class MinimapView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
-        rebuildIfNeeded()
-        theme.background.setFill()
-        bounds.fill()
+        let background = theme.vibrancy == .off ? theme.background : theme.background.withAlphaComponent(0.18)
+        background.setFill()
+        dirtyRect.fill(using: .copy)
         guard !lines.isEmpty else { return }
 
         let offset = minimapOffset()

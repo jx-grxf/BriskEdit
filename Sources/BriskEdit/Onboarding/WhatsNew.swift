@@ -43,22 +43,25 @@ enum WhatsNew {
     /// `MARKETING_VERSION`; `script/verify_release_metadata.sh` enforces it in CI
     /// so the in-app What's New page can't silently ship the previous release's
     /// highlights. Bump this together with `sections` (and the release notes).
-    static let highlightsVersion = "0.5.2"
+    static let highlightsVersion = "0.6.0"
 
     /// The latest release's curated highlights. **Update this for each release**
     /// (mirrors the top section of RELEASE_NOTES.md) — see the release recipe in
     /// the project notes so it doesn't get missed.
     static let sections: [Section] = [
-        Section(name: "Trusted by macOS", highlights: [
-            Highlight(symbol: "checkmark.seal.fill", title: "Signed and notarized", detail: "BriskEdit is now signed with a Developer ID and notarized by Apple — the app opens like any other Mac app, no Gatekeeper workaround needed.", tint: .green),
+        Section(name: "Your work, protected", highlights: [
+            Highlight(symbol: "xmark.rectangle", title: "Reliable tab closing", detail: "Close a tab without accidentally selecting it again or starting a drag. Move tabs by dragging their labels; the close button stays independent.", tint: .blue),
+            Highlight(symbol: "arrow.counterclockwise.circle", title: "Recover unsaved drafts", detail: "Restore local recovery copies after an unexpected exit, including untitled files. Recovered drafts open as copies so existing files stay safe.", tint: .teal),
+            Highlight(symbol: "doc.on.doc", title: "Compare before overwriting", detail: "Inspect the editor buffer against the saved file. Autosave pauses when an external change needs your decision.", tint: .blue),
         ]),
-        Section(name: "Editor", highlights: [
-            Highlight(symbol: "curlybraces", title: "Surround with brackets or quotes", detail: "Select text and type a bracket or quote to wrap it instead of replacing it, with the selection kept so you can keep typing.", tint: .blue),
-            Highlight(symbol: "delete.left", title: "Smarter pairing", detail: "Typing a closer steps over the existing one, backspace inside an empty pair removes both, and quotes no longer auto-close inside words like don't.", tint: .purple),
+        Section(name: "Navigate and review", highlights: [
+            Highlight(symbol: "text.magnifyingglass", title: "Find references", detail: "See where a symbol is used with your language server, then open a result at its exact location.", tint: .indigo),
+            Highlight(symbol: "arrow.triangle.branch", title: "Review Git changes", detail: "Read staged and unstaged diffs from Source Control. Navigate open tabs with Shift–Command–[ and ].", tint: .orange),
         ]),
-        Section(name: "Stability", highlights: [
-            Highlight(symbol: "internaldrive", title: "Rapid saves can't lose edits", detail: "A save landing while an autosave was still writing could leave older content on disk — writes are now strictly ordered.", tint: .teal),
-            Highlight(symbol: "xmark.rectangle", title: "Closing tabs respects Cancel", detail: "Close All and Close Other Tabs prompt for each unsaved file in order and stop the moment you cancel.", tint: .orange),
+        Section(name: "A calmer Mac experience", highlights: [
+            Highlight(symbol: "macwindow", title: "Frosted editor backgrounds", detail: "Choose Subtle, Balanced, or Strong vibrancy in Appearance while keeping your syntax theme. Reduce Transparency and Low Power switch to a solid background.", tint: .cyan),
+            Highlight(symbol: "macwindow", title: "More Macs, native materials", detail: "Now supports macOS 15 and later, with Liquid Glass on macOS 26 and native material fallbacks on earlier systems.", tint: .blue),
+            Highlight(symbol: "bolt", title: "Smoother editing", detail: "Folding analysis runs away from the UI. Cancelled searches stop their work, and window sizing respects your adjustments.", tint: .teal),
         ]),
     ]
 }

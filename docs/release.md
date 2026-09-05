@@ -1,79 +1,38 @@
 # Release Runbook
 
-End-to-end procedure for cutting a BriskEdit release.
+## Channels and compatibility
 
-## Channels
+- Stable: tags such as `v0.6.0`, latest GitHub release, default Sparkle channel (no channel tag).
+- Beta: tags such as `v0.6.1-beta.1`, versioned GitHub prereleases, opted into in Settings → Updates.
+- Beta clients poll the moving `beta` release's combined appcast. It keeps the newest stable and beta items, so testers can advance to a newer stable build. Stable clients use `/releases/latest/download/appcast.xml` and never opt into beta items.
+- Fresh beta binaries default to beta; a saved explicit channel preference wins.
+- 0.6.0 targets macOS 15+, while Liquid Glass is available on macOS 26+. The appcast minimum OS is read from the built app's `LSMinimumSystemVersion`.
 
-- **stable** — tags like `v0.2.0`. Published to the latest release, advertised on the public appcast.
-- **beta** — tags like `v0.2.0-beta.1`. Published as a GitHub prerelease and a separate beta-only appcast feed users opt into in Settings → Updates.
+## Prerequisites
 
-The Sparkle controller filters channels via `allowedChannels(for:)` in `UpdateService`. Stable users never see beta entries, and beta users poll the moving beta feed only. Stable releases are not mixed into that feed.
+Developer ID signing, notarization and Sparkle Ed25519 signing are configured for published releases. The canonical public key is in `project.yml`; private signing and notarization material stays in GitHub secrets. Follow `script/verify_release_secrets.sh` for required secret names. Builds require Xcode 26 and the committed SwiftPM lock.
 
-## Prerequisites (one-time)
+## Prepare and publish
 
-1. **Sparkle keys.** Generate once with the Sparkle `generate_keys` tool. Store:
-   - Public key → repo secret `BRISKEDIT_SPARKLE_PUBLIC_KEY` and committed reference in `project.yml`'s Info.plist key `SUPublicEDKey`.
-   - Private key → repo secret `BRISKEDIT_SPARKLE_PRIVATE_KEY`. Never committed, never logged.
-2. **Developer preview signing.** Current releases are ad-hoc signed previews.
-   Users must right-click the app and choose Open on first launch.
-3. **(later) Developer ID Application certificate** installed in the CI keychain.
-4. **(later) Notarization credentials** stored as repo secrets `BRISKEDIT_NOTARY_APPLE_ID`, `BRISKEDIT_NOTARY_TEAM_ID`, `BRISKEDIT_NOTARY_PASSWORD`, `BRISKEDIT_NOTARY_ENABLED=true`.
+1. Update the top `RELEASE_NOTES.md` section, `MARKETING_VERSION`, the derived `CURRENT_PROJECT_VERSION`, and both `WhatsNew.highlightsVersion` and `WhatsNew.sections` together. Run `script/prepare_xcode_project.sh`.
+2. Run the full tests, `script/verify_release_metadata.sh`, `python3 -m unittest Tests/test_release_scripts.py`, actionlint and shellcheck; open a PR and wait for green CI.
+3. After merge, create a **signed annotated tag** on main, for example `git tag -s v0.6.0 -m "BriskEdit 0.6.0"`, then push that tag. Do not publish unmerged code.
+4. Release preflight verifies the tag signature and main ancestry. It rejects an already published version and releases that would move their channel backwards. Unpublished drafts can be retried.
+5. The workflow builds/tests the tagged source, packages/signs/notarizes the artifacts, and verifies version identity, archive length and the archive's Ed25519 signature against the bundle public key.
+6. Assets upload to a draft first. Only the complete release is published; stable is marked latest and beta is explicitly not latest.
+7. The combined beta feed merges the current release, current stable feed and previous combined feed. Fetch failures other than a missing optional feed abort. Each retained enclosure is downloaded and signature-verified before the moving beta feed is replaced.
+8. Test a clean installation and a Sparkle update from 0.5.2 on a real Mac. Exercise stable → newer stable, beta → newer beta, beta → newer stable, and channel switching. No downgrade is offered merely by selecting Stable.
 
-## Per-release checklist
+## Build identity
 
-1. Update `RELEASE_NOTES.md` with the new section at the top.
-2. Bump `MARKETING_VERSION` in `project.yml` and run `xcodegen`. For a reissued
-   build of the same visible version, keep `MARKETING_VERSION` unchanged and use
-   a higher Sparkle build number.
-3. Open a PR, get a green CI run.
-4. After merge, tag from `main`:
-   ```bash
-   git checkout main && git pull
-   git tag -a v0.2.0 -m "BriskEdit 0.2.0"
-   git push origin v0.2.0
-   ```
-   If a broken preview already used the same tag, delete the GitHub Release and
-   remote tag first, then recreate the annotated tag from the fixed `main`
-   commit. Do not leave assets built from one commit attached to a tag pointing
-   at another commit.
-5. The `release.yml` workflow runs:
-   - regenerates the Xcode project
-   - builds Release
-   - packages a DMG (`script/package_dmg.sh`)
-   - produces a signed Sparkle ZIP + appcast (`script/create_sparkle_assets.sh`)
-   - verifies the appcast points at the right release URL
-   - notarizes the DMG and staples the ticket only when
-     `BRISKEDIT_NOTARY_ENABLED=true`; otherwise the release remains an ad-hoc
-     signed developer preview
-   - attaches everything to the GitHub Release
-   Manual `workflow_dispatch` accepts an optional `build` input when a specific
-   Sparkle build number is needed; otherwise it uses the GitHub run number.
-6. Manually verify on a fresh machine:
-   - Download the DMG.
-   - Open, drag to Applications, launch.
-   - Settings → Updates → Check Now → see the channel respond correctly.
-7. Tweet / blog if it is a meaningful release.
+`script/release_build_number.sh VERSION` derives a numeric three-component CFBundleVersion, also used as `sparkle:version`:
 
-## Beta cuts
+- First component: `1000 + major × 100 + minor`. The epoch is above legacy GitHub-run build numbers (0.5.2 shipped build 19).
+- Second component: patch.
+- Third component: beta ordinal 1–98, or 99 for stable.
 
-Tag with `-beta.N`:
+For example 0.6.0-beta.1 → 1006.0.1, 0.6.0 → 1006.0.99, 0.6.1-beta.1 → 1006.1.1. Versions are constrained to canonical minor/patch 0–99 and major 0–89 to respect Apple's four/two/two-digit build component limits. The project and local debug builds use the same derived identity, preventing a newer development version from offering an older production build as an update. Manual workflow `build` input is an optional equality check, not an override.
 
-```bash
-git tag -a v0.3.0-beta.1 -m "BriskEdit 0.3.0 beta 1"
-git push origin v0.3.0-beta.1
-```
+## Repair a failed publication
 
-The release workflow detects the suffix and:
-
-- marks the GitHub Release as a prerelease,
-- publishes the appcast under a moving `beta` release alias so beta-channel users get the feed continuously.
-
-## Rollback
-
-If a release is broken in the wild:
-
-1. Delete or unpublish the GitHub Release.
-2. Re-run the previous tag's release workflow with `workflow_dispatch` to restore the appcast pointer to the last good build.
-3. Communicate the rollback in `RELEASE_NOTES.md` so the next release's notes acknowledge it.
-
-Do **not** force-push tags. Once an appcast entry has been signed and downloaded by users, the version is immutable from their perspective.
+Published versioned releases, tags, ZIPs and signatures are immutable. Fix a bad release with a new version; do not clobber the same build or move an old stable release to latest. An interrupted upload can resume while the release is still a draft. If publication succeeded but feed refresh failed, repair the feed using the existing signed artifacts after verifying them; do not rebuild/reissue the published version. Keep the old stable item until a verified replacement exists.

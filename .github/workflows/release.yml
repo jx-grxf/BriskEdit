@@ -11,7 +11,7 @@ on:
         required: true
         type: string
       build:
-        description: "Sparkle build number; leave empty to use the GitHub run number"
+        description: "Expected deterministic Sparkle build number (optional safety check)"
         required: false
         type: string
 
@@ -56,16 +56,20 @@ jobs:
             tag="v${INPUT_VERSION#v}"
           fi
           version="${tag#v}"
-          build="${INPUT_BUILD:-$GITHUB_RUN_NUMBER}"
+          build="$(./script/release_build_number.sh "$version")"
 
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] || {
             echo "error: unsupported release version '$version'" >&2
             exit 1
           }
-          [[ "$build" =~ ^[1-9][0-9]*$ ]] || {
-            echo "error: build number must be a positive integer" >&2
+          [[ "$build" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}){0,2}$ ]] || {
+            echo "error: build number must be a numeric CFBundleVersion" >&2
             exit 1
           }
+          if [[ -n "${INPUT_BUILD:-}" && "$INPUT_BUILD" != "$build" ]]; then
+            echo "error: supplied build $INPUT_BUILD does not match deterministic build $build for $version" >&2
+            exit 1
+          fi
 
           if [[ "$version" == *-beta.* ]]; then
             channel="beta"
@@ -106,6 +110,15 @@ jobs:
           }
           git checkout --detach "$commit"
           echo "commit=$commit" >> "$GITHUB_OUTPUT"
+
+      - name: Reject published versions and channel regressions
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" --slurp | jq 'add' > releases.json
+          python3 script/release_policy.py "$RELEASE_VERSION" releases.json
 
       - name: Verify release metadata
         env:
@@ -293,17 +306,24 @@ jobs:
             "dist/sparkle/appcast.xml#appcast.xml"
             "dist/SHA256SUMS#SHA256SUMS"
           )
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            if [[ "$RELEASE_CHANNEL" == "beta" ]]; then
-              gh release edit "$RELEASE_TAG" --target "$RELEASE_COMMIT" --title "BriskEdit ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --prerelease --latest=false
-            else
-              gh release edit "$RELEASE_TAG" --target "$RELEASE_COMMIT" --title "BriskEdit ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --prerelease=false --latest
-            fi
-            gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
-          elif [[ "$RELEASE_CHANNEL" == "beta" ]]; then
-            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --target "$RELEASE_COMMIT" --title "BriskEdit ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --prerelease
+          # Assets remain invisible until the complete set has uploaded. The
+          # preflight rejects already-published tags; failed drafts may be retried.
+          if gh release view "$RELEASE_TAG" --json isDraft > release-state.json 2>/dev/null; then
+            [[ "$(jq -r '.isDraft' release-state.json)" == "true" ]] || {
+              echo "error: refusing to replace a published release" >&2
+              exit 1
+            }
           else
-            gh release create "$RELEASE_TAG" "${assets[@]}" --verify-tag --target "$RELEASE_COMMIT" --title "BriskEdit ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --latest
+            gh release create "$RELEASE_TAG" --verify-tag --target "$RELEASE_COMMIT" \
+              --title "BriskEdit ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md --draft
+          fi
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber
+          if [[ "$RELEASE_CHANNEL" == "beta" ]]; then
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease --latest=false \
+              --title "BriskEdit ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md
+          else
+            gh release edit "$RELEASE_TAG" --draft=false --prerelease=false --latest \
+              --title "BriskEdit ${RELEASE_VERSION}" --notes-file dist/RELEASE_NOTES.md
           fi
 
       - name: Verify published release
@@ -330,11 +350,32 @@ jobs:
           RELEASE_COMMIT: ${{ needs.preflight.outputs.commit }}
         run: |
           set -euo pipefail
+          fetch_feed() {
+            local url="$1" output="$2" code
+            code="$(curl --retry 3 --connect-timeout 10 --max-time 45 -sSL -w '%{http_code}' "$url" -o "$output")"
+            case "$code" in
+              200) ;;
+              404) rm -f "$output" ;;
+              *) echo "error: feed fetch returned HTTP $code" >&2; exit 1 ;;
+            esac
+          }
+          fetch_feed "https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/appcast.xml" dist/sparkle/stable-appcast.xml
+          fetch_feed "https://github.com/${GITHUB_REPOSITORY}/releases/download/beta/appcast.xml" dist/sparkle/previous-beta-appcast.xml
+          ./script/merge_appcasts.py dist/sparkle/appcast.xml dist/sparkle/stable-appcast.xml dist/sparkle/previous-beta-appcast.xml dist/sparkle/beta-appcast.xml
+          python3 script/verify_composite_appcast.py dist/sparkle/beta-appcast.xml \
+            "${{ needs.preflight.outputs.build }}" "$GITHUB_REPOSITORY" dist/feed-verification > dist/feed-verification.tsv
+          public_key="$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' dist/BriskEdit.app/Contents/Info.plist)"
+          while IFS=$'\t' read -r index url channel version build; do
+            archive="dist/feed-verification/item-${index}.zip"
+            curl --fail --retry 3 --connect-timeout 10 --max-time 180 -sSL "$url" -o "$archive"
+            ./script/verify_appcast.swift "dist/feed-verification/item-${index}.xml" \
+              "$url" "$channel" "$version" "$build" "$archive" "$public_key"
+          done < dist/feed-verification.tsv
           if gh release view beta >/dev/null 2>&1; then
             gh release edit beta --target "$RELEASE_COMMIT" --prerelease --latest=false --title "BriskEdit Beta Feed"
-            gh release upload beta "dist/sparkle/appcast.xml#appcast.xml" --clobber
+            gh release upload beta "dist/sparkle/beta-appcast.xml#appcast.xml" --clobber
           else
-            gh release create beta "dist/sparkle/appcast.xml#appcast.xml" \
+            gh release create beta "dist/sparkle/beta-appcast.xml#appcast.xml" \
               --target "$RELEASE_COMMIT" \
               --title "BriskEdit Beta Feed" \
               --notes "Moving Sparkle beta appcast feed. Install beta builds from versioned prereleases." \

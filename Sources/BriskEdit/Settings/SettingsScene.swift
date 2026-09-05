@@ -3,6 +3,7 @@ import SwiftUI
 
 struct SettingsScene: View {
     @Environment(Preferences.self) private var preferences
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     var body: some View {
         TabView {
@@ -27,7 +28,7 @@ struct SettingsScene: View {
         // the overflow into a \"»\" popover whose items don't reliably click.
         .frame(width: 720, height: 480)
         .transaction { transaction in
-            if preferences.reduceMotion { transaction.disablesAnimations = true }
+            if preferences.reduceMotion || accessibilityReduceMotion { transaction.disablesAnimations = true }
         }
     }
 }
@@ -36,6 +37,7 @@ struct SettingsScene: View {
 
 private struct GeneralPreferencesView: View {
     @Environment(Preferences.self) private var preferences
+    @AppStorage("editor.draftRecoveryEnabled") private var draftRecoveryEnabled = true
     @State private var cliInstalled = CLIInstaller.isInstalled
     @State private var cliError: String?
     @State private var cliWorking = false
@@ -53,6 +55,12 @@ private struct GeneralPreferencesView: View {
                 Text("Restore reopens the last folder and tabs. Start Empty opens a blank workspace, while still remembering the last session for when restore is enabled again.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            Section("Draft Recovery") {
+                Toggle("Keep local recovery copies of unsaved changes", isOn: $draftRecoveryEnabled)
+                Text("Includes untitled files. Keeps up to 20 drafts for 14 days, up to 2 MB each and 20 MB total. Recovery never overwrites a file automatically.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Section("Command-Line Tool") {
                 HStack(alignment: .firstTextBaseline) {
@@ -160,6 +168,7 @@ private struct GeneralPreferencesView: View {
 // MARK: - Appearance
 
 private struct AppearancePreferencesView: View {
+    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
     @Environment(Preferences.self) private var preferences
     @Environment(ThemeStore.self) private var themeStore
     @State private var importError: String?
@@ -204,6 +213,23 @@ private struct AppearancePreferencesView: View {
                 Text("Monospaced fonts installed on this Mac. Pick the face you want the editor to render code in.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            }
+            Section("Editor Background") {
+                Picker("Vibrancy", selection: $prefs.editorVibrancy) {
+                    ForEach(EditorVibrancy.allCases) { mode in
+                        Text(mode.title).tag(mode)
+                    }
+                }
+                .pickerStyle(.segmented)
+                Text("Softly blur the desktop behind the editor while keeping code sharp. Your color theme stays in place; changes apply immediately.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                if prefs.editorVibrancy != .off, reduceTransparency || prefs.resolvedPerformanceMode == .lowPower {
+                    Label(reduceTransparency
+                          ? "Paused because Reduce Transparency is enabled in macOS."
+                          : "Paused in Low Power mode to reduce graphics work.", systemImage: "pause.circle")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             Section("Editor Chrome") {
                 Toggle("Show minimap", isOn: $prefs.showMinimap)

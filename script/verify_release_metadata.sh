@@ -18,8 +18,11 @@ fail() {
 
 [[ "$PROJECT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-beta\.[0-9]+)?$ ]] \
   || fail "MARKETING_VERSION '$PROJECT_VERSION' is not a supported semantic version"
-[[ "$PROJECT_BUILD" =~ ^[1-9][0-9]*$ ]] \
-  || fail "CURRENT_PROJECT_VERSION '$PROJECT_BUILD' must be a positive integer"
+[[ "$PROJECT_BUILD" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}){0,2}$ ]] \
+  || fail "CURRENT_PROJECT_VERSION '$PROJECT_BUILD' must be a numeric CFBundleVersion"
+EXPECTED_PROJECT_BUILD="$(./script/release_build_number.sh "$PROJECT_VERSION")"
+[[ "$PROJECT_BUILD" == "$EXPECTED_PROJECT_BUILD" ]] \
+  || fail "project build '$PROJECT_BUILD' must match '$EXPECTED_PROJECT_BUILD' for $PROJECT_VERSION"
 [[ "$NOTES_VERSION" == "$PROJECT_VERSION" ]] \
   || fail "top release-notes version '$NOTES_VERSION' does not match project version '$PROJECT_VERSION'"
 # The in-app What's New highlights must be refreshed for the release: its
@@ -34,8 +37,8 @@ fail() {
 if [[ -n "${BRISKEDIT_VERSION:-}" && "$BRISKEDIT_VERSION" != "$PROJECT_VERSION" ]]; then
   fail "requested version '$BRISKEDIT_VERSION' does not match project version '$PROJECT_VERSION'"
 fi
-if [[ -n "${BRISKEDIT_BUILD:-}" && ! "$BRISKEDIT_BUILD" =~ ^[1-9][0-9]*$ ]]; then
-  fail "release build '$BRISKEDIT_BUILD' must be a positive integer"
+if [[ -n "${BRISKEDIT_BUILD:-}" && ! "$BRISKEDIT_BUILD" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}){0,2}$ ]]; then
+  fail "release build '$BRISKEDIT_BUILD' must be a numeric CFBundleVersion"
 fi
 if [[ -n "${BRISKEDIT_RELEASE_TAG:-}" && "$BRISKEDIT_RELEASE_TAG" != "v$PROJECT_VERSION" ]]; then
   fail "release tag '$BRISKEDIT_RELEASE_TAG' must equal 'v$PROJECT_VERSION'"

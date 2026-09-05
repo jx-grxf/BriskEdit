@@ -58,6 +58,7 @@ struct FileFinderView: View {
     @Bindable var workspace: WorkspaceModel
     @State private var query: String = ""
     @State private var allFiles: [URL] = []
+    @State private var candidates: [FileSearchCandidate] = []
     @State private var displayedResults: [URL] = []
     @State private var selection: URL?
     @State private var searchTask: Task<Void, Never>?
@@ -80,8 +81,9 @@ struct FileFinderView: View {
                         openSelection()
                     } label: {
                         HStack(spacing: 8) {
-                            Image(systemName: FileNode(url: url, isDirectory: false).language.iconName)
-                                .foregroundStyle(.secondary)
+                            FileTypeIcon(url: url, isDirectory: false,
+                                         language: FileNode(url: url, isDirectory: false).language,
+                                         size: 16)
                                 .frame(width: 18)
                             Text(url.lastPathComponent)
                             Spacer()
@@ -102,6 +104,15 @@ struct FileFinderView: View {
         .frame(width: 560)
         .task {
             allFiles = await workspace.collectWorkspaceFiles()
+            // Build candidates (incl. relative paths) once; per-keystroke work
+            // below only scores them.
+            candidates = allFiles.map { url in
+                FileSearchCandidate(
+                    url: url,
+                    name: url.lastPathComponent,
+                    relativePath: workspace.relativePath(of: url)
+                )
+            }
             updateResults()
             fieldFocused = true
         }
@@ -122,13 +133,7 @@ struct FileFinderView: View {
     private func updateResults() {
         searchTask?.cancel()
         let querySnapshot = query
-        let candidates = allFiles.map { url in
-            FileSearchCandidate(
-                url: url,
-                name: url.lastPathComponent,
-                relativePath: workspace.relativePath(of: url)
-            )
-        }
+        let candidates = candidates
         searchTask = Task {
             let matches = await Task.detached(priority: .userInitiated) {
                 FileSearch.search(query: querySnapshot, candidates: candidates)

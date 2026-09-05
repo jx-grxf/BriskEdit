@@ -35,7 +35,8 @@ unzip -tq "$ZIP" >/dev/null
   "$BRISKEDIT_UPDATE_CHANNEL" \
   "$BRISKEDIT_VERSION" \
   "$BRISKEDIT_BUILD" \
-  "$ZIP"
+  "$ZIP" \
+  "$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "$INFO")"
 
 if [[ "${BRISKEDIT_NOTARY_ENABLED:-}" == "true" ]]; then
   xcrun stapler validate "$DMG"

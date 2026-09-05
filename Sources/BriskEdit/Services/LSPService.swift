@@ -1,4 +1,20 @@
 import Foundation
+import os
+
+private struct LSPDocumentKey: Hashable {
+    let uri: String
+}
+
+private struct LSPDocumentOwnership {
+    var owners: [LSPDocumentKey: Set<UUID>] = [:]
+    var uriByOwner: [UUID: String] = [:]
+}
+
+private let lspDocumentOwnership = OSAllocatedUnfairLock(initialState: LSPDocumentOwnership())
+
+private func isLSPDocumentRetained(uri: String) -> Bool {
+    lspDocumentOwnership.withLock { $0.owners[LSPDocumentKey(uri: uri)]?.isEmpty == false }
+}
 
 /// Delivers live LSP `publishDiagnostics` to whichever editor owns a document
 /// URI. The editor coordinator registers a handler for its file; the LSP actor
@@ -6,18 +22,24 @@ import Foundation
 @MainActor
 final class LSPDiagnosticsBus {
     static let shared = LSPDiagnosticsBus()
-    private var handlers: [String: ([Diagnostic]) -> Void] = [:]
+    private var handlers: [String: [UUID: ([Diagnostic]) -> Void]] = [:]
 
-    func setHandler(uri: String, _ handler: @escaping ([Diagnostic]) -> Void) {
-        handlers[uri] = handler
+    func subscribe(uri: String, _ handler: @escaping ([Diagnostic]) -> Void) -> UUID {
+        let token = UUID()
+        handlers[uri, default: [:]][token] = handler
+        return token
     }
 
-    func removeHandler(uri: String) {
-        handlers[uri] = nil
+    func unsubscribe(uri: String, token: UUID) {
+        handlers[uri]?[token] = nil
+        if handlers[uri]?.isEmpty == true { handlers[uri] = nil }
     }
 
     func deliver(uri: String, diagnostics: [Diagnostic]) {
-        handlers[uri]?(diagnostics)
+        guard let uriHandlers = handlers[uri] else { return }
+        for handler in uriHandlers.values {
+            handler(diagnostics)
+        }
     }
 }
 
@@ -58,6 +80,8 @@ struct LSPCompletion: Sendable, Equatable {
     let label: String
     let detail: String?
     let kind: Int
+    let insertionText: String
+    let filterText: String
 }
 
 /// Signature-help results returned by a language server or synthesized from the
@@ -125,6 +149,7 @@ struct LSPToolStatus: Sendable, Equatable {
 actor LSPService {
     static let shared = LSPService()
     private static let maximumDocumentBytes = 8 * 1024 * 1024
+    private static let maximumLiveServers = 8
 
     struct ServerConfig {
         let id: String
@@ -178,19 +203,42 @@ actor LSPService {
         }
     }
 
+    /// Memoized tool probes keyed by server id: resolving an executable spawns
+    /// a login shell (100–500 ms), which used to run on every tab switch and
+    /// language change. PATH won't meaningfully change mid-session, so entries
+    /// live for the whole app run.
+    private struct ToolStatusCache {
+        var statuses: [String: LSPToolStatus] = [:]
+        var tasks: [String: Task<LSPToolStatus, Never>] = [:]
+    }
+
+    private static let statusCache = OSAllocatedUnfairLock(initialState: ToolStatusCache())
+
     static func toolStatus(for language: SourceLanguage) async -> LSPToolStatus {
         guard let config = config(for: language) else { return .unsupported }
-        let path = await Task.detached(priority: .utility) {
-            resolveExecutablePath(for: config)
-        }.value
-        if let path {
+        if let cached = statusCache.withLock({ $0.statuses[config.id] }) {
+            return cached
+        }
+        if let inFlight = statusCache.withLock({ $0.tasks[config.id] }) {
+            return await inFlight.value
+        }
+        let task = Task.detached(priority: .utility) { () -> LSPToolStatus in
+            guard let path = resolveExecutablePath(for: config) else {
+                return LSPToolStatus(
+                    state: .missing,
+                    serverName: config.displayName,
+                    detail: "\(config.displayName) was not found on PATH"
+                )
+            }
             return LSPToolStatus(state: .available, serverName: config.displayName, detail: path)
         }
-        return LSPToolStatus(
-            state: .missing,
-            serverName: config.displayName,
-            detail: "\(config.displayName) was not found on PATH"
-        )
+        statusCache.withLock { $0.tasks[config.id] = task }
+        let status = await task.value
+        statusCache.withLock {
+            $0.statuses[config.id] = status
+            $0.tasks[config.id] = nil
+        }
+        return status
     }
 
     private struct ServerKey: Hashable {
@@ -199,18 +247,54 @@ actor LSPService {
     }
 
     private var servers: [ServerKey: Server] = [:]
+    private var lastUsed: [ServerKey: ContinuousClock.Instant] = [:]
     /// In-flight cold starts, keyed like `servers`. When a file opens, the
     /// outline, diagnostics, and completion all call `ensureServer` at once; the
     /// loser of that race used to get a not-yet-initialized server back as `nil`
     /// (empty outline until a manual refresh). Concurrent callers now await the
     /// same start task instead.
     private var startTasks: [ServerKey: Task<Server?, Never>] = [:]
+    private struct StartFailure {
+        var attempts: Int
+        var retryAt: ContinuousClock.Instant
+    }
+    private var startFailures: [ServerKey: StartFailure] = [:]
+
+    /// Registers the tab synchronously, before its editor can launch async LSP
+    /// work. This lets later requests reject tasks belonging to already-closed
+    /// tabs instead of reopening a document after `didClose`.
+    nonisolated static func retainDocument(owner: UUID, language: SourceLanguage, uri: String) {
+        let key = LSPDocumentKey(uri: uri)
+        let orphanedURI = lspDocumentOwnership.withLock { ownership -> String? in
+            let previousURI = ownership.uriByOwner.updateValue(uri, forKey: owner)
+            guard let previousURI, previousURI != uri else {
+                ownership.owners[key, default: []].insert(owner)
+                return nil
+            }
+            let previousKey = LSPDocumentKey(uri: previousURI)
+            ownership.owners[previousKey]?.remove(owner)
+            let orphaned = ownership.owners[previousKey]?.isEmpty == true
+            if orphaned { ownership.owners[previousKey] = nil }
+            ownership.owners[key, default: []].insert(owner)
+            return orphaned ? previousURI : nil
+        }
+        if let orphanedURI {
+            Task { await LSPService.shared.closeDocumentIfUnowned(uri: orphanedURI) }
+        }
+    }
+
+    private nonisolated static func isDocumentRetained(language: SourceLanguage, uri: String) -> Bool {
+        let key = LSPDocumentKey(uri: uri)
+        return lspDocumentOwnership.withLock { $0.owners[key]?.isEmpty == false }
+    }
 
     /// Returns semantic completions for the position, syncing the buffer first.
     func completions(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> [LSPCompletion] {
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return [] }
         guard text.utf8.count <= Self.maximumDocumentBytes else { return [] }
         guard let config = Self.config(for: language) else { return [] }
         guard let server = await ensureServer(config, root: root) else { return [] }
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return [] }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
         let params: [String: Any] = [
             "textDocument": ["uri": uri],
@@ -224,8 +308,10 @@ actor LSPService {
 
     /// Symbol tree for the outline (`textDocument/documentSymbol`).
     func documentSymbols(language: SourceLanguage, uri: String, text: String, root: String?) async -> [LSPSymbol] {
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return [] }
         guard text.utf8.count <= Self.maximumDocumentBytes else { return [] }
         guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return [] }
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return [] }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
         // A freshly-started server builds the file's AST (and its system-header
         // preamble) asynchronously, so the first documentSymbol request can time
@@ -249,8 +335,10 @@ actor LSPService {
 
     /// Resolves the definition of the symbol at a position (`textDocument/definition`).
     func definition(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> LSPLocation? {
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return nil }
         guard text.utf8.count <= Self.maximumDocumentBytes else { return nil }
         guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return nil }
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return nil }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
         let params: [String: Any] = ["textDocument": ["uri": uri], "position": ["line": line, "character": character]]
         guard let data = await server.request(method: "textDocument/definition", params: params),
@@ -260,8 +348,10 @@ actor LSPService {
 
     /// Hover documentation/type for the symbol at a position (`textDocument/hover`).
     func hover(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> String? {
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return nil }
         guard text.utf8.count <= Self.maximumDocumentBytes else { return nil }
         guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return nil }
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return nil }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
         let params: [String: Any] = ["textDocument": ["uri": uri], "position": ["line": line, "character": character]]
         guard let data = await server.request(method: "textDocument/hover", params: params),
@@ -272,7 +362,9 @@ actor LSPService {
     /// Returns the signature(s) of the call being typed at the position
     /// (`textDocument/signatureHelp`), with the active parameter resolved.
     func signatureHelp(language: SourceLanguage, uri: String, text: String, line: Int, character: Int, root: String?) async -> LSPSignatureHelp? {
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return nil }
         guard let config = Self.config(for: language), let server = await ensureServer(config, root: root) else { return nil }
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return nil }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
         let params: [String: Any] = ["textDocument": ["uri": uri], "position": ["line": line, "character": character]]
         guard let data = await server.request(method: "textDocument/signatureHelp", params: params),
@@ -283,19 +375,91 @@ actor LSPService {
     /// Opens (or refreshes) a document so the server starts emitting diagnostics
     /// without waiting for a completion request.
     func openDocument(language: SourceLanguage, uri: String, text: String, root: String?) async {
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return }
         guard text.utf8.count <= Self.maximumDocumentBytes else { return }
         guard let config = Self.config(for: language) else { return }
         guard let server = await ensureServer(config, root: root) else { return }
+        guard Self.isDocumentRetained(language: language, uri: uri) else { return }
         await server.sync(uri: uri, languageId: config.languageId, text: text)
     }
 
     /// Tells the server a document was closed (tab closed) so it drops the
     /// buffer and stops emitting diagnostics for it.
-    func didClose(language: SourceLanguage, uri: String) async {
-        guard let config = Self.config(for: language) else { return }
-        for (key, server) in servers where key.id == config.id {
-            await server.close(uri: uri)
+    func releaseDocument(owner: UUID, language: SourceLanguage, uri: String) async {
+        let key = LSPDocumentKey(uri: uri)
+        let isLastOwner = lspDocumentOwnership.withLock { ownership in
+            ownership.owners[key]?.remove(owner)
+            if ownership.uriByOwner[owner] == uri { ownership.uriByOwner[owner] = nil }
+            if ownership.owners[key]?.isEmpty == true {
+                ownership.owners[key] = nil
+                return true
+            }
+            return false
         }
+        guard isLastOwner else { return }
+        for server in servers.values { await server.closeIfUnowned(uri: uri) }
+    }
+
+    private func closeDocumentIfUnowned(uri: String) async {
+        guard !isLSPDocumentRetained(uri: uri) else { return }
+        for server in servers.values { await server.closeIfUnowned(uri: uri) }
+    }
+
+    nonisolated static func documentOwnerCount(uri: String) -> Int {
+        lspDocumentOwnership.withLock { $0.owners[LSPDocumentKey(uri: uri)]?.count ?? 0 }
+    }
+
+    /// Compatibility for editor identity transitions. Ownership belongs to the
+    /// tab, so an editor teardown must not close a URI another window still owns.
+    func didClose(language: SourceLanguage, uri: String) async {
+        guard !Self.isDocumentRetained(language: language, uri: uri) else { return }
+        for server in servers.values { await server.closeIfUnowned(uri: uri) }
+    }
+
+    enum FeatureError: LocalizedError, Sendable {
+        case unsupported(String)
+        case serverUnavailable(String)
+        case requestFailed(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .unsupported(let feature): "The language server does not support \(feature)."
+            case .serverUnavailable(let name): "\(name) is unavailable."
+            case .requestFailed(let feature): "The language server could not complete \(feature)."
+            }
+        }
+    }
+
+    func references(language: SourceLanguage, uri: String, text: String, line: Int,
+                    character: Int, root: String?) async throws -> [LSPLocation] {
+        guard Self.isDocumentRetained(language: language, uri: uri) else {
+            throw FeatureError.requestFailed("Find References")
+        }
+        guard text.utf8.count <= Self.maximumDocumentBytes,
+              let config = Self.config(for: language) else {
+            throw FeatureError.unsupported("Find References")
+        }
+        guard let server = await ensureServer(config, root: root) else {
+            throw FeatureError.serverUnavailable(config.displayName)
+        }
+        guard Self.isDocumentRetained(language: language, uri: uri) else {
+            throw FeatureError.requestFailed("Find References")
+        }
+        guard await server.supportsReferences else {
+            throw FeatureError.unsupported("Find References")
+        }
+        await server.sync(uri: uri, languageId: config.languageId, text: text)
+        let params: [String: Any] = [
+            "textDocument": ["uri": uri],
+            "position": ["line": line, "character": character],
+            "context": ["includeDeclaration": true]
+        ]
+        guard let data = await server.request(method: "textDocument/references", params: params),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              json["error"] == nil else {
+            throw FeatureError.requestFailed("Find References")
+        }
+        return Self.parseLocations(json["result"])
     }
 
     /// Shuts every running server down (LSP `shutdown`/`exit`, then terminate).
@@ -303,19 +467,46 @@ actor LSPService {
     func shutdownAll() async {
         let running = Array(servers.values)
         servers.removeAll()
+        lastUsed.removeAll()
+        startFailures.removeAll()
         for server in running {
             await server.shutdown()
+        }
+    }
+
+    /// Shuts down least-recently-used servers beyond the live cap so workspace
+    /// switches don't accumulate processes. Servers still holding open documents
+    /// are never evicted.
+    private func evictStaleServers(keeping protectedKeys: Set<ServerKey>) async {
+        guard servers.count > Self.maximumLiveServers else { return }
+        let excess = servers.count - Self.maximumLiveServers
+        var candidates: [(key: ServerKey, lastUsed: ContinuousClock.Instant)] = []
+        for (key, server) in servers where !protectedKeys.contains(key) {
+            if await server.hasOpenDocuments { continue }
+            candidates.append((key, lastUsed[key] ?? .now))
+        }
+        for (key, _) in candidates.sorted(by: { $0.lastUsed < $1.lastUsed }).prefix(excess) {
+            if let server = servers.removeValue(forKey: key) {
+                lastUsed[key] = nil
+                await server.shutdown()
+            }
         }
     }
 
     private func ensureServer(_ config: ServerConfig, root: String?) async -> Server? {
         let key = ServerKey(id: config.id, rootURI: Self.rootURI(for: root))
         if let existing = servers[key] {
-            if await existing.isUsable { return existing }
+            if await existing.isUsable {
+                lastUsed[key] = .now
+                await evictStaleServers(keeping: [key])
+                return existing
+            }
             await existing.shutdown()
             servers[key] = nil
+            lastUsed[key] = nil
         }
         if let inFlight = startTasks[key] { return await inFlight.value }
+        if let failure = startFailures[key], ContinuousClock.now < failure.retryAt { return nil }
 
         let task = Task<Server?, Never> {
             let server = Server(config: config)
@@ -330,7 +521,16 @@ actor LSPService {
         // other call can observe a half-cleared state.
         let server = await task.value
         startTasks[key] = nil
-        if let server { servers[key] = server }
+        if let server {
+            startFailures[key] = nil
+            servers[key] = server
+            lastUsed[key] = .now
+            await evictStaleServers(keeping: [key])
+        } else {
+            let attempts = min((startFailures[key]?.attempts ?? 0) + 1, 6)
+            let delay = min(60, 2 << (attempts - 1))
+            startFailures[key] = StartFailure(attempts: attempts, retryAt: .now + .seconds(delay))
+        }
         return server
     }
 
@@ -340,7 +540,7 @@ actor LSPService {
 
     // MARK: - Completion parsing
 
-    private static func parseCompletions(_ result: Any?) -> [LSPCompletion] {
+    static func parseCompletions(_ result: Any?) -> [LSPCompletion] {
         let items: [[String: Any]]
         if let dict = result as? [String: Any], let list = dict["items"] as? [[String: Any]] {
             items = list
@@ -357,16 +557,22 @@ actor LSPService {
         var seen = Set<String>()
         var completions: [LSPCompletion] = []
         for item in ranked {
-            let raw = (item["insertText"] as? String) ?? (item["label"] as? String) ?? ""
-            let symbol = raw.prefix { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "#" }
-            let token = symbol.isEmpty ? raw.trimmingCharacters(in: .whitespaces) : String(symbol)
-            guard !token.isEmpty, seen.insert(token).inserted else { continue }
+            guard let label = item["label"] as? String, !label.isEmpty else { continue }
+            let textEdit = item["textEdit"] as? [String: Any]
+            let insertionText = (textEdit?["newText"] as? String)
+                ?? (item["insertText"] as? String)
+                ?? label
+            let filterText = (item["filterText"] as? String) ?? label
             // `detail` is clangd's signature/type; `labelDetails.detail` is its
             // newer home. Fall back across both.
             let detail = (item["detail"] as? String)
                 ?? ((item["labelDetails"] as? [String: Any])?["detail"] as? String)
             let kind = (item["kind"] as? Int) ?? 1
-            completions.append(LSPCompletion(label: token, detail: detail?.trimmingCharacters(in: .whitespaces), kind: kind))
+            let normalizedDetail = detail?.trimmingCharacters(in: .whitespaces)
+            let identity = "\(label)\u{1F}\(normalizedDetail ?? "")\u{1F}\(insertionText)"
+            guard seen.insert(identity).inserted else { continue }
+            completions.append(LSPCompletion(label: label, detail: normalizedDetail, kind: kind,
+                                             insertionText: insertionText, filterText: filterText))
         }
         return completions
     }
@@ -404,6 +610,11 @@ actor LSPService {
         if let dict = result as? [String: Any] { return from(dict) }
         if let arr = result as? [[String: Any]], let first = arr.first { return from(first) }
         return nil
+    }
+
+    static func parseLocations(_ result: Any?) -> [LSPLocation] {
+        guard let entries = result as? [[String: Any]] else { return [] }
+        return entries.compactMap { parseLocation($0) }
     }
 
     private static func parseHover(_ result: Any?) -> String? {
@@ -496,12 +707,15 @@ private actor Server {
     private static let maximumHeaderBytes = 8 * 1024
     private static let maximumMessageBytes = 8 * 1024 * 1024
     private static let maximumInboxBytes = maximumHeaderBytes + maximumMessageBytes
+    private static let requestTimeoutSeconds: Double = 5
+    private static let initializationTimeoutSeconds: Double = 30
     private let config: LSPService.ServerConfig
     private var process: Process?
     private var stdin: FileHandle?
     private var outHandle: FileHandle?
     private var failed = false
     var initialized = false
+    private(set) var supportsReferences = false
 
     private var nextId = 1
     private var pending: [Int: CheckedContinuation<Data?, Never>] = [:]
@@ -520,6 +734,10 @@ private actor Server {
 
     var isUsable: Bool {
         initialized && !failed && process?.isRunning == true
+    }
+
+    var hasOpenDocuments: Bool {
+        !openVersions.isEmpty
     }
 
     init(config: LSPService.ServerConfig) {
@@ -552,9 +770,17 @@ private actor Server {
                 await self?.ingest(chunk)
             }
         }
-        outPipe.fileHandleForReading.readabilityHandler = { handle in
+        outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
-            guard !data.isEmpty else { return }
+            guard !data.isEmpty else {
+                // EOF means the server process died; an installed handler would
+                // otherwise spin on empty reads forever. Same teardown as
+                // `shutdown()`, plus a failure mark so `ensureServer` restarts.
+                handle.readabilityHandler = nil
+                continuation.finish()
+                Task { await self?.streamEnded() }
+                return
+            }
             continuation.yield(data)
         }
 
@@ -579,10 +805,20 @@ private actor Server {
                 ]
             ]
         ]
-        guard await request(method: "initialize", params: initParams) != nil else {
+        guard let initializeData = await request(method: "initialize", params: initParams,
+                                                 timeoutSeconds: Self.initializationTimeoutSeconds) else {
             failed = true
             await shutdown()
             return false
+        }
+        if let response = try? JSONSerialization.jsonObject(with: initializeData) as? [String: Any],
+           let result = response["result"] as? [String: Any],
+           let capabilities = result["capabilities"] as? [String: Any] {
+            if let supported = capabilities["referencesProvider"] as? Bool {
+                supportsReferences = supported
+            } else {
+                supportsReferences = capabilities["referencesProvider"] is [String: Any]
+            }
         }
         notify(method: "initialized", params: [:])
         initialized = true
@@ -618,6 +854,22 @@ private actor Server {
         ])
     }
 
+    /// Rechecks global ownership on this actor immediately before mutating the
+    /// server's open-document state. A tab may be reopened while LSPService is
+    /// suspended between closing documents on different servers.
+    func closeIfUnowned(uri: String) {
+        guard !isLSPDocumentRetained(uri: uri) else { return }
+        close(uri: uri)
+    }
+
+    /// EOF arrived on stdout (the server process died). Drops the read handler,
+    /// fails in-flight requests, and marks the server failed so `ensureServer`
+    /// starts a fresh one on next use.
+    func streamEnded() {
+        outHandle?.readabilityHandler = nil
+        markFailed()
+    }
+
     /// Gracefully stops the server: LSP `shutdown` + `exit`, drop the read
     /// handler, terminate the process. Resilient to a half-started server.
     func shutdown() async {
@@ -643,7 +895,8 @@ private actor Server {
 
     // MARK: - JSON-RPC
 
-    func request(method: String, params: [String: Any]) async -> Data? {
+    func request(method: String, params: [String: Any],
+                 timeoutSeconds: Double = Server.requestTimeoutSeconds) async -> Data? {
         let id = nextId
         nextId += 1
         let message: [String: Any] = ["jsonrpc": "2.0", "id": id, "method": method, "params": params]
@@ -656,7 +909,7 @@ private actor Server {
                 return
             }
             timeoutTasks[id] = Task {
-                try? await Task.sleep(for: .seconds(5))
+                try? await Task.sleep(for: .seconds(timeoutSeconds))
                 self.timeout(id: id)
             }
         }

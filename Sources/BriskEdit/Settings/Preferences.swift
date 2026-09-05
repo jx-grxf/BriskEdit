@@ -115,6 +115,10 @@ final class Preferences {
     var themeID: String {
         didSet { persist() }
     }
+    var editorVibrancy: EditorVibrancy {
+        didSet { persist() }
+    }
+    @ObservationIgnored private let defaults: UserDefaults
     /// Run an installed external formatter (clang-format, swift-format, gofmt,
     /// prettier, …) over the buffer right before each save. Off by default.
     var formatOnSave: Bool {
@@ -199,8 +203,8 @@ final class Preferences {
         didSet { persist() }
     }
 
-    init() {
-        let defaults = UserDefaults.standard
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
         self.startupBehavior = StartupBehavior(rawValue: defaults.string(forKey: Keys.startupBehavior) ?? "") ?? .restoreLastWorkspace
         self.performanceMode = PerformanceMode(rawValue: defaults.string(forKey: Keys.performanceMode) ?? "") ?? .adaptive
         self.fontSize = CGFloat(defaults.double(forKey: Keys.fontSize).nonZero ?? 13)
@@ -208,6 +212,7 @@ final class Preferences {
         self.tabWidth = defaults.integer(forKey: Keys.tabWidth).nonZero ?? 4
         self.usesSpacesForTabs = defaults.object(forKey: Keys.usesSpacesForTabs) as? Bool ?? true
         self.themeID = defaults.string(forKey: Keys.themeID) ?? "system"
+        self.editorVibrancy = EditorVibrancy(rawValue: defaults.string(forKey: Keys.editorVibrancy) ?? "") ?? .off
         self.formatOnSave = defaults.bool(forKey: Keys.formatOnSave)
         self.showGitGutter = defaults.object(forKey: Keys.showGitGutter) as? Bool ?? true
         self.showCodeFolding = defaults.object(forKey: Keys.showCodeFolding) as? Bool ?? true
@@ -319,12 +324,12 @@ final class Preferences {
             tabWidth: tabWidth,
             usesSpacesForTabs: usesSpacesForTabs,
             showGitGutter: effectiveShowGitGutter,
-            showCodeFolding: showCodeFolding
+            showCodeFolding: showCodeFolding,
+            vibrancy: editorVibrancy.resolved(reduceTransparency: false, lowPower: resolvedPerformanceMode == .lowPower)
         )
     }
 
     private func persist() {
-        let defaults = UserDefaults.standard
         defaults.set(startupBehavior.rawValue, forKey: Keys.startupBehavior)
         defaults.set(performanceMode.rawValue, forKey: Keys.performanceMode)
         defaults.set(Double(fontSize), forKey: Keys.fontSize)
@@ -332,6 +337,7 @@ final class Preferences {
         defaults.set(tabWidth, forKey: Keys.tabWidth)
         defaults.set(usesSpacesForTabs, forKey: Keys.usesSpacesForTabs)
         defaults.set(themeID, forKey: Keys.themeID)
+        defaults.set(editorVibrancy.rawValue, forKey: Keys.editorVibrancy)
         defaults.set(formatOnSave, forKey: Keys.formatOnSave)
         defaults.set(showGitGutter, forKey: Keys.showGitGutter)
         defaults.set(showCodeFolding, forKey: Keys.showCodeFolding)
@@ -358,6 +364,7 @@ final class Preferences {
         static let tabWidth = "editor.tabWidth"
         static let usesSpacesForTabs = "editor.usesSpacesForTabs"
         static let themeID = "editor.themeID"
+        static let editorVibrancy = "editor.vibrancy"
         static let formatOnSave = "editor.formatOnSave"
         static let showGitGutter = "editor.showGitGutter"
         static let showCodeFolding = "editor.showCodeFolding"
