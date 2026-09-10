@@ -55,7 +55,7 @@ The point is the absence of bloat. No telemetry, no account, no LSP extension ma
 3. Launch from Applications or `open -a BriskEdit`.
 4. Published releases are Developer ID signed and notarized. Local ad-hoc previews have a different trust identity.
 
-Version 0.6.0 requires macOS 15 or newer; the currently published 0.5.2 release requires macOS 26. No account, no cloud sync, no analytics, no backend.
+BriskEdit requires macOS 15 or newer; Liquid Glass surfaces need macOS 26. No account, no cloud sync, no analytics, no backend.
 
 ## How `Run` works
 
@@ -107,7 +107,7 @@ Run convenience:
 To package a local DMG:
 
 ```bash
-BRISKEDIT_VERSION=0.6.0 ./script/package_dmg.sh
+BRISKEDIT_VERSION=0.6.1 ./script/package_dmg.sh
 ```
 
 ## Release pipeline
@@ -119,8 +119,9 @@ Distribution roadmap:
 - Developer ID signing and notarization shipped with 0.5.2.
 - Homebrew Cask submission after the first notarized release.
 
-## New in the 0.6.0 source tree
+## New in 0.6
 
+- A redesigned Liquid Glass app icon that follows the Dark, Tinted, and Clear icon styles (0.6.1).
 - Recover unsaved drafts, including untitled files, as safe copies after unexpected exits.
 - Compare editor content with disk; review staged and unstaged Git diffs.
 - Find References through installed language servers.
