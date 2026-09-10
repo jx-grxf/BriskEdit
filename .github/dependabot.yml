@@ -1,7 +1,9 @@
 version: 2
+# Updates land on dev like any other change and reach main with the next release.
 updates:
   - package-ecosystem: "swift"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
@@ -15,6 +17,7 @@ updates:
           - "patch"
   - package-ecosystem: "github-actions"
     directory: "/"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
@@ -27,6 +30,7 @@ updates:
           - "*"
   - package-ecosystem: "npm"
     directory: "/promo"
+    target-branch: "dev"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5

@@ -12,7 +12,7 @@ A native macOS text editor for developers. Built in SwiftUI and AppKit, not Elec
 ![Swift](https://img.shields.io/badge/swift-6.0-orange)
 ![License](https://img.shields.io/badge/license-MIT-blue)
 
-[Download](https://github.com/jx-grxf/BriskEdit/releases/latest) · [Architecture](ARCHITECTURE.md) · [Release runbook](docs/release.md) · [Security](SECURITY.md) · [Roadmap](#roadmap)
+[Download](https://github.com/jx-grxf/BriskEdit/releases/latest) · [Nightly](https://github.com/jx-grxf/BriskEdit/releases/tag/nightly) · [Architecture](ARCHITECTURE.md) · [Release runbook](docs/release.md) · [Security](SECURITY.md) · [Roadmap](#roadmap)
 
 </div>
 
@@ -57,6 +57,16 @@ The point is the absence of bloat. No telemetry, no account, no LSP extension ma
 
 BriskEdit requires macOS 15 or newer; Liquid Glass surfaces need macOS 26. No account, no cloud sync, no analytics, no backend.
 
+### Release channels
+
+| Channel | For | Get it | Updates |
+|---|---|---|---|
+| **Stable** | Everyday work | [`BriskEdit-<version>.dmg`](https://github.com/jx-grxf/BriskEdit/releases/latest) | New stable releases |
+| **Beta** | Trying the next release early | Settings → Updates → Beta, or a `vX.Y.Z-beta.N` prerelease | Betas and newer stable releases |
+| **Nightly** | The newest changes from `dev` | [`BriskEdit-Nightly.dmg`](https://github.com/jx-grxf/BriskEdit/releases/download/nightly/BriskEdit-Nightly.dmg) | A new build shortly after every change on `dev` |
+
+Stable and Beta are the same app; switching the channel in Settings never downgrades. **BriskEdit Nightly** is a separate app with a violet icon that installs next to BriskEdit. It keeps its own settings, drafts and shell command (`briskedit-nightly`, `brisk-nightly`), downloads updates in the background and installs them when you quit. Nightly builds are signed and notarized like releases, but they are not release-tested and can break, so keep a stable BriskEdit around for important work.
+
 ## How `Run` works
 
 The Run button reads the active document's language and walks a static toolchain table:
@@ -81,7 +91,7 @@ The toolchain discovery and exec live in `RunService`. The Run button only ever 
 - No telemetry, no analytics, no remote evaluation.
 - `Run` never executes on file save or autocomplete — only on the explicit button or `⌘R`.
 - The integrated terminal runs the local shell and its configured environment.
-- Workspace state and recent files use local app preferences. Recovery copies live in `~/Library/Application Support/BriskEdit/Drafts`.
+- Workspace state and recent files use local app preferences. Recovery copies live in `~/Library/Application Support/BriskEdit/Drafts` (BriskEdit Nightly: `BriskEdit Nightly/Drafts`).
 
 ## Build from source
 
@@ -108,11 +118,16 @@ To package a local DMG:
 
 ```bash
 BRISKEDIT_VERSION=0.6.1 ./script/package_dmg.sh
+
+# The side-by-side nightly app (dist/BriskEdit Nightly.app, dist/BriskEdit-Nightly.dmg)
+BRISKEDIT_UPDATE_CHANNEL=nightly BRISKEDIT_BUILD=1 BRISKEDIT_VERSION=0.6.1-nightly.1 ./script/package_dmg.sh
 ```
 
 ## Release pipeline
 
-GitHub Actions builds tagged releases: app bundle, DMG, Sparkle ZIP and appcast, signature verification, notarization, and stapler validation. Full runbook in [docs/release.md](docs/release.md). Public release notes live in [RELEASE_NOTES.md](RELEASE_NOTES.md).
+Work lands on `dev` through pull requests, so open pull requests against `dev`. Every push to `dev` that passes CI publishes a new nightly. Releases merge `dev` into `main`, and a signed tag on `main` publishes a stable or beta release.
+
+GitHub Actions builds nightlies and tagged releases the same way: app bundle, DMG, Sparkle ZIP and appcast, Developer ID signing, notarization, stapler validation and signature verification. Full runbook in [docs/release.md](docs/release.md). Public release notes live in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
 Distribution roadmap:
 

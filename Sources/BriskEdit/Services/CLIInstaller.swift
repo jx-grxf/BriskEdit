@@ -25,9 +25,10 @@ enum CLIInstallerError: LocalizedError {
 /// common case needs no privileges at all. Only when nothing on `PATH` is
 /// writable do we fall back to a native admin prompt for `/usr/local/bin`.
 enum CLIInstaller {
-    static let bundleIdentifier = "com.johannesgrof.briskedit"
-    static let primaryCommandName = "briskedit"
-    static let aliasCommandName = "brisk"
+    /// The running app's identifier, so a nightly launcher opens the nightly app.
+    static let bundleIdentifier = Bundle.main.bundleIdentifier ?? "com.johannesgrof.briskedit"
+    static let primaryCommandName = AppDistribution.current.cliCommandNames.primary
+    static let aliasCommandName = AppDistribution.current.cliCommandNames.alias
     /// Privileged fallback location, used only when nothing on PATH is writable.
     static let fallbackSymlinkPath = "/usr/local/bin/\(primaryCommandName)"
 
@@ -37,7 +38,7 @@ enum CLIInstaller {
             .urls(for: .applicationSupportDirectory, in: .userDomainMask)
             .first ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Library/Application Support")
         return support
-            .appendingPathComponent("BriskEdit", isDirectory: true)
+            .appendingPathComponent(AppDistribution.current.supportDirectoryName, isDirectory: true)
             .appendingPathComponent(primaryCommandName)
     }
 
@@ -47,7 +48,7 @@ enum CLIInstaller {
     /// unit-testable without touching the filesystem.
     static let launcherScript = """
     #!/bin/bash
-    # BriskEdit command-line launcher — opens files and folders in BriskEdit.
+    # \(AppDistribution.current.displayName) command-line launcher — opens files and folders in \(AppDistribution.current.displayName).
     set -euo pipefail
     bundle_id="\(bundleIdentifier)"
     if [ "$#" -eq 0 ]; then
@@ -59,7 +60,7 @@ enum CLIInstaller {
         dir=$(cd "$(dirname "$arg")" >/dev/null 2>&1 && pwd)
         paths+=("$dir/$(basename "$arg")")
       else
-        echo "briskedit: no such file or directory: $arg" >&2
+        echo "\(primaryCommandName): no such file or directory: $arg" >&2
       fi
     done
     if [ "${#paths[@]}" -eq 0 ]; then

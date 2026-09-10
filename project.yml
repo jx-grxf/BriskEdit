@@ -25,6 +25,16 @@ settings:
     # the updater always starts and can verify downloaded releases. CI still
     # overrides it via BRISKEDIT_SPARKLE_PUBLIC_KEY (same value).
     BRISKEDIT_SPARKLE_PUBLIC_KEY: "17gHGJ4Uk9XDRql8JYoVK+RMPPlB+zPQDSOBNbyvs1k="
+    # App identity for release builds (stable and beta). script/package_dmg.sh
+    # overrides these for the side-by-side nightly app built from `dev`; see
+    # docs/release.md. Only the app target references them, so package targets
+    # keep their own bundle identifiers.
+    BRISKEDIT_DISTRIBUTION: release
+    BRISKEDIT_BUNDLE_IDENTIFIER: com.johannesgrof.briskedit
+    BRISKEDIT_DISPLAY_NAME: BriskEdit
+    BRISKEDIT_APP_ICON: AppIcon
+    BRISKEDIT_SPARKLE_FEED_URL: "https://github.com/jx-grxf/BriskEdit/releases/latest/download/appcast.xml"
+    BRISKEDIT_SOURCE_COMMIT: ""
 
 packages:
   Sparkle:
@@ -63,7 +73,7 @@ targets:
       - package: TreeSitterJSON
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: com.johannesgrof.briskedit
+        PRODUCT_BUNDLE_IDENTIFIER: "$(BRISKEDIT_BUNDLE_IDENTIFIER)"
         PRODUCT_NAME: BriskEdit
         # Generated Info.plist keys are merged on top of Config/Info.plist,
         # which carries the custom Sparkle keys (SUFeedURL, SUPublicEDKey,
@@ -72,9 +82,9 @@ targets:
         INFOPLIST_FILE: Config/Info.plist
         INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Johannes Grof"
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.developer-tools"
-        INFOPLIST_KEY_CFBundleDisplayName: BriskEdit
+        INFOPLIST_KEY_CFBundleDisplayName: "$(BRISKEDIT_DISPLAY_NAME)"
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
-        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_APPICON_NAME: "$(BRISKEDIT_APP_ICON)"
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: NO

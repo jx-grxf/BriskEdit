@@ -65,10 +65,10 @@ private struct GeneralPreferencesView: View {
             Section("Command-Line Tool") {
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
-                        Text("Shell command: `briskedit`")
+                        Text("Shell command: `\(CLIInstaller.primaryCommandName)`")
                         Text(cliInstalled
-                             ? "Installed. Run `briskedit .` to open a folder. The shorter `brisk` alias is added when that name is free."
-                             : "Install `briskedit` to open files and folders from the terminal without replacing existing commands.")
+                             ? "Installed. Run `\(CLIInstaller.primaryCommandName) .` to open a folder. The shorter `\(CLIInstaller.aliasCommandName)` alias is added when that name is free."
+                             : "Install `\(CLIInstaller.primaryCommandName)` to open files and folders from the terminal without replacing existing commands.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
@@ -488,6 +488,12 @@ private struct UpdatePreferencesView: View {
                     Text(Self.versionString)
                         .help(Self.buildHelp)
                 }
+                if let commit = AppDistribution.sourceCommit, let url = URL(string: "\(Self.repositoryURL)/commit/\(commit)") {
+                    LabeledContent("Commit") {
+                        Link(commit, destination: url)
+                            .font(.body.monospaced())
+                    }
+                }
                 if updates.isUpdateAvailable, let available = updates.availableUpdateVersion {
                     LabeledContent("Available") {
                         HStack(spacing: 6) {
@@ -497,21 +503,25 @@ private struct UpdatePreferencesView: View {
                     }
                 }
             }
-            Section("Channel") {
-                Picker("Update channel", selection: $updates.channel) {
-                    ForEach(UpdateService.Channel.allCases) { channel in
-                        Text(channel.displayName).tag(channel)
+            if updates.channel == .nightly {
+                NightlyUpdateSections(updates: updates)
+            } else {
+                Section("Channel") {
+                    Picker("Update channel", selection: $updates.channel) {
+                        ForEach(UpdateService.Channel.selectableChannels) { channel in
+                            Text(channel.displayName).tag(channel)
+                        }
                     }
+                    .pickerStyle(.segmented)
                 }
-                .pickerStyle(.segmented)
-            }
-            Section("Automatic checks") {
-                Toggle("Check for updates automatically", isOn: $updates.automaticallyChecksForUpdates)
-                Text("On by default — BriskEdit checks in the background and on launch. Turn this off to only check manually.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                if let date = updates.lastCheckDate {
-                    LabeledContent("Last check", value: date.formatted(date: .abbreviated, time: .shortened))
+                Section("Automatic checks") {
+                    Toggle("Check for updates automatically", isOn: $updates.automaticallyChecksForUpdates)
+                    Text("On by default — BriskEdit checks in the background and on launch. Turn this off to only check manually.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let date = updates.lastCheckDate {
+                        LabeledContent("Last check", value: date.formatted(date: .abbreviated, time: .shortened))
+                    }
                 }
             }
             Section {
@@ -523,6 +533,8 @@ private struct UpdatePreferencesView: View {
         .padding()
     }
 
+    fileprivate static let repositoryURL = "https://github.com/jx-grxf/BriskEdit"
+
     /// The marketing version ("0.6.0", "0.6.1-beta.1"). The build number is
     /// derived from it for Sparkle ordering (0.6.0 → 1006.0.99, see
     /// `script/release_build_number.sh`), so it only appears as a tooltip.
@@ -531,7 +543,60 @@ private struct UpdatePreferencesView: View {
     }
 
     private static var buildHelp: String {
-        "Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—")"
+        let build = "Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—")"
+        return AppDistribution.sourceCommit.map { "\(build) · Commit \($0)" } ?? build
+    }
+}
+
+/// Update settings for the separate nightly app: no channel switch, a faster
+/// check cadence and background installs, plus the way back to a release.
+private struct NightlyUpdateSections: View {
+    @Bindable var updates: UpdateService
+
+    var body: some View {
+        Section("Channel") {
+            LabeledContent("Update channel", value: UpdateService.Channel.nightly.displayName)
+            Text("Nightly builds follow the dev branch and may break. Stable and beta releases are the separate BriskEdit app.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack(spacing: 16) {
+                if let notes = URL(string: "\(UpdatePreferencesView.repositoryURL)/releases/tag/nightly") {
+                    Link("Nightly release notes", destination: notes)
+                }
+                if let stable = URL(string: "\(UpdatePreferencesView.repositoryURL)/releases/latest") {
+                    Link("Download stable BriskEdit", destination: stable)
+                }
+            }
+        }
+        Section("Nightly updates") {
+            Toggle("Check for new builds automatically", isOn: $updates.automaticallyChecksForUpdates)
+            Picker("Check for new builds", selection: $updates.nightlyCheckCadence) {
+                ForEach(UpdateService.NightlyCheckCadence.allCases) { cadence in
+                    Text(cadence.displayName).tag(cadence)
+                }
+            }
+            .disabled(!updates.automaticallyChecksForUpdates)
+            Toggle("Download and install automatically", isOn: $updates.automaticallyDownloadsUpdates)
+            Text(cadenceExplanation)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let date = updates.lastCheckDate {
+                LabeledContent("Last check", value: date.formatted(date: .abbreviated, time: .shortened))
+            }
+        }
+    }
+
+    private var cadenceExplanation: String {
+        guard updates.automaticallyChecksForUpdates else {
+            return "Automatic checks are off. Use Check Now to look for a new build."
+        }
+        if updates.automaticallyDownloadsUpdates {
+            return "New builds download in the background and install the next time you quit BriskEdit Nightly."
+        }
+        return updates.nightlyCheckCadence == .frequent
+            ? "BriskEdit Nightly asks before installing, so it checks hourly instead of every 15 minutes to avoid repeating the prompt."
+            : "BriskEdit Nightly asks before installing each new build."
     }
 }
 
@@ -629,7 +694,8 @@ private struct AboutPreferencesView: View {
     }
 
     private var buildHelp: String {
-        "Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")"
+        let build = "Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")"
+        return AppDistribution.sourceCommit.map { "\(build) · Commit \($0)" } ?? build
     }
 
     var body: some View {
@@ -641,7 +707,7 @@ private struct AboutPreferencesView: View {
                 .frame(width: 96, height: 96)
                 .accessibilityHidden(true)
 
-            Text("BriskEdit")
+            Text(AppDistribution.current.displayName)
                 .font(.system(size: 26, weight: .bold))
                 .padding(.top, 10)
             Text("Johannes Grof · MIT")

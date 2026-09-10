@@ -10,7 +10,7 @@ struct WelcomeView: View {
     let onOpenFolder: () -> Void
     let onOpenRecent: (URL) -> Void
 
-    private var appName: String { "BriskEdit" }
+    private var appName: String { AppDistribution.current.displayName }
 
     private var versionLabel: String {
         let info = Bundle.main.infoDictionary

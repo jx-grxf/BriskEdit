@@ -26,8 +26,11 @@ actor DraftRecoveryStore {
     private var recoveryWarnings: [String] = []
 
     init(directory: URL? = nil) {
+        // Per-distribution folder: a nightly running next to a release must not
+        // offer, prune or delete the other app's drafts.
         let base = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("BriskEdit/Drafts", isDirectory: true)
+            .appendingPathComponent(AppDistribution.current.supportDirectoryName, isDirectory: true)
+            .appendingPathComponent("Drafts", isDirectory: true)
         self.directory = base
         self.sessionsDirectory = base.appendingPathComponent("Sessions", isDirectory: true)
     }

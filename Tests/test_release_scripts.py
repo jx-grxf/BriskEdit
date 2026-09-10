@@ -72,6 +72,62 @@ class ReleaseScriptTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     validate(feed, "1006.0.99", "wrong/repo", directory / "items")
 
+    def artifact(self, field, **env):
+        import os
+        return subprocess.check_output([ROOT / "script/release_artifacts.sh", field], text=True, env={**os.environ, **env}).strip()
+
+    def test_nightly_artifacts_never_collide_with_release_artifacts(self):
+        stable = dict(BRISKEDIT_UPDATE_CHANNEL="stable", BRISKEDIT_VERSION="0.6.1", BRISKEDIT_BUILD="1006.1.99")
+        nightly = dict(BRISKEDIT_UPDATE_CHANNEL="nightly", BRISKEDIT_VERSION="0.6.1-nightly.211", BRISKEDIT_BUILD="211")
+        self.assertEqual(self.artifact("bundle-id", **stable), "com.johannesgrof.briskedit")
+        self.assertEqual(self.artifact("bundle-id", **nightly), "com.johannesgrof.briskedit.nightly")
+        self.assertEqual(self.artifact("app-bundle", **nightly), "BriskEdit Nightly.app")
+        self.assertEqual(self.artifact("dmg", **stable), "BriskEdit-0.6.1.dmg")
+        self.assertEqual(self.artifact("dmg", **nightly), "BriskEdit-Nightly.dmg")
+        self.assertEqual(self.artifact("zip", **nightly), "BriskEdit-Nightly-211.zip")
+        result = subprocess.run([ROOT / "script/release_artifacts.sh", "dmg"], capture_output=True, env={"BRISKEDIT_UPDATE_CHANNEL": "canary", "PATH": "/usr/bin:/bin"})
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_nightly_feed_decision_only_moves_forward(self):
+        from script.nightly_feed_decision import decide
+        template = '<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel><item><sparkle:channel>{}</sparkle:channel><sparkle:version>{}</sparkle:version></item></channel></rss>'
+        with tempfile.TemporaryDirectory() as directory:
+            feed = pathlib.Path(directory) / "appcast.xml"
+            self.assertEqual(decide(feed, "211"), "publish")
+            feed.write_text(template.format("nightly", 211))
+            self.assertEqual(decide(feed, "212"), "publish")
+            self.assertTrue(decide(feed, "211").startswith("skip"))
+            self.assertEqual(decide(feed, "211", force=True), "publish")
+            self.assertTrue(decide(feed, "210", force=True).startswith("skip"))
+            feed.write_text(template.format("beta", 211))
+            with self.assertRaises(ValueError):
+                decide(feed, "212")
+            with self.assertRaises(ValueError):
+                decide(feed, "1006.1.99")
+
+    def metadata(self, **env):
+        import os
+        return subprocess.run([ROOT / "script/verify_release_metadata.sh"], capture_output=True, text=True, env={**os.environ, **env})
+
+    def test_nightly_metadata_requires_project_version_and_integer_build(self):
+        version = subprocess.check_output(["awk", "-F\"", "/MARKETING_VERSION:/ { print $2; exit }", ROOT / "project.yml"], text=True).strip()
+        ok = self.metadata(BRISKEDIT_UPDATE_CHANNEL="nightly", BRISKEDIT_VERSION=f"{version}-nightly.211", BRISKEDIT_BUILD="211", BRISKEDIT_RELEASE_TAG="nightly")
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        for env in (
+            dict(BRISKEDIT_VERSION=version, BRISKEDIT_BUILD="211"),
+            dict(BRISKEDIT_VERSION=f"{version}-nightly.211", BRISKEDIT_BUILD="1006.1.99"),
+            dict(BRISKEDIT_VERSION=f"{version}-nightly.211", BRISKEDIT_BUILD="211", BRISKEDIT_RELEASE_TAG=f"v{version}"),
+        ):
+            self.assertNotEqual(self.metadata(BRISKEDIT_UPDATE_CHANNEL="nightly", **env).returncode, 0, env)
+
+    def test_nightly_identity_uses_commit_count_and_project_version(self):
+        output = subprocess.check_output([ROOT / "script/nightly_identity.sh", "HEAD"], text=True, cwd=ROOT)
+        values = dict(line.split("=", 1) for line in output.strip().splitlines())
+        count = subprocess.check_output(["git", "rev-list", "--count", "HEAD"], text=True, cwd=ROOT).strip()
+        self.assertEqual(values["build"], count)
+        self.assertRegex(values["version"], rf"^\d+\.\d+\.\d+(-beta\.\d+)?-nightly\.{count}$")
+        self.assertEqual(len(values["short_commit"]), 7)
+
     @unittest.skipUnless(sys.platform == "darwin", "Swift verifier requires Xcode on macOS")
     def test_verifier_does_not_mix_fields_between_items(self):
         xml = '''<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle"><channel>

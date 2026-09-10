@@ -17,7 +17,8 @@
 #
 # Other inputs (env):
 #   BRISKEDIT_VERSION                    required
-#   BRISKEDIT_UPDATE_CHANNEL             stable or beta
+#   BRISKEDIT_BUILD                      required for nightly
+#   BRISKEDIT_UPDATE_CHANNEL             stable (default), beta or nightly
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -30,7 +31,8 @@ if [[ "${BRISKEDIT_NOTARY_ENABLED:-}" != "true" ]]; then
   exit 0
 fi
 
-DMG="dist/BriskEdit-${BRISKEDIT_VERSION}.dmg"
+DMG="dist/$(./script/release_artifacts.sh dmg)"
+APP="dist/$(./script/release_artifacts.sh app-bundle)"
 [[ -f "$DMG" ]] || { echo "error: $DMG not found" >&2; exit 1; }
 
 if [[ -n "${BRISKEDIT_NOTARY_KEYCHAIN_PROFILE:-}" ]]; then
@@ -66,8 +68,8 @@ fi
 xcrun stapler staple "$DMG"
 xcrun stapler validate "$DMG"
 
-if [[ "$CHANNEL" == "stable" ]]; then
-  codesign --verify --deep --strict dist/BriskEdit.app
-  spctl --assess --type execute -v dist/BriskEdit.app
+if [[ "$CHANNEL" == "stable" || "$CHANNEL" == "nightly" ]]; then
+  codesign --verify --deep --strict "$APP"
+  spctl --assess --type execute -v "$APP"
   spctl --assess --type open --context context:primary-signature -v "$DMG"
 fi

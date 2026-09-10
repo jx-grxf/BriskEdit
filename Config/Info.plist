@@ -49,8 +49,12 @@
 			<dict/>
 		</dict>
 	</array>
+	<key>BriskEditDistribution</key>
+	<string>$(BRISKEDIT_DISTRIBUTION)</string>
+	<key>BriskEditSourceCommit</key>
+	<string>$(BRISKEDIT_SOURCE_COMMIT)</string>
 	<key>SUFeedURL</key>
-	<string>https://github.com/jx-grxf/BriskEdit/releases/latest/download/appcast.xml</string>
+	<string>$(BRISKEDIT_SPARKLE_FEED_URL)</string>
 	<key>SUPublicEDKey</key>
 	<string>$(BRISKEDIT_SPARKLE_PUBLIC_KEY)</string>
 	<key>SUEnableInstallerLauncherService</key>
