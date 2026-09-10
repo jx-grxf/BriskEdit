@@ -43,25 +43,15 @@ enum WhatsNew {
     /// `MARKETING_VERSION`; `script/verify_release_metadata.sh` enforces it in CI
     /// so the in-app What's New page can't silently ship the previous release's
     /// highlights. Bump this together with `sections` (and the release notes).
-    static let highlightsVersion = "0.6.0"
+    static let highlightsVersion = "0.6.1"
 
     /// The latest release's curated highlights. **Update this for each release**
     /// (mirrors the top section of RELEASE_NOTES.md) — see the release recipe in
     /// the project notes so it doesn't get missed.
     static let sections: [Section] = [
-        Section(name: "Your work, protected", highlights: [
-            Highlight(symbol: "xmark.rectangle", title: "Reliable tab closing", detail: "Close a tab without accidentally selecting it again or starting a drag. Move tabs by dragging their labels; the close button stays independent.", tint: .blue),
-            Highlight(symbol: "arrow.counterclockwise.circle", title: "Recover unsaved drafts", detail: "Restore local recovery copies after an unexpected exit, including untitled files. Recovered drafts open as copies so existing files stay safe.", tint: .teal),
-            Highlight(symbol: "doc.on.doc", title: "Compare before overwriting", detail: "Inspect the editor buffer against the saved file. Autosave pauses when an external change needs your decision.", tint: .blue),
-        ]),
-        Section(name: "Navigate and review", highlights: [
-            Highlight(symbol: "text.magnifyingglass", title: "Find references", detail: "See where a symbol is used with your language server, then open a result at its exact location.", tint: .indigo),
-            Highlight(symbol: "arrow.triangle.branch", title: "Review Git changes", detail: "Read staged and unstaged diffs from Source Control. Navigate open tabs with Shift–Command–[ and ].", tint: .orange),
-        ]),
-        Section(name: "A calmer Mac experience", highlights: [
-            Highlight(symbol: "macwindow", title: "Frosted editor backgrounds", detail: "Choose Subtle, Balanced, or Strong vibrancy in Appearance while keeping your syntax theme. Reduce Transparency and Low Power switch to a solid background.", tint: .cyan),
-            Highlight(symbol: "macwindow", title: "More Macs, native materials", detail: "Now supports macOS 15 and later, with Liquid Glass on macOS 26 and native material fallbacks on earlier systems.", tint: .blue),
-            Highlight(symbol: "bolt", title: "Smoother editing", detail: "Folding analysis runs away from the UI. Cancelled searches stop their work, and window sizing respects your adjustments.", tint: .teal),
+        Section(name: "A fresh look", highlights: [
+            Highlight(symbol: "chevron.left.forwardslash.chevron.right", title: "New app icon", detail: "A redesigned icon with code brackets and a pencil. On macOS 26 it uses Liquid Glass and follows the Dark, Tinted, and Clear icon styles.", tint: .blue),
+            Highlight(symbol: "info.circle", title: "Clearer version display", detail: "Settings and the About window show the version, for example 0.6.1, instead of an internal build number.", tint: .teal),
         ]),
     ]
 }
