@@ -89,11 +89,11 @@ for key in $KEYS; do
   printf "  %-12s %s\n" "$key" "$got"
 done
 
-# BriskEdit large image: downscale the 1024px app logo to 512px.
-LOGO="$(find Sources/BriskEdit/Resources/Assets.xcassets/AppIcon.appiconset \
-  -iname '*1024x1024@1x.png' | head -1)"
-if [ -n "$LOGO" ]; then
-  sips -z 512 512 "$LOGO" --out "$OUT/briskedit.png" >/dev/null
+# BriskEdit large image: render the Icon Composer app icon at 512px.
+ICTOOL="$(xcode-select -p 2>/dev/null)/../Applications/Icon Composer.app/Contents/Executables/ictool"
+if [ -x "$ICTOOL" ] && "$ICTOOL" Sources/BriskEdit/Resources/AppIcon.icon --export-image \
+  --output-file "$OUT/briskedit.png" --platform macOS --rendition Default \
+  --width 512 --height 512 --scale 1 >/dev/null; then
   echo "  briskedit    app-logo"
 fi
 

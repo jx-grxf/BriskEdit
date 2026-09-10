@@ -484,7 +484,10 @@ private struct UpdatePreferencesView: View {
         @Bindable var updates = updates
         Form {
             Section("Version") {
-                LabeledContent("Installed", value: Self.versionString)
+                LabeledContent("Installed") {
+                    Text(Self.versionString)
+                        .help(Self.buildHelp)
+                }
                 if updates.isUpdateAvailable, let available = updates.availableUpdateVersion {
                     LabeledContent("Available") {
                         HStack(spacing: 6) {
@@ -520,12 +523,15 @@ private struct UpdatePreferencesView: View {
         .padding()
     }
 
-    /// "0.3.0 (1)" from the bundle's marketing version and build number.
+    /// The marketing version ("0.6.0", "0.6.1-beta.1"). The build number is
+    /// derived from it for Sparkle ordering (0.6.0 → 1006.0.99, see
+    /// `script/release_build_number.sh`), so it only appears as a tooltip.
     private static var versionString: String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "—"
-        let build = info?["CFBundleVersion"] as? String ?? "—"
-        return "\(short) (\(build))"
+        Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "—"
+    }
+
+    private static var buildHelp: String {
+        "Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "—")"
     }
 }
 
@@ -617,11 +623,13 @@ private struct AboutPreferencesView: View {
     private static let repoURL = "https://github.com/jx-grxf/BriskEdit"
     private static let issuesURL = "https://github.com/jx-grxf/BriskEdit/issues"
 
+    /// Marketing version only; the derived Sparkle build number is a tooltip.
     private var versionLabel: String {
-        let info = Bundle.main.infoDictionary
-        let short = info?["CFBundleShortVersionString"] as? String ?? "1.0"
-        let build = info?["CFBundleVersion"] as? String ?? "1"
-        return "Version \(short) (\(build))"
+        "Version \(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "1.0")"
+    }
+
+    private var buildHelp: String {
+        "Build \(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1")"
     }
 
     var body: some View {
@@ -643,6 +651,7 @@ private struct AboutPreferencesView: View {
             Text(versionLabel)
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                .help(buildHelp)
                 .padding(.top, 2)
 
             Text("A native macOS code editor — no Electron, no extension runtime, zero-config.")
