@@ -272,6 +272,15 @@ struct AppCommands: Commands {
             .disabled(workspace?.activeTerminal == nil)
         }
 
+        // The standard panel appends CFBundleVersion as "(1006.0.99)". That build
+        // number is derived from the version for Sparkle ordering, so an empty
+        // `.version` leaves just "Version 0.6.0".
+        CommandGroup(replacing: .appInfo) {
+            Button("About BriskEdit") {
+                NSApplication.shared.orderFrontStandardAboutPanel(options: [.version: ""])
+            }
+        }
+
         CommandGroup(after: .appInfo) {
             Button("Check for Updates…") {
                 updates.checkForUpdates()
