@@ -1,13 +1,11 @@
 name: Nightly
 
-# Builds the side-by-side "BriskEdit Nightly" app from dev after CI passes on a
-# push, then replaces the rolling `nightly` prerelease and its Sparkle feed.
-# workflow_run only fires for workflow files on the default branch, so this file
-# has to exist on main as well as on dev.
+# Every pull request merged into dev arrives as a push to dev and starts one
+# run: the full CI suite and the signed, notarized "BriskEdit Nightly" build run
+# in parallel, and the rolling `nightly` prerelease with its Sparkle feed is
+# replaced only after both have passed.
 on:
-  workflow_run:
-    workflows: [CI]
-    types: [completed]
+  push:
     branches: [dev]
   workflow_dispatch:
     inputs:
@@ -20,8 +18,9 @@ on:
 permissions:
   contents: read
 
-# One nightly at a time. GitHub keeps at most one pending run per group and
-# cancels the older pending run, so a burst of pushes builds only the newest.
+# Runs start in push order and never overlap, so the feed only moves forward.
+# GitHub keeps at most one pending run per group and cancels the older pending
+# run, so a burst of merges publishes the newest commit, which contains the rest.
 concurrency:
   group: nightly
   cancel-in-progress: false
@@ -31,17 +30,18 @@ defaults:
     shell: bash
 
 jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+    with:
+      # The build job packages, signs and verifies the nightly DMG itself, and the
+      # pull request already ran the unsigned stable package smoke test.
+      skip-package-smoke-test: true
+
   resolve:
-    name: Resolve nightly commit
-    # workflow_run jobs can read repository secrets, and a fork pull request from
-    # a branch named "dev" also matches the branches filter. Only a green CI run
-    # from a push to this repository's own dev branch may start a nightly.
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' &&
-       github.event.workflow_run.event == 'push' &&
-       github.event.workflow_run.head_branch == 'dev' &&
-       github.event.workflow_run.head_repository.full_name == github.repository)
+    name: Resolve nightly
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -52,39 +52,20 @@ jobs:
       build: ${{ steps.identity.outputs.build }}
       version: ${{ steps.identity.outputs.version }}
     steps:
+      - name: Require dev
+        if: github.ref != 'refs/heads/dev'
+        run: |
+          echo "::error::Nightlies are built from dev only. Run this workflow on dev."
+          exit 1
+
       - name: Checkout dev history
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
-          ref: dev
           fetch-depth: 0
-
-      - name: Select commit
-        id: commit
-        env:
-          GH_TOKEN: ${{ github.token }}
-          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
-        run: |
-          set -euo pipefail
-          if [[ "$GITHUB_EVENT_NAME" == "workflow_run" ]]; then
-            commit="$HEAD_SHA"
-          else
-            commit="$(git rev-parse origin/dev)"
-            # A manual run still only ships code that passed CI on dev.
-            passed="$(gh run list --workflow ci.yml --commit "$commit" --event push --status success --json databaseId --jq 'length')"
-            [[ "$passed" -gt 0 ]] || {
-              echo "::error::CI has not passed for $commit on a push to dev."
-              exit 1
-            }
-          fi
-          git merge-base --is-ancestor "$commit" origin/dev || {
-            echo "::error::$commit is not on dev."
-            exit 1
-          }
-          echo "commit=$commit" >> "$GITHUB_OUTPUT"
 
       - name: Derive build identity
         id: identity
-        run: ./script/nightly_identity.sh "${{ steps.commit.outputs.commit }}" | tee -a "$GITHUB_OUTPUT"
+        run: ./script/nightly_identity.sh "$GITHUB_SHA" | tee -a "$GITHUB_OUTPUT"
 
       - name: Decide whether to publish
         id: decide
@@ -103,7 +84,7 @@ jobs:
 
           force_flag=()
           [[ "$FORCE" == "true" ]] && force_flag=(--force)
-          decision="$(python3 script/nightly_feed_decision.py "$feed" "$BUILD" "${force_flag[@]}")"
+          decision="$(python3 script/nightly_feed_decision.py "$feed" "$BUILD" ${force_flag[@]+"${force_flag[@]}"})"
 
           previous=""
           if git fetch --force origin "refs/tags/nightly:refs/tags/nightly" 2>/dev/null; then
@@ -120,23 +101,19 @@ jobs:
 
           if [[ "$decision" == "publish" ]]; then
             echo "publish=true" >> "$GITHUB_OUTPUT"
-            echo "Publishing nightly build $BUILD from \`$COMMIT\`." >> "$GITHUB_STEP_SUMMARY"
+            echo "Building nightly $BUILD from \`$COMMIT\`." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "publish=false" >> "$GITHUB_OUTPUT"
             echo "Nightly not published: ${decision#skip: }." | tee -a "$GITHUB_STEP_SUMMARY"
           fi
           echo "previous_commit=$previous" >> "$GITHUB_OUTPUT"
 
-  publish:
-    name: Build and publish nightly
+  build:
+    name: Build nightly
     needs: resolve
     if: needs.resolve.outputs.publish == 'true'
     runs-on: macos-26
     timeout-minutes: 50
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
     env:
       BRISKEDIT_UPDATE_CHANNEL: nightly
       BRISKEDIT_VERSION: ${{ needs.resolve.outputs.version }}
@@ -182,8 +159,8 @@ jobs:
           BRISKEDIT_SIGN_P12_PASSWORD: ${{ secrets.BRISKEDIT_SIGN_P12_PASSWORD }}
         run: ./script/import_signing_certificate.sh
 
-      # CI already ran the full test suite on this exact commit before this
-      # workflow could start, so the nightly goes straight to packaging.
+      # The test suite runs in the parallel CI job; nothing is published unless it
+      # passes, so this job goes straight to packaging.
       - name: Build DMG
         env:
           BRISKEDIT_WARNINGS_AS_ERRORS: "true"
@@ -192,12 +169,10 @@ jobs:
         run: ./script/package_dmg.sh
 
       - name: Write nightly release notes
-        run: |
-          ./script/nightly_release_notes.sh \
-            "${{ needs.resolve.outputs.previous_commit }}" \
-            "${{ needs.resolve.outputs.commit }}" \
-            "$BRISKEDIT_BUILD" \
-            dist/nightly-notes.md
+        env:
+          PREVIOUS_COMMIT: ${{ needs.resolve.outputs.previous_commit }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
+        run: ./script/nightly_release_notes.sh "$PREVIOUS_COMMIT" "$COMMIT" "$BRISKEDIT_BUILD" dist/nightly-notes.md
 
       - name: Build Sparkle assets
         env:
@@ -223,6 +198,60 @@ jobs:
           BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
         run: ./script/verify_release_artifacts.sh
 
+      - name: Upload nightly artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-${{ needs.resolve.outputs.build }}
+          path: |
+            dist/BriskEdit-Nightly.dmg
+            dist/sparkle/BriskEdit-Nightly-*.zip
+            dist/sparkle/appcast.xml
+            dist/SHA256SUMS
+            dist/nightly-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove signing keychain
+        if: always()
+        run: ./script/cleanup_signing_keychain.sh
+
+  publish:
+    name: Publish nightly
+    # Runs only when CI, the decision and the signed build all succeeded.
+    needs: [ci, resolve, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      BRISKEDIT_UPDATE_CHANNEL: nightly
+      BRISKEDIT_VERSION: ${{ needs.resolve.outputs.version }}
+      BRISKEDIT_BUILD: ${{ needs.resolve.outputs.build }}
+    steps:
+      - name: Checkout nightly commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+
+      - name: Download nightly artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-${{ needs.resolve.outputs.build }}
+          path: dist
+
+      - name: Check artifact checksums
+        run: |
+          set -euo pipefail
+          # SHA256SUMS lists bare file names; the archive and feed sit in dist/sparkle.
+          while read -r sum name; do
+            path="dist/$name"
+            [[ -f "$path" ]] || path="dist/sparkle/$name"
+            printf '%s  %s\n' "$sum" "$path"
+          done < dist/SHA256SUMS | sha256sum --check --strict
+
       - name: Attest nightly artifacts
         uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
         with:
@@ -240,8 +269,8 @@ jobs:
           set -euo pipefail
           zip="$(./script/release_artifacts.sh zip)"
           dmg="$(./script/release_artifacts.sh dmg)"
-          if gh release view nightly --json isPrerelease > nightly-state.json 2>/dev/null; then
-            [[ "$(jq -r '.isPrerelease' nightly-state.json)" == "true" ]] || {
+          if gh release view nightly --json isPrerelease > "$RUNNER_TEMP/nightly-state.json" 2>/dev/null; then
+            [[ "$(jq -r '.isPrerelease' "$RUNNER_TEMP/nightly-state.json")" == "true" ]] || {
               echo "error: the nightly release must stay a prerelease so it never becomes latest" >&2
               exit 1
             }
@@ -267,7 +296,7 @@ jobs:
           # Keep the current and the previous archive (a client may still be
           # downloading it from the old feed) and delete everything older.
           gh release view nightly --json assets --jq '.assets[].name' \
-            | grep -E '^BriskEdit-Nightly-[0-9]+\.zip$' \
+            | { grep -E '^BriskEdit-Nightly-[0-9]+\.zip$' || true; } \
             | sort -t- -k3,3n \
             | sed '$d' | sed '$d' \
             | while IFS= read -r stale; do
@@ -281,12 +310,12 @@ jobs:
           set -euo pipefail
           zip="$(./script/release_artifacts.sh zip)"
           dmg="$(./script/release_artifacts.sh dmg)"
-          mkdir -p dist/published
+          mkdir -p "$RUNNER_TEMP/published"
           # The release API is authoritative; the public download URL can lag.
-          gh release download nightly --pattern appcast.xml --dir dist/published --clobber
-          gh release download nightly --pattern "$zip" --dir dist/published --clobber
-          cmp dist/sparkle/appcast.xml dist/published/appcast.xml
-          cmp "dist/sparkle/$zip" "dist/published/$zip"
+          gh release download nightly --pattern appcast.xml --dir "$RUNNER_TEMP/published" --clobber
+          gh release download nightly --pattern "$zip" --dir "$RUNNER_TEMP/published" --clobber
+          cmp dist/sparkle/appcast.xml "$RUNNER_TEMP/published/appcast.xml"
+          cmp "dist/sparkle/$zip" "$RUNNER_TEMP/published/$zip"
           release_json="$(gh release view nightly --json assets,isDraft,isPrerelease,url)"
           [[ "$(jq -r '.isDraft' <<<"$release_json")" == "false" ]]
           [[ "$(jq -r '.isPrerelease' <<<"$release_json")" == "true" ]]
@@ -302,8 +331,8 @@ jobs:
             echo "error: the nightly release must never be marked latest" >&2
             exit 1
           }
-          echo "Published nightly $BRISKEDIT_VERSION: $(jq -r '.url' <<<"$release_json")" | tee -a "$GITHUB_STEP_SUMMARY"
-
-      - name: Remove signing keychain
-        if: always()
-        run: ./script/cleanup_signing_keychain.sh
+          {
+            echo "Published **BriskEdit Nightly $BRISKEDIT_VERSION**: $(jq -r '.url' <<<"$release_json")"
+            echo
+            echo "DMG: https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly/$dmg"
+          } | tee -a "$GITHUB_STEP_SUMMARY"

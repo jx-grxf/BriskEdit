@@ -4,7 +4,7 @@
 
 | Channel | Source | Trigger | App | Feed |
 |---|---|---|---|---|
-| Nightly | `dev` | every push to `dev` that passes CI | **BriskEdit Nightly** (`com.johannesgrof.briskedit.nightly`) | `releases/download/nightly/appcast.xml` |
+| Nightly | `dev` | every pull request merged into `dev`, once CI passes | **BriskEdit Nightly** (`com.johannesgrof.briskedit.nightly`) | `releases/download/nightly/appcast.xml` |
 | Beta | `main` | signed tag `vX.Y.Z-beta.N` | BriskEdit (`com.johannesgrof.briskedit`) | moving `beta` release, combined appcast |
 | Stable | `main` | signed tag `vX.Y.Z` | BriskEdit | `releases/latest/download/appcast.xml` |
 
@@ -32,14 +32,16 @@ BriskEdit Nightly is a separate app that installs next to BriskEdit. Its identit
 - Version `<MARKETING_VERSION>-nightly.<build>`, where build is `git rev-list --count` of the dev commit (for example `0.6.1-nightly.211`). The nightly app never compares against release build numbers, so a single monotonic integer is enough.
 - Appcast items carry `<sparkle:channel>nightly</sparkle:channel>`; the nightly app allows only that channel, so a release build pointed at the feed would see nothing.
 
-`.github/workflows/nightly.yml` runs after the CI workflow completes:
+`.github/workflows/nightly.yml` starts on every push to `dev`, which is what merging a pull request into `dev` produces. One run has four jobs:
 
-1. **Resolve** accepts only a successful CI run from a push to this repository's `dev` (a fork pull request from a branch named `dev` is rejected). A manual run builds `origin/dev` and still requires a green CI push run for that commit.
-2. It derives the identity with `script/nightly_identity.sh`, downloads the published nightly feed and asks `script/nightly_feed_decision.py`: publish only a build newer than the feed (`force` republishes the same build). It also skips when only `docs/`, `promo/`, `.github/assets/` or Markdown files changed since the previous nightly tag.
-3. **Publish** on `macos-26`: package, sign (Developer ID), write notes with `script/nightly_release_notes.sh` (commits since the previous nightly), build the Sparkle ZIP and appcast, notarize and staple, verify the artifacts, and attest them. CI already tested this exact commit, so the suite is not run again.
-4. It updates the single rolling `nightly` prerelease (never latest): archive and DMG first, then `appcast.xml` and `SHA256SUMS`, then notes. It moves the `nightly` tag to the commit (a failure only warns), keeps the current and previous `BriskEdit-Nightly-<build>.zip`, deletes older archives, and verifies the published feed and archive byte for byte.
+1. **CI** calls `.github/workflows/ci.yml` as a reusable workflow on the pushed commit (hygiene, secret scan, promo tooling, the full test suite). The unsigned package smoke test is skipped because the build job packages the real app, and the pull request already ran it. `ci.yml` itself only listens to pushes on `main`, so a merge into `dev` is tested once.
+2. **Resolve** runs in parallel. It derives the identity with `script/nightly_identity.sh`, downloads the published nightly feed and asks `script/nightly_feed_decision.py`: publish only a build newer than the feed (`force` republishes the same build). It also skips when only `docs/`, `promo/`, `.github/assets/` or Markdown files changed since the previous nightly tag. A manual run must use `dev`.
+3. **Build** on `macos-26`, in parallel with CI: package, sign (Developer ID), write notes with `script/nightly_release_notes.sh` (commits since the previous nightly), build the Sparkle ZIP and appcast, notarize and staple, verify the artifacts, and upload them as a workflow artifact. Signing secrets exist only in this job.
+4. **Publish** on Ubuntu runs only when CI, Resolve and Build all succeeded. It checks the artifacts against `SHA256SUMS`, attests them, and updates the single rolling `nightly` prerelease (never latest): archive and DMG first, then `appcast.xml` and `SHA256SUMS`, then notes. It moves the `nightly` tag to the commit (a failure only warns), keeps the current and previous `BriskEdit-Nightly-<build>.zip`, deletes older archives, and verifies the published feed and archive byte for byte.
 
-The concurrency group `nightly` runs one publication at a time and keeps only the newest pending run, so a burst of merges produces one build. Expect a published nightly roughly 15 minutes after a merge (CI about 5 minutes, packaging and notarization about 6 to 8 minutes); clients pick it up at their next check.
+The concurrency group `nightly` runs one nightly at a time in push order and keeps only the newest pending run, so the feed only moves forward and a burst of merges publishes the newest commit. Expect a published nightly roughly 10 to 12 minutes after a merge (CI and the signed build run side by side for about 8 to 10 minutes, publishing takes about a minute); clients pick it up at their next check.
+
+Pull requests merged by GitHub on behalf of a workflow token (Dependabot auto-merge) do not trigger workflows, so they ship with the next merged pull request or a manual run.
 
 Assets on the `nightly` release: `BriskEdit-Nightly.dmg` (stable download link), `BriskEdit-Nightly-<build>.zip` (Sparkle), `appcast.xml`, `SHA256SUMS`.
 
@@ -74,8 +76,8 @@ For example 0.6.0-beta.1 → 1006.0.1, 0.6.0 → 1006.0.99, 0.6.1-beta.1 → 100
 
 ## Repair a failed nightly
 
-- A failed nightly leaves the previous feed untouched; the next push to `dev` publishes a newer build.
-- To republish the current build (for example after a GitHub outage), run the Nightly workflow manually with `force`. Clients that already installed that build are not offered it again; a real fix needs a new commit on `dev`.
+- A failed nightly leaves the previous feed untouched: nothing is uploaded unless CI and the signed build both passed. The next pull request merged into `dev` publishes a newer build.
+- To rebuild the tip of `dev` without a new merge, run the Nightly workflow on `dev` (Actions → Nightly → Run workflow). To republish the current build (for example after a GitHub outage), tick `force`. Clients that already installed that build are not offered it again; a real fix needs a new commit on `dev`.
 - If the `nightly` release was edited by hand, keep it a prerelease and never mark it latest; the workflow refuses a non-prerelease `nightly` release.
 
 ## Repair a failed publication

@@ -1,10 +1,19 @@
 name: CI
 
+# Pushes to dev run this suite through nightly.yml, which gates the nightly
+# prerelease on it, so only main is listed for pushes here.
 on:
   push:
-    branches: [main, dev]
+    branches: [main]
   pull_request:
     branches: [main, dev]
+  workflow_call:
+    inputs:
+      skip-package-smoke-test:
+        description: "Skip the unsigned DMG builds when the caller packages its own"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -75,7 +84,7 @@ jobs:
         run: |
           set -euo pipefail
           archive="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
-          curl -fsSLO "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
+          curl -fsSLO --retry 5 --retry-all-errors --retry-delay 3 "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${archive}"
           echo "${ACTIONLINT_SHA256}  ${archive}" | sha256sum --check
           tar -xzf "$archive" actionlint
           sudo install -m 0755 actionlint /usr/local/bin/actionlint
@@ -103,7 +112,7 @@ jobs:
         run: |
           set -euo pipefail
           archive="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
-          curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
+          curl -fsSLO --retry 5 --retry-all-errors --retry-delay 3 "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${archive}"
           echo "${GITLEAKS_SHA256}  ${archive}" | sha256sum --check
           tar -xzf "$archive" gitleaks
           sudo install -m 0755 gitleaks /usr/local/bin/gitleaks
@@ -229,6 +238,7 @@ jobs:
 
   package:
     name: Package smoke test
+    if: ${{ !inputs.skip-package-smoke-test }}
     runs-on: macos-26
     timeout-minutes: 40
     steps:
@@ -293,7 +303,8 @@ jobs:
     # Aggregate gate for branch protection: the `main` ruleset requires a single
     # `build` status check. This job reports green only when every CI job above
     # has passed. `always()` lets it run even when an upstream job fails, and
-    # skipped jobs (dependency-review is pull-request only) are tolerated.
+    # skipped jobs (dependency-review is pull-request only, the package smoke test
+    # is skipped inside the nightly workflow) are tolerated.
     needs: [hygiene, secrets, dependency-review, promo, tests, package]
     if: ${{ always() }}
     runs-on: ubuntu-24.04

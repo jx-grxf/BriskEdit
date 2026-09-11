@@ -63,7 +63,7 @@ BriskEdit requires macOS 15 or newer; Liquid Glass surfaces need macOS 26. No ac
 |---|---|---|---|
 | **Stable** | Everyday work | [`BriskEdit-<version>.dmg`](https://github.com/jx-grxf/BriskEdit/releases/latest) | New stable releases |
 | **Beta** | Trying the next release early | Settings → Updates → Beta, or a `vX.Y.Z-beta.N` prerelease | Betas and newer stable releases |
-| **Nightly** | The newest changes from `dev` | [`BriskEdit-Nightly.dmg`](https://github.com/jx-grxf/BriskEdit/releases/download/nightly/BriskEdit-Nightly.dmg) | A new build shortly after every change on `dev` |
+| **Nightly** | The newest changes from `dev` | [`BriskEdit-Nightly.dmg`](https://github.com/jx-grxf/BriskEdit/releases/download/nightly/BriskEdit-Nightly.dmg) | A new build about ten minutes after every merge into `dev` |
 
 Stable and Beta are the same app; switching the channel in Settings never downgrades. **BriskEdit Nightly** is a separate app with a violet icon that installs next to BriskEdit. It keeps its own settings, drafts and shell command (`briskedit-nightly`, `brisk-nightly`), downloads updates in the background and installs them when you quit. Nightly builds are signed and notarized like releases, but they are not release-tested and can break, so keep a stable BriskEdit around for important work.
 
@@ -125,7 +125,7 @@ BRISKEDIT_UPDATE_CHANNEL=nightly BRISKEDIT_BUILD=1 BRISKEDIT_VERSION=0.6.1-night
 
 ## Release pipeline
 
-Work lands on `dev` through pull requests, so open pull requests against `dev`. Every push to `dev` that passes CI publishes a new nightly. Releases merge `dev` into `main`, and a signed tag on `main` publishes a stable or beta release.
+Work lands on `dev` through pull requests, so open pull requests against `dev`. Every pull request merged into `dev` runs CI and publishes a new nightly prerelease about ten minutes later. Releases merge `dev` into `main`, and a signed tag on `main` publishes a stable or beta release.
 
 GitHub Actions builds nightlies and tagged releases the same way: app bundle, DMG, Sparkle ZIP and appcast, Developer ID signing, notarization, stapler validation and signature verification. Full runbook in [docs/release.md](docs/release.md). Public release notes live in [RELEASE_NOTES.md](RELEASE_NOTES.md).
 
