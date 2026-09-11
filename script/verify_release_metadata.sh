@@ -34,14 +34,26 @@ EXPECTED_PROJECT_BUILD="$(./script/release_build_number.sh "$PROJECT_VERSION")"
 [[ "$WHATSNEW_VERSION" == "$PROJECT_VERSION" ]] \
   || fail "What's New highlightsVersion '$WHATSNEW_VERSION' does not match project version '$PROJECT_VERSION' — update WhatsNew.sections and bump highlightsVersion"
 
-if [[ -n "${BRISKEDIT_VERSION:-}" && "$BRISKEDIT_VERSION" != "$PROJECT_VERSION" ]]; then
-  fail "requested version '$BRISKEDIT_VERSION' does not match project version '$PROJECT_VERSION'"
-fi
-if [[ -n "${BRISKEDIT_BUILD:-}" && ! "$BRISKEDIT_BUILD" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}){0,2}$ ]]; then
-  fail "release build '$BRISKEDIT_BUILD' must be a numeric CFBundleVersion"
-fi
-if [[ -n "${BRISKEDIT_RELEASE_TAG:-}" && "$BRISKEDIT_RELEASE_TAG" != "v$PROJECT_VERSION" ]]; then
-  fail "release tag '$BRISKEDIT_RELEASE_TAG' must equal 'v$PROJECT_VERSION'"
+if [[ "${BRISKEDIT_UPDATE_CHANNEL:-}" == "nightly" ]]; then
+  # Nightly builds from dev identify as the project version plus their build,
+  # a single integer (commit count) that only the separate nightly app compares.
+  [[ "${BRISKEDIT_BUILD:-}" =~ ^[1-9][0-9]{0,3}$ ]] \
+    || fail "nightly build '${BRISKEDIT_BUILD:-}' must be a single integer below 10000"
+  [[ "${BRISKEDIT_VERSION:-}" == "$PROJECT_VERSION-nightly.$BRISKEDIT_BUILD" ]] \
+    || fail "nightly version '${BRISKEDIT_VERSION:-}' must equal '$PROJECT_VERSION-nightly.$BRISKEDIT_BUILD'"
+  if [[ -n "${BRISKEDIT_RELEASE_TAG:-}" && "$BRISKEDIT_RELEASE_TAG" != "nightly" ]]; then
+    fail "nightly builds publish to the 'nightly' release, not '$BRISKEDIT_RELEASE_TAG'"
+  fi
+else
+  if [[ -n "${BRISKEDIT_VERSION:-}" && "$BRISKEDIT_VERSION" != "$PROJECT_VERSION" ]]; then
+    fail "requested version '$BRISKEDIT_VERSION' does not match project version '$PROJECT_VERSION'"
+  fi
+  if [[ -n "${BRISKEDIT_BUILD:-}" && ! "$BRISKEDIT_BUILD" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}){0,2}$ ]]; then
+    fail "release build '$BRISKEDIT_BUILD' must be a numeric CFBundleVersion"
+  fi
+  if [[ -n "${BRISKEDIT_RELEASE_TAG:-}" && "$BRISKEDIT_RELEASE_TAG" != "v$PROJECT_VERSION" ]]; then
+    fail "release tag '$BRISKEDIT_RELEASE_TAG' must equal 'v$PROJECT_VERSION'"
+  fi
 fi
 
 case "${BRISKEDIT_UPDATE_CHANNEL:-}" in
@@ -52,7 +64,8 @@ case "${BRISKEDIT_UPDATE_CHANNEL:-}" in
   beta)
     [[ "$PROJECT_VERSION" == *-beta.* ]] || fail "beta releases must use a -beta.N version"
     ;;
-  *) fail "update channel must be stable or beta" ;;
+  nightly) ;;
+  *) fail "update channel must be stable, beta or nightly" ;;
 esac
 
 python3 - <<'PY'

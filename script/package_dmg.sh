@@ -2,15 +2,17 @@
 # Build a Release BriskEdit.app and package it into a DMG.
 #
 # Inputs (env):
-#   BRISKEDIT_VERSION              required, e.g. 0.1.0
-#   BRISKEDIT_BUILD                optional, defaults to the version-derived build
+#   BRISKEDIT_VERSION              required, e.g. 0.1.0 or 0.6.1-nightly.211
+#   BRISKEDIT_BUILD                optional for stable/beta (version-derived),
+#                                  required for nightly
 #   BRISKEDIT_SPARKLE_PUBLIC_KEY   optional, embeds into Info.plist when present
 #   BRISKEDIT_SIGN_IDENTITY        optional, Developer ID Application identity
-#   BRISKEDIT_UPDATE_CHANNEL       optional, stable or beta
+#   BRISKEDIT_UPDATE_CHANNEL       optional, stable (default), beta or nightly
+#   BRISKEDIT_SOURCE_COMMIT        optional, short commit stamped into nightly builds
 #
-# Output:
-#   dist/BriskEdit.app
-#   dist/BriskEdit-<version>.dmg
+# Output (names from script/release_artifacts.sh):
+#   stable/beta: dist/BriskEdit.app, dist/BriskEdit-<version>.dmg
+#   nightly:     dist/BriskEdit Nightly.app, dist/BriskEdit-Nightly.dmg
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
@@ -19,7 +21,15 @@ if [[ -z "${BRISKEDIT_VERSION:-}" ]]; then
   echo "error: BRISKEDIT_VERSION is required" >&2
   exit 1
 fi
-BUILD="${BRISKEDIT_BUILD:-$(./script/release_build_number.sh "$BRISKEDIT_VERSION")}"
+CHANNEL="${BRISKEDIT_UPDATE_CHANNEL:-stable}"
+if [[ "$CHANNEL" == "nightly" ]]; then
+  BUILD="${BRISKEDIT_BUILD:?nightly builds require BRISKEDIT_BUILD}"
+else
+  BUILD="${BRISKEDIT_BUILD:-$(./script/release_build_number.sh "$BRISKEDIT_VERSION")}"
+fi
+APP_NAME="$(./script/release_artifacts.sh app-name)"
+APP_BUNDLE="$(./script/release_artifacts.sh app-bundle)"
+APP="dist/$APP_BUNDLE"
 
 if ! command -v xcodegen >/dev/null 2>&1; then
   echo "error: xcodegen is required" >&2
@@ -84,6 +94,18 @@ fi
 if [[ "${BRISKEDIT_WARNINGS_AS_ERRORS:-}" == "true" ]]; then
   EXTRA_SETTINGS+=("BRISKEDIT_WARNINGS_AS_ERRORS=YES")
 fi
+if [[ "$CHANNEL" == "nightly" ]]; then
+  # The side-by-side nightly app: own identity, icon and rolling update feed.
+  # These custom settings are referenced only by the app target in project.yml.
+  EXTRA_SETTINGS+=(
+    "BRISKEDIT_DISTRIBUTION=nightly"
+    "BRISKEDIT_BUNDLE_IDENTIFIER=$(./script/release_artifacts.sh bundle-id)"
+    "BRISKEDIT_DISPLAY_NAME=$APP_NAME"
+    "BRISKEDIT_APP_ICON=AppIconNightly"
+    "BRISKEDIT_SPARKLE_FEED_URL=https://github.com/${GITHUB_REPOSITORY:-jx-grxf/BriskEdit}/releases/download/nightly/appcast.xml"
+    "BRISKEDIT_SOURCE_COMMIT=${BRISKEDIT_SOURCE_COMMIT:-}"
+  )
+fi
 
 xcodebuild \
   -project BriskEdit.xcodeproj \
@@ -103,15 +125,15 @@ if [[ ! -d "$APP_SRC" ]]; then
 fi
 
 mkdir -p dist
-rm -rf dist/BriskEdit.app
-cp -R "$APP_SRC" dist/BriskEdit.app
+rm -rf "$APP"
+cp -R "$APP_SRC" "$APP"
 
 if [[ -n "${BRISKEDIT_SIGN_IDENTITY:-}" ]]; then
   # xcodebuild re-signs only the Sparkle framework bundle itself; the nested
   # updater helpers keep Sparkle's upstream signature, which notarization
   # rejects ("not signed with a valid Developer ID certificate"). Re-sign
   # them inside-out, then re-seal the framework and the app bundle.
-  SPARKLE="dist/BriskEdit.app/Contents/Frameworks/Sparkle.framework"
+  SPARKLE="$APP/Contents/Frameworks/Sparkle.framework"
   if [[ -d "$SPARKLE" ]]; then
     for nested in \
       "$SPARKLE/Versions/B/XPCServices/Downloader.xpc" \
@@ -128,12 +150,19 @@ if [[ -n "${BRISKEDIT_SIGN_IDENTITY:-}" ]]; then
   fi
   codesign --force --options runtime --timestamp \
     --preserve-metadata=entitlements \
-    --sign "$BRISKEDIT_SIGN_IDENTITY" dist/BriskEdit.app
+    --sign "$BRISKEDIT_SIGN_IDENTITY" "$APP"
 fi
 
-codesign --verify --deep --strict dist/BriskEdit.app
+codesign --verify --deep --strict "$APP"
 
-DMG="dist/BriskEdit-${BRISKEDIT_VERSION}.dmg"
+DMG="dist/$(./script/release_artifacts.sh dmg)"
+if [[ "$CHANNEL" == "nightly" ]]; then
+  # The rolling nightly DMG always holds the newest build; the build number
+  # lives in the app version (0.6.1-nightly.211), not in the volume name.
+  VOLUME_NAME="$APP_NAME"
+else
+  VOLUME_NAME="$APP_NAME $BRISKEDIT_VERSION"
+fi
 rm -f "$DMG"
 
 STAGE="$(mktemp -d)"
@@ -143,9 +172,9 @@ build_plain_dmg() {
   # GUI-free fallback: a plain drag-install DMG via hdiutil. No styled layout,
   # but a valid installable image that never depends on Finder/AppleScript.
   echo "note: building a plain DMG via hdiutil" >&2
-  cp -R dist/BriskEdit.app "$STAGE/"
+  cp -R "$APP" "$STAGE/"
   ln -s /Applications "$STAGE/Applications"
-  hdiutil create -volname "BriskEdit ${BRISKEDIT_VERSION}" \
+  hdiutil create -volname "$VOLUME_NAME" \
     -srcfolder "$STAGE" -ov -format UDZO "$DMG" >/dev/null
 }
 
@@ -153,15 +182,29 @@ CREATE_DMG_HELP=""
 [[ -n "$CREATE_DMG_BIN" ]] && CREATE_DMG_HELP="$("$CREATE_DMG_BIN" --help 2>&1 || true)"
 
 if [[ "$CREATE_DMG_HELP" == *"--volname"* ]]; then
-  # create-dmg/create-dmg (Homebrew formula): styled layout.
-  cp -R dist/BriskEdit.app "$STAGE/"
+  # create-dmg/create-dmg (Homebrew formula): styled layout. Stable and beta
+  # share the blue background, nightly gets the violet one. The positions match
+  # script/render_dmg_background.swift, which draws the wells behind the icons.
+  if [[ "$CHANNEL" == "nightly" ]]; then
+    BACKGROUND="Config/DMG/background-nightly.tiff"
+  else
+    BACKGROUND="Config/DMG/background-stable.tiff"
+  fi
+  VOLUME_ICON="$APP/Contents/Resources/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIconFile' "$APP/Contents/Info.plist").icns"
+  VOLUME_ICON_ARGS=()
+  [[ -f "$VOLUME_ICON" ]] && VOLUME_ICON_ARGS=(--volicon "$VOLUME_ICON")
+  cp -R "$APP" "$STAGE/"
   if ! "$CREATE_DMG_BIN" \
-      --volname "BriskEdit ${BRISKEDIT_VERSION}" \
+      --volname "$VOLUME_NAME" \
+      ${VOLUME_ICON_ARGS[@]+"${VOLUME_ICON_ARGS[@]}"} \
+      --background "$BACKGROUND" \
       --window-pos 200 120 \
-      --window-size 540 360 \
-      --icon-size 96 \
-      --icon "BriskEdit.app" 150 180 \
-      --app-drop-link 390 180 \
+      --window-size 660 468 \
+      --icon-size 128 \
+      --text-size 13 \
+      --icon "$APP_BUNDLE" 170 210 \
+      --hide-extension "$APP_BUNDLE" \
+      --app-drop-link 490 210 \
       --no-internet-enable \
       "$DMG" \
       "$STAGE" >/dev/null; then
@@ -175,7 +218,7 @@ elif [[ "$CREATE_DMG_HELP" == *"--dmg-title"* ]]; then
   (
     cd dist
     "$CREATE_DMG_BIN" --overwrite --no-code-sign \
-      --dmg-title="BriskEdit ${BRISKEDIT_VERSION}" BriskEdit.app . >/dev/null 2>&1 || true
+      --dmg-title="$VOLUME_NAME" "$APP_BUNDLE" . >/dev/null 2>&1 || true
   )
   produced="$(find dist -maxdepth 1 -type f -name 'BriskEdit*.dmg' -print -quit)"
   if [[ -n "$produced" && "$produced" != "$DMG" ]]; then

@@ -11,8 +11,11 @@ enum WhatsNew {
 
     /// Records the running version and returns it **only** when the app was
     /// updated since the previous launch (so the first install — where onboarding
-    /// runs instead — and unchanged relaunches don't pop the page).
-    static func versionToAnnounceAndMarkSeen() -> String? {
+    /// runs instead — and unchanged relaunches don't pop the page). Nightly builds
+    /// never announce: every build is an update, and the curated highlights
+    /// describe the last release rather than what changed on `dev`.
+    static func versionToAnnounceAndMarkSeen(distribution: AppDistribution = .current) -> String? {
+        guard distribution == .release else { return nil }
         let current = currentVersion
         guard !current.isEmpty else { return nil }
         let defaults = UserDefaults.standard

@@ -3,13 +3,16 @@
 #
 # Inputs (env):
 #   BRISKEDIT_VERSION                 required
-#   BRISKEDIT_BUILD                   optional, defaults to the version-derived build
-#   BRISKEDIT_UPDATE_CHANNEL          optional, "stable" or "beta", defaults to stable
+#   BRISKEDIT_BUILD                   optional for stable/beta (version-derived),
+#                                     required for nightly
+#   BRISKEDIT_UPDATE_CHANNEL          optional, "stable" (default), "beta" or "nightly"
 #   BRISKEDIT_SPARKLE_PRIVATE_KEY     required for signing
 #   BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX required, e.g. https://github.com/jx-grxf/BriskEdit/releases/download/v0.1.0
+#   BRISKEDIT_RELEASE_NOTES_FILE      optional, defaults to RELEASE_NOTES.md; its
+#                                     topmost section becomes the update summary
 #
-# Output:
-#   dist/sparkle/BriskEdit-<version>.zip
+# Output (zip name from script/release_artifacts.sh):
+#   dist/sparkle/BriskEdit-<version>.zip, or BriskEdit-Nightly-<build>.zip
 #   dist/sparkle/appcast.xml
 set -euo pipefail
 
@@ -20,16 +23,24 @@ cd "$(dirname "$0")/.."
 : "${BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX:?BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX is required}"
 
 CHANNEL="${BRISKEDIT_UPDATE_CHANNEL:-stable}"
-BUILD="${BRISKEDIT_BUILD:-$(./script/release_build_number.sh "$BRISKEDIT_VERSION")}"
-[[ "$CHANNEL" == "stable" || "$CHANNEL" == "beta" ]] || { echo "error: update channel must be stable or beta" >&2; exit 1; }
+if [[ "$CHANNEL" == "nightly" ]]; then
+  BUILD="${BRISKEDIT_BUILD:?nightly builds require BRISKEDIT_BUILD}"
+  [[ "$BUILD" =~ ^[1-9][0-9]{0,3}$ ]] || { echo "error: nightly build must be a single integer below 10000" >&2; exit 1; }
+else
+  BUILD="${BRISKEDIT_BUILD:-$(./script/release_build_number.sh "$BRISKEDIT_VERSION")}"
+fi
 [[ "$BUILD" =~ ^[1-9][0-9]{0,3}(\.[0-9]{1,2}){0,2}$ ]] || { echo "error: Sparkle build must be a numeric CFBundleVersion" >&2; exit 1; }
+APP_NAME="$(./script/release_artifacts.sh app-name)"
+APP_BUNDLE="$(./script/release_artifacts.sh app-bundle)"
+ZIP_NAME="$(./script/release_artifacts.sh zip)"
+NOTES_FILE="${BRISKEDIT_RELEASE_NOTES_FILE:-RELEASE_NOTES.md}"
 
-if [[ ! -d dist/BriskEdit.app ]]; then
-  echo "error: dist/BriskEdit.app not found — run script/package_dmg.sh first" >&2
+if [[ ! -d "dist/$APP_BUNDLE" ]]; then
+  echo "error: dist/$APP_BUNDLE not found — run script/package_dmg.sh first" >&2
   exit 1
 fi
 
-INFO="dist/BriskEdit.app/Contents/Info.plist"
+INFO="dist/$APP_BUNDLE/Contents/Info.plist"
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$INFO")" == "$BRISKEDIT_VERSION" ]] || { echo "error: bundle version differs from appcast version" >&2; exit 1; }
 [[ "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INFO")" == "$BUILD" ]] || { echo "error: bundle build differs from appcast build" >&2; exit 1; }
 MINIMUM_SYSTEM="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$INFO")"
@@ -37,11 +48,11 @@ MINIMUM_SYSTEM="$(/usr/libexec/PlistBuddy -c 'Print :LSMinimumSystemVersion' "$I
 ./script/verify_release_metadata.sh
 
 mkdir -p dist/sparkle
-ZIP="dist/sparkle/BriskEdit-${BRISKEDIT_VERSION}.zip"
+ZIP="dist/sparkle/$ZIP_NAME"
 rm -f "$ZIP"
 
-# Sparkle expects a flat zip with BriskEdit.app at the root.
-(cd dist && /usr/bin/ditto -c -k --sequesterRsrc --keepParent BriskEdit.app "sparkle/BriskEdit-${BRISKEDIT_VERSION}.zip")
+# Sparkle expects a flat zip with the app bundle at the root.
+(cd dist && /usr/bin/ditto -c -k --sequesterRsrc --keepParent "$APP_BUNDLE" "sparkle/$ZIP_NAME")
 
 # Locate Sparkle's EdDSA sign_update binary. It ships as an SPM binary artifact
 # (.../SourcePackages/artifacts/sparkle/Sparkle/bin/sign_update). The legacy
@@ -84,14 +95,14 @@ if [[ -z "$ED_SIGNATURE" ]]; then
 fi
 LENGTH="$(stat -f%z "$ZIP")"
 PUBDATE="$(LC_ALL=en_US date -u "+%a, %d %b %Y %H:%M:%S +0000")"
-DOWNLOAD_URL="${BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX%/}/BriskEdit-${BRISKEDIT_VERSION}.zip"
+DOWNLOAD_URL="${BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX%/}/$ZIP_NAME"
 
 # Build a concise HTML release-notes summary for the Sparkle update dialog from
-# the topmost (current) version section of RELEASE_NOTES.md — headings + bullet
+# the topmost (current) version section of the notes file — headings + bullet
 # highlights only, so the prompt stays short. Embedded inline as <description>;
 # the enclosure's edSignature still covers only the ZIP, so this needs no signing.
 DESCRIPTION_HTML=""
-if [[ -f RELEASE_NOTES.md ]]; then
+if [[ -f "$NOTES_FILE" ]]; then
   DESCRIPTION_HTML="$(perl -0777 -ne '
     if (/^##[ ].*?\n(.*?)(?=^##[ ]|\z)/ms) {
       my $body = $1; my @out; my $inlist = 0;
@@ -116,7 +127,7 @@ if [[ -f RELEASE_NOTES.md ]]; then
       push @out, "</ul>" if $inlist;
       print join("", @out);
     }
-  ' RELEASE_NOTES.md)"
+  ' "$NOTES_FILE")"
 fi
 DESCRIPTION_BLOCK=""
 if [[ -n "$DESCRIPTION_HTML" ]]; then
@@ -126,7 +137,9 @@ fi
 # Sparkle best practice: only PRE-RELEASE builds carry a channel tag. Stable
 # builds go on the *default* channel (no tag), which every client — including
 # users opted into the beta channel — always sees. That's what lets beta testers
-# roll forward onto a newer stable release automatically.
+# roll forward onto a newer stable release automatically. Nightly items carry
+# "nightly" even though only the nightly app reads that feed, so a release build
+# pointed at it by mistake would still see nothing.
 CHANNEL_BLOCK=""
 if [[ "$CHANNEL" != "stable" ]]; then
   CHANNEL_BLOCK="      <sparkle:channel>${CHANNEL}</sparkle:channel>"
@@ -141,7 +154,7 @@ cat > dist/sparkle/appcast.xml <<EOF
     <description>BriskEdit ${CHANNEL} update feed</description>
     <language>en</language>
     <item>
-      <title>BriskEdit ${BRISKEDIT_VERSION}</title>
+      <title>${APP_NAME} ${BRISKEDIT_VERSION}</title>
 ${DESCRIPTION_BLOCK}
 ${CHANNEL_BLOCK}
       <sparkle:version>${BUILD}</sparkle:version>

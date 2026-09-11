@@ -1,0 +1,338 @@
+name: Nightly
+
+# Every pull request merged into dev arrives as a push to dev and starts one
+# run: the full CI suite and the signed, notarized "BriskEdit Nightly" build run
+# in parallel, and the rolling `nightly` prerelease with its Sparkle feed is
+# replaced only after both have passed.
+on:
+  push:
+    branches: [dev]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Republish even if the nightly feed already serves this build"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# Runs start in push order and never overlap, so the feed only moves forward.
+# GitHub keeps at most one pending run per group and cancels the older pending
+# run, so a burst of merges publishes the newest commit, which contains the rest.
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+    with:
+      # The build job packages, signs and verifies the nightly DMG itself, and the
+      # pull request already ran the unsigned stable package smoke test.
+      skip-package-smoke-test: true
+
+  resolve:
+    name: Resolve nightly
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      publish: ${{ steps.decide.outputs.publish }}
+      previous_commit: ${{ steps.decide.outputs.previous_commit }}
+      commit: ${{ steps.identity.outputs.commit }}
+      short_commit: ${{ steps.identity.outputs.short_commit }}
+      build: ${{ steps.identity.outputs.build }}
+      version: ${{ steps.identity.outputs.version }}
+    steps:
+      - name: Require dev
+        if: github.ref != 'refs/heads/dev'
+        run: |
+          echo "::error::Nightlies are built from dev only. Run this workflow on dev."
+          exit 1
+
+      - name: Checkout dev history
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          fetch-depth: 0
+
+      - name: Derive build identity
+        id: identity
+        run: ./script/nightly_identity.sh "$GITHUB_SHA" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Decide whether to publish
+        id: decide
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+          COMMIT: ${{ steps.identity.outputs.commit }}
+          BUILD: ${{ steps.identity.outputs.build }}
+        run: |
+          set -euo pipefail
+          feed="$RUNNER_TEMP/nightly-appcast.xml"
+          if gh release view nightly --json assets --jq '.assets[].name' > "$RUNNER_TEMP/nightly-assets.txt" 2>/dev/null \
+            && grep -qx appcast.xml "$RUNNER_TEMP/nightly-assets.txt"; then
+            gh release download nightly --pattern appcast.xml --output "$feed" --clobber
+          fi
+
+          force_flag=()
+          [[ "$FORCE" == "true" ]] && force_flag=(--force)
+          decision="$(python3 script/nightly_feed_decision.py "$feed" "$BUILD" ${force_flag[@]+"${force_flag[@]}"})"
+
+          previous=""
+          if git fetch --force origin "refs/tags/nightly:refs/tags/nightly" 2>/dev/null; then
+            previous="$(git rev-parse --verify --quiet "refs/tags/nightly^{commit}" || true)"
+          fi
+          if [[ "$decision" == "publish" && "$FORCE" != "true" && -n "$previous" ]] \
+            && git merge-base --is-ancestor "$previous" "$COMMIT"; then
+            changed="$(git diff --name-only "$previous" "$COMMIT" -- . \
+              ':(exclude)docs/' ':(exclude)promo/' ':(exclude).github/assets/' ':(exclude)*.md')"
+            if [[ -z "$changed" ]]; then
+              decision="skip: only documentation or promo files changed since the previous nightly"
+            fi
+          fi
+
+          if [[ "$decision" == "publish" ]]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+            echo "Building nightly $BUILD from \`$COMMIT\`." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "Nightly not published: ${decision#skip: }." | tee -a "$GITHUB_STEP_SUMMARY"
+          fi
+          echo "previous_commit=$previous" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build nightly
+    needs: resolve
+    if: needs.resolve.outputs.publish == 'true'
+    runs-on: macos-26
+    timeout-minutes: 50
+    env:
+      BRISKEDIT_UPDATE_CHANNEL: nightly
+      BRISKEDIT_VERSION: ${{ needs.resolve.outputs.version }}
+      BRISKEDIT_BUILD: ${{ needs.resolve.outputs.build }}
+      BRISKEDIT_SOURCE_COMMIT: ${{ needs.resolve.outputs.short_commit }}
+      BRISKEDIT_RELEASE_TAG: nightly
+    steps:
+      - name: Checkout nightly commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          fetch-depth: 0
+
+      - name: Show toolchain
+        run: |
+          sw_vers
+          xcodebuild -version
+          swift --version
+
+      - name: Install tools
+        run: brew install xcodegen create-dmg
+
+      - name: Verify release secrets
+        env:
+          BRISKEDIT_SPARKLE_PRIVATE_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PRIVATE_KEY }}
+          BRISKEDIT_SPARKLE_PUBLIC_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PUBLIC_KEY }}
+          BRISKEDIT_SIGN_IDENTITY: ${{ secrets.BRISKEDIT_SIGN_IDENTITY }}
+          BRISKEDIT_SIGN_P12_BASE64: ${{ secrets.BRISKEDIT_SIGN_P12_BASE64 }}
+          BRISKEDIT_SIGN_P12_PASSWORD: ${{ secrets.BRISKEDIT_SIGN_P12_PASSWORD }}
+          BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
+          BRISKEDIT_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.BRISKEDIT_NOTARY_KEYCHAIN_PROFILE }}
+          BRISKEDIT_NOTARY_KEY_ID: ${{ secrets.BRISKEDIT_NOTARY_KEY_ID }}
+          BRISKEDIT_NOTARY_ISSUER_ID: ${{ secrets.BRISKEDIT_NOTARY_ISSUER_ID }}
+          BRISKEDIT_NOTARY_KEY_P8_BASE64: ${{ secrets.BRISKEDIT_NOTARY_KEY_P8_BASE64 }}
+          BRISKEDIT_NOTARY_APPLE_ID: ${{ secrets.BRISKEDIT_NOTARY_APPLE_ID }}
+          BRISKEDIT_NOTARY_TEAM_ID: ${{ secrets.BRISKEDIT_NOTARY_TEAM_ID }}
+          BRISKEDIT_NOTARY_PASSWORD: ${{ secrets.BRISKEDIT_NOTARY_PASSWORD }}
+        run: ./script/verify_release_secrets.sh
+
+      - name: Import signing certificate
+        env:
+          BRISKEDIT_SIGN_P12_BASE64: ${{ secrets.BRISKEDIT_SIGN_P12_BASE64 }}
+          BRISKEDIT_SIGN_P12_PASSWORD: ${{ secrets.BRISKEDIT_SIGN_P12_PASSWORD }}
+        run: ./script/import_signing_certificate.sh
+
+      # The test suite runs in the parallel CI job; nothing is published unless it
+      # passes, so this job goes straight to packaging.
+      - name: Build DMG
+        env:
+          BRISKEDIT_WARNINGS_AS_ERRORS: "true"
+          BRISKEDIT_SPARKLE_PUBLIC_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PUBLIC_KEY }}
+          BRISKEDIT_SIGN_IDENTITY: ${{ secrets.BRISKEDIT_SIGN_IDENTITY }}
+        run: ./script/package_dmg.sh
+
+      - name: Write nightly release notes
+        env:
+          PREVIOUS_COMMIT: ${{ needs.resolve.outputs.previous_commit }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
+        run: ./script/nightly_release_notes.sh "$PREVIOUS_COMMIT" "$COMMIT" "$BRISKEDIT_BUILD" dist/nightly-notes.md
+
+      - name: Build Sparkle assets
+        env:
+          BRISKEDIT_SPARKLE_PRIVATE_KEY: ${{ secrets.BRISKEDIT_SPARKLE_PRIVATE_KEY }}
+          BRISKEDIT_SPARKLE_DOWNLOAD_PREFIX: https://github.com/${{ github.repository }}/releases/download/nightly
+          BRISKEDIT_RELEASE_NOTES_FILE: dist/nightly-notes.md
+        run: ./script/create_sparkle_assets.sh
+
+      - name: Notarize DMG
+        env:
+          BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
+          BRISKEDIT_NOTARY_KEYCHAIN_PROFILE: ${{ secrets.BRISKEDIT_NOTARY_KEYCHAIN_PROFILE }}
+          BRISKEDIT_NOTARY_KEY_ID: ${{ secrets.BRISKEDIT_NOTARY_KEY_ID }}
+          BRISKEDIT_NOTARY_ISSUER_ID: ${{ secrets.BRISKEDIT_NOTARY_ISSUER_ID }}
+          BRISKEDIT_NOTARY_KEY_P8_BASE64: ${{ secrets.BRISKEDIT_NOTARY_KEY_P8_BASE64 }}
+          BRISKEDIT_NOTARY_APPLE_ID: ${{ secrets.BRISKEDIT_NOTARY_APPLE_ID }}
+          BRISKEDIT_NOTARY_TEAM_ID: ${{ secrets.BRISKEDIT_NOTARY_TEAM_ID }}
+          BRISKEDIT_NOTARY_PASSWORD: ${{ secrets.BRISKEDIT_NOTARY_PASSWORD }}
+        run: ./script/notarize_release.sh
+
+      - name: Verify nightly artifacts
+        env:
+          BRISKEDIT_NOTARY_ENABLED: ${{ secrets.BRISKEDIT_NOTARY_ENABLED }}
+        run: ./script/verify_release_artifacts.sh
+
+      - name: Upload nightly artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: nightly-${{ needs.resolve.outputs.build }}
+          path: |
+            dist/BriskEdit-Nightly.dmg
+            dist/sparkle/BriskEdit-Nightly-*.zip
+            dist/sparkle/appcast.xml
+            dist/SHA256SUMS
+            dist/nightly-notes.md
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove signing keychain
+        if: always()
+        run: ./script/cleanup_signing_keychain.sh
+
+  publish:
+    name: Publish nightly
+    # Runs only when CI, the decision and the signed build all succeeded.
+    needs: [ci, resolve, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      BRISKEDIT_UPDATE_CHANNEL: nightly
+      BRISKEDIT_VERSION: ${{ needs.resolve.outputs.version }}
+      BRISKEDIT_BUILD: ${{ needs.resolve.outputs.build }}
+    steps:
+      - name: Checkout nightly commit
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+
+      - name: Download nightly artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: nightly-${{ needs.resolve.outputs.build }}
+          path: dist
+
+      - name: Check artifact checksums
+        run: |
+          set -euo pipefail
+          # SHA256SUMS lists bare file names; the archive and feed sit in dist/sparkle.
+          while read -r sum name; do
+            path="dist/$name"
+            [[ -f "$path" ]] || path="dist/sparkle/$name"
+            printf '%s  %s\n' "$sum" "$path"
+          done < dist/SHA256SUMS | sha256sum --check --strict
+
+      - name: Attest nightly artifacts
+        uses: actions/attest-build-provenance@a2bbfa25375fe432b6a289bc6b6cd05ecd0c4c32 # v4.1.0
+        with:
+          subject-path: |
+            dist/BriskEdit-Nightly.dmg
+            dist/sparkle/BriskEdit-Nightly-*.zip
+            dist/sparkle/appcast.xml
+            dist/SHA256SUMS
+
+      - name: Publish nightly release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          COMMIT: ${{ needs.resolve.outputs.commit }}
+        run: |
+          set -euo pipefail
+          zip="$(./script/release_artifacts.sh zip)"
+          dmg="$(./script/release_artifacts.sh dmg)"
+          if gh release view nightly --json isPrerelease > "$RUNNER_TEMP/nightly-state.json" 2>/dev/null; then
+            [[ "$(jq -r '.isPrerelease' "$RUNNER_TEMP/nightly-state.json")" == "true" ]] || {
+              echo "error: the nightly release must stay a prerelease so it never becomes latest" >&2
+              exit 1
+            }
+          else
+            gh release create nightly --target "$COMMIT" --prerelease --latest=false \
+              --title "BriskEdit Nightly" --notes-file dist/nightly-notes.md
+          fi
+          # Upload the archive before the feed that references it, so a client
+          # never reads an appcast whose enclosure is not downloadable yet.
+          gh release upload nightly "dist/sparkle/$zip" "dist/$dmg" --clobber
+          gh release upload nightly dist/sparkle/appcast.xml dist/SHA256SUMS --clobber
+          gh release edit nightly --prerelease --latest=false \
+            --title "BriskEdit Nightly" --notes-file dist/nightly-notes.md
+
+          # target_commitish is ignored once the tag exists, so move the tag
+          # explicitly. The feed is already live; a stale tag only widens the
+          # change list of the next nightly.
+          if ! gh api -X PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/nightly" \
+              -f sha="$COMMIT" -F force=true > /dev/null; then
+            echo "::warning::Could not move the nightly tag to $COMMIT."
+          fi
+
+          # Keep the current and the previous archive (a client may still be
+          # downloading it from the old feed) and delete everything older.
+          gh release view nightly --json assets --jq '.assets[].name' \
+            | { grep -E '^BriskEdit-Nightly-[0-9]+\.zip$' || true; } \
+            | sort -t- -k3,3n \
+            | sed '$d' | sed '$d' \
+            | while IFS= read -r stale; do
+                gh release delete-asset nightly "$stale" --yes
+              done
+
+      - name: Verify published nightly
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          zip="$(./script/release_artifacts.sh zip)"
+          dmg="$(./script/release_artifacts.sh dmg)"
+          mkdir -p "$RUNNER_TEMP/published"
+          # The release API is authoritative; the public download URL can lag.
+          gh release download nightly --pattern appcast.xml --dir "$RUNNER_TEMP/published" --clobber
+          gh release download nightly --pattern "$zip" --dir "$RUNNER_TEMP/published" --clobber
+          cmp dist/sparkle/appcast.xml "$RUNNER_TEMP/published/appcast.xml"
+          cmp "dist/sparkle/$zip" "$RUNNER_TEMP/published/$zip"
+          release_json="$(gh release view nightly --json assets,isDraft,isPrerelease,url)"
+          [[ "$(jq -r '.isDraft' <<<"$release_json")" == "false" ]]
+          [[ "$(jq -r '.isPrerelease' <<<"$release_json")" == "true" ]]
+          for name in "$dmg" "$zip" appcast.xml SHA256SUMS; do
+            size="$(jq -r --arg name "$name" '.assets[] | select(.name == $name) | .size' <<<"$release_json")"
+            [[ "$size" =~ ^[1-9][0-9]*$ ]] || {
+              echo "error: published asset $name is missing or empty" >&2
+              exit 1
+            }
+          done
+          latest="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq '.tag_name')"
+          [[ "$latest" != "nightly" ]] || {
+            echo "error: the nightly release must never be marked latest" >&2
+            exit 1
+          }
+          {
+            echo "Published **BriskEdit Nightly $BRISKEDIT_VERSION**: $(jq -r '.url' <<<"$release_json")"
+            echo
+            echo "DMG: https://github.com/${GITHUB_REPOSITORY}/releases/download/nightly/$dmg"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
