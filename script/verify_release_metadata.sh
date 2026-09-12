@@ -35,12 +35,20 @@ EXPECTED_PROJECT_BUILD="$(./script/release_build_number.sh "$PROJECT_VERSION")"
   || fail "What's New highlightsVersion '$WHATSNEW_VERSION' does not match project version '$PROJECT_VERSION' — update WhatsNew.sections and bump highlightsVersion"
 
 if [[ "${BRISKEDIT_UPDATE_CHANNEL:-}" == "nightly" ]]; then
-  # Nightly builds from dev identify as the project version plus their build,
-  # a single integer (commit count) that only the separate nightly app compares.
+  # Nightly builds from dev order themselves by a single integer (the commit
+  # count) that only the separate nightly app ever compares, and they are named
+  # after the release they lead to: <project version, or its next patch once that
+  # version shipped>-nightly.<nightlies since that release>.
   [[ "${BRISKEDIT_BUILD:-}" =~ ^[1-9][0-9]{0,3}$ ]] \
     || fail "nightly build '${BRISKEDIT_BUILD:-}' must be a single integer below 10000"
-  [[ "${BRISKEDIT_VERSION:-}" == "$PROJECT_VERSION-nightly.$BRISKEDIT_BUILD" ]] \
-    || fail "nightly version '${BRISKEDIT_VERSION:-}' must equal '$PROJECT_VERSION-nightly.$BRISKEDIT_BUILD'"
+  [[ "${BRISKEDIT_VERSION:-}" =~ ^[0-9]+\.[0-9]+\.[0-9]+-nightly\.[0-9]+$ ]] \
+    || fail "nightly version '${BRISKEDIT_VERSION:-}' must look like 1.2.3-nightly.4"
+  nightly_base="${BRISKEDIT_VERSION%-nightly.*}"
+  project_base="${PROJECT_VERSION%%-*}"
+  IFS=. read -r nightly_major nightly_minor nightly_patch <<< "$project_base"
+  [[ "$nightly_base" == "$project_base" \
+    || "$nightly_base" == "${nightly_major}.${nightly_minor}.$((nightly_patch + 1))" ]] \
+    || fail "nightly version '$BRISKEDIT_VERSION' must lead to $project_base or its next patch"
   if [[ -n "${BRISKEDIT_RELEASE_TAG:-}" && "$BRISKEDIT_RELEASE_TAG" != "nightly" ]]; then
     fail "nightly builds publish to the 'nightly' release, not '$BRISKEDIT_RELEASE_TAG'"
   fi
