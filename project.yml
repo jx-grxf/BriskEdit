@@ -83,6 +83,10 @@ targets:
         INFOPLIST_KEY_NSHumanReadableCopyright: "© 2026 Johannes Grof"
         INFOPLIST_KEY_LSApplicationCategoryType: "public.app-category.developer-tools"
         INFOPLIST_KEY_CFBundleDisplayName: "$(BRISKEDIT_DISPLAY_NAME)"
+        # CFBundleName drives the menu bar, the About panel and Sparkle's
+        # dialogs. Xcode generates it from PRODUCT_NAME, overwriting any value
+        # in Config/Info.plist, and there is no INFOPLIST_KEY_ setting for it —
+        # package_dmg.sh rewrites it to the display name before signing.
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         ASSETCATALOG_COMPILER_APPICON_NAME: "$(BRISKEDIT_APP_ICON)"
         CODE_SIGN_STYLE: Manual

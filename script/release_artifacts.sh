@@ -6,8 +6,8 @@
 #
 # Inputs (env):
 #   BRISKEDIT_UPDATE_CHANNEL   stable (default), beta or nightly
-#   BRISKEDIT_VERSION          required for stable/beta dmg and zip names
-#   BRISKEDIT_BUILD            required for the nightly zip name
+#   BRISKEDIT_VERSION          required for every dmg and zip name except the
+#                              nightly dmg, whose link never changes
 set -euo pipefail
 
 field="${1:?usage: release_artifacts.sh <app-name|app-bundle|bundle-id|dmg|zip>}"
@@ -48,11 +48,9 @@ case "$field" in
     fi
     ;;
   zip)
-    if [[ "$channel" == "nightly" ]]; then
-      printf 'BriskEdit-Nightly-%s.zip\n' "${BRISKEDIT_BUILD:?BRISKEDIT_BUILD is required}"
-    else
-      printf 'BriskEdit-%s.zip\n' "${BRISKEDIT_VERSION:?BRISKEDIT_VERSION is required}"
-    fi
+    # A nightly version already carries its own suffix (0.6.2-nightly.3), so one
+    # pattern names every archive and no two channels can collide.
+    printf 'BriskEdit-%s.zip\n' "${BRISKEDIT_VERSION:?BRISKEDIT_VERSION is required}"
     ;;
   *)
     echo "error: unknown artifact field '$field'" >&2

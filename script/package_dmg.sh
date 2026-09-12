@@ -128,6 +128,12 @@ mkdir -p dist
 rm -rf "$APP"
 cp -R "$APP_SRC" "$APP"
 
+# The menu bar, the About panel and Sparkle's dialogs read CFBundleName. Xcode
+# generates that key from PRODUCT_NAME and overwrites whatever Config/Info.plist
+# says, and there is no INFOPLIST_KEY_ setting for it, so a nightly called itself
+# "BriskEdit" everywhere except the Dock. Rewrite it here, before signing.
+/usr/libexec/PlistBuddy -c "Set :CFBundleName $APP_NAME" "$APP/Contents/Info.plist"
+
 if [[ -n "${BRISKEDIT_SIGN_IDENTITY:-}" ]]; then
   # xcodebuild re-signs only the Sparkle framework bundle itself; the nested
   # updater helpers keep Sparkle's upstream signature, which notarization
@@ -151,6 +157,10 @@ if [[ -n "${BRISKEDIT_SIGN_IDENTITY:-}" ]]; then
   codesign --force --options runtime --timestamp \
     --preserve-metadata=entitlements \
     --sign "$BRISKEDIT_SIGN_IDENTITY" "$APP"
+else
+  # Rewriting Info.plist invalidates the ad-hoc signature xcodebuild applied, so
+  # re-seal the bundle. Unsigned preview and CI smoke builds verify it below.
+  codesign --force --preserve-metadata=entitlements --sign - "$APP"
 fi
 
 codesign --verify --deep --strict "$APP"
