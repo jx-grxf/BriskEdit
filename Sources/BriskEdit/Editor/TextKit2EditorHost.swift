@@ -1,6 +1,24 @@
 import AppKit
 import SwiftUI
 
+/// Whether an editor viewport that finally has a real size is showing nothing
+/// because TextKit 2 never laid the document out (or the viewport sits past the
+/// laid-out content). Kept separate from the view so the rule is testable.
+enum EditorViewportRepairPolicy {
+    static func needsRelayout(
+        viewportWidth: CGFloat,
+        viewportHeight: CGFloat,
+        laidOutHeight: CGFloat,
+        hasText: Bool,
+        showsLaidOutText: Bool
+    ) -> Bool {
+        // A viewport that isn't measured yet gets its own layout pass later;
+        // forcing one now would just lay out into nothing again.
+        guard hasText, viewportWidth > 1, viewportHeight > 1 else { return false }
+        return laidOutHeight < 1 || !showsLaidOutText
+    }
+}
+
 struct TextKit2EditorHost: NSViewRepresentable {
     @Bindable var document: TextDocument
     let theme: EditorTheme
@@ -360,6 +378,9 @@ struct TextKit2EditorHost: NSViewRepresentable {
         private var lspLanguage: SourceLanguage?
         private var lspRoot: String?
         var lastSyncedRevision = 0
+        /// Consecutive forced relayouts of a measured but empty viewport; see
+        /// `repairBlankViewportIfNeeded`.
+        private var blankViewportRepairs = 0
         private let popup = CompletionPopup()
         let folding = FoldingController()
         /// A per-editor undo manager handed to the text view via
@@ -437,10 +458,53 @@ struct TextKit2EditorHost: NSViewRepresentable {
         }
 
         @objc private func viewportChanged() {
+            repairBlankViewportIfNeeded()
             gutter?.refresh()
             minimap?.refresh()
             hideHover()
             hideSignatureHelp()
+        }
+
+        /// TextKit 2 lays out only what the viewport asks for. An editor built
+        /// while its container had no height — a restored session, a tab that
+        /// first appears next to the Markdown preview — lays out nothing and the
+        /// text view keeps a zero-height frame. The viewport growing afterwards
+        /// changes only the height, which doesn't invalidate layout on its own,
+        /// so the text and the gutter stayed blank for the lifetime of that tab
+        /// while the minimap and the preview (both render from the document, not
+        /// from the layout) still showed content. Force a single relayout when
+        /// the viewport is measured but has no text in it, and pull an
+        /// overscrolled viewport back onto the content.
+        private func repairBlankViewportIfNeeded() {
+            guard let textView, let scrollView, let layoutManager = textView.textLayoutManager else { return }
+            let viewport = scrollView.contentView.bounds
+            let hasText = !textView.string.isEmpty
+            let topOfViewport = CGPoint(x: 0, y: max(viewport.minY, 0))
+            let showsLaidOutText = layoutManager.textLayoutFragment(for: topOfViewport) != nil
+            guard EditorViewportRepairPolicy.needsRelayout(
+                viewportWidth: viewport.width,
+                viewportHeight: viewport.height,
+                laidOutHeight: textView.frame.height,
+                hasText: hasText,
+                showsLaidOutText: showsLaidOutText
+            ) else {
+                if showsLaidOutText { blankViewportRepairs = 0 }
+                return
+            }
+            // Bounded like the gutter's zero-height retry: a document that
+            // genuinely lays out to nothing must not spin the main thread.
+            guard blankViewportRepairs < 5 else { return }
+            blankViewportRepairs += 1
+            layoutManager.invalidateLayout(for: layoutManager.documentRange)
+            layoutManager.textViewportLayoutController.layoutViewport()
+            textView.needsLayout = true
+            textView.needsDisplay = true
+            let lastScrollableY = max(0, textView.frame.height - viewport.height)
+            if viewport.minY > lastScrollableY {
+                scrollView.contentView.scroll(to: CGPoint(x: viewport.minX, y: lastScrollableY))
+                scrollView.reflectScrolledClipView(scrollView.contentView)
+            }
+            gutter?.refresh()
         }
 
         @objc private func gitMaybeChanged(_ notification: Notification) {
