@@ -152,7 +152,7 @@ struct WorkspaceWindow: View {
         .sheet(isPresented: Bindable(workspace).showToolHealth) {
             ToolHealthPanel()
         }
-        .alert("BriskEdit", isPresented: Binding(
+        .alert(AppDistribution.current.displayName, isPresented: Binding(
             get: { workspace.lastError != nil },
             set: { if !$0 { workspace.lastError = nil } }
         )) {

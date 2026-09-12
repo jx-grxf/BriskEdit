@@ -265,6 +265,7 @@ jobs:
           test "$(defaults read "$info" CFBundleVersion)" = "$BRISKEDIT_BUILD"
           test "$(defaults read "$info" CFBundleIdentifier)" = com.johannesgrof.briskedit
           test "$(defaults read "$info" BriskEditDistribution)" = release
+          test "$(defaults read "$info" CFBundleName)" = BriskEdit
           test "$(defaults read "$info" SUFeedURL)" = https://github.com/jx-grxf/BriskEdit/releases/latest/download/appcast.xml
 
       - name: Build nightly DMG
@@ -283,6 +284,7 @@ jobs:
           info="$PWD/dist/BriskEdit Nightly.app/Contents/Info"
           test "$(defaults read "$info" CFBundleIdentifier)" = com.johannesgrof.briskedit.nightly
           test "$(defaults read "$info" CFBundleDisplayName)" = "BriskEdit Nightly"
+          test "$(defaults read "$info" CFBundleName)" = "BriskEdit Nightly"
           test "$(defaults read "$info" BriskEditDistribution)" = nightly
           test "$(defaults read "$info" BriskEditSourceCommit)" = "$BRISKEDIT_SOURCE_COMMIT"
           test "$(defaults read "$info" CFBundleIconName)" = AppIconNightly

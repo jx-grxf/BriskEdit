@@ -55,7 +55,7 @@ struct OnboardingView: View {
             Image(systemName: "bolt.horizontal.fill")
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(accent)
-            Text("BriskEdit")
+            Text(AppDistribution.current.displayName)
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.white.opacity(0.85))
             Spacer()

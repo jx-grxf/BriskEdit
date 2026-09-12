@@ -276,7 +276,7 @@ struct AppCommands: Commands {
         // number is derived from the version for Sparkle ordering, so an empty
         // `.version` leaves just "Version 0.6.0".
         CommandGroup(replacing: .appInfo) {
-            Button("About BriskEdit") {
+            Button("About \(AppDistribution.current.displayName)") {
                 NSApplication.shared.orderFrontStandardAboutPanel(options: [.version: ""])
             }
         }
@@ -290,7 +290,7 @@ struct AppCommands: Commands {
         // Replace the default "BriskEdit Help" item (which only shows an
         // "Help isn't available" alert) with a link to the project on GitHub.
         CommandGroup(replacing: .help) {
-            Button("What's New in BriskEdit") {
+            Button("What's New in \(AppDistribution.current.displayName)") {
                 workspace?.showWhatsNew(version: WhatsNew.currentVersion)
             }
             .disabled(workspace == nil)
