@@ -1,5 +1,22 @@
 # Release Notes
 
+## 0.6.2 - Reliable editor rendering and a refreshed welcome screen
+
+### Fixed
+
+- **Visible text with the minimap enabled.** The minimap no longer paints over the editor and line numbers when editor vibrancy is off. Drawing stays inside each editor surface, including when accessibility or power settings require a solid background.
+- **Reliable beta update feed.** The combined beta appcast is published under the filename that installed clients request.
+
+### Improved
+
+- **Refreshed welcome screen.** Recent workspaces, file and folder actions, and project context are easier to find when opening BriskEdit.
+- **Clearer Nightly identity.** Nightly builds use their own app name, violet accent and window marker, with versions that indicate the release they lead to.
+
+### Compatibility
+
+- macOS 15 (Sequoia) or later. Liquid Glass requires macOS 26 (Tahoe).
+- Release artifacts target Apple silicon.
+
 ## 0.6.1 - A new app icon and a clearer version display
 
 ### Improved
