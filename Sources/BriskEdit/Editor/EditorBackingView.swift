@@ -14,6 +14,7 @@ final class EditorBackingView: NSView {
         self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
+        clipsToBounds = true
         layerContentsRedrawPolicy = .onSetNeedsDisplay
         setTheme(theme)
     }
@@ -70,9 +71,13 @@ final class EditorBackingView: NSView {
     }
 
     override func draw(_ dirtyRect: NSRect) {
+        // AppKit may invalidate beyond our bounds. Never paint over siblings.
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath(rect: bounds).addClip()
         guard !isVibrant else { return }
         theme.background.withAlphaComponent(1).setFill()
-        dirtyRect.fill()
+        dirtyRect.intersection(bounds).fill()
     }
 }
 

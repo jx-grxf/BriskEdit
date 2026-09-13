@@ -35,6 +35,7 @@ final class TextKit2GutterView: NSView {
         self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
+        clipsToBounds = true
         layer?.backgroundColor = (theme.vibrancy == .off ? theme.gutterBackground : NSColor.clear).cgColor
     }
 
@@ -95,9 +96,13 @@ final class TextKit2GutterView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+        // AppKit may invalidate beyond our bounds. Never paint over siblings.
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath(rect: bounds).addClip()
         let background = theme.vibrancy == .off ? theme.gutterBackground : theme.gutterBackground.withAlphaComponent(0.18)
         background.setFill()
-        dirtyRect.fill(using: .copy)
+        dirtyRect.intersection(bounds).fill(using: .copy)
         foldHitRects.removeAll(keepingCapacity: true)
 
         guard let textView, let tlm = textView.textLayoutManager else { return }
