@@ -78,13 +78,14 @@ class ReleaseScriptTests(unittest.TestCase):
 
     def test_nightly_artifacts_never_collide_with_release_artifacts(self):
         stable = dict(BRISKEDIT_UPDATE_CHANNEL="stable", BRISKEDIT_VERSION="0.6.1", BRISKEDIT_BUILD="1006.1.99")
-        nightly = dict(BRISKEDIT_UPDATE_CHANNEL="nightly", BRISKEDIT_VERSION="0.6.1-nightly.211", BRISKEDIT_BUILD="211")
+        nightly = dict(BRISKEDIT_UPDATE_CHANNEL="nightly", BRISKEDIT_VERSION="0.6.2-nightly.3", BRISKEDIT_BUILD="215")
         self.assertEqual(self.artifact("bundle-id", **stable), "com.johannesgrof.briskedit")
         self.assertEqual(self.artifact("bundle-id", **nightly), "com.johannesgrof.briskedit.nightly")
         self.assertEqual(self.artifact("app-bundle", **nightly), "BriskEdit Nightly.app")
         self.assertEqual(self.artifact("dmg", **stable), "BriskEdit-0.6.1.dmg")
         self.assertEqual(self.artifact("dmg", **nightly), "BriskEdit-Nightly.dmg")
-        self.assertEqual(self.artifact("zip", **nightly), "BriskEdit-Nightly-211.zip")
+        self.assertEqual(self.artifact("zip", **stable), "BriskEdit-0.6.1.zip")
+        self.assertEqual(self.artifact("zip", **nightly), "BriskEdit-0.6.2-nightly.3.zip")
         result = subprocess.run([ROOT / "script/release_artifacts.sh", "dmg"], capture_output=True, env={"BRISKEDIT_UPDATE_CHANNEL": "canary", "PATH": "/usr/bin:/bin"})
         self.assertNotEqual(result.returncode, 0)
 
@@ -109,24 +110,46 @@ class ReleaseScriptTests(unittest.TestCase):
         import os
         return subprocess.run([ROOT / "script/verify_release_metadata.sh"], capture_output=True, text=True, env={**os.environ, **env})
 
-    def test_nightly_metadata_requires_project_version_and_integer_build(self):
+    def test_nightly_metadata_requires_a_next_release_version_and_integer_build(self):
         version = subprocess.check_output(["awk", "-F\"", "/MARKETING_VERSION:/ { print $2; exit }", ROOT / "project.yml"], text=True).strip()
-        ok = self.metadata(BRISKEDIT_UPDATE_CHANNEL="nightly", BRISKEDIT_VERSION=f"{version}-nightly.211", BRISKEDIT_BUILD="211", BRISKEDIT_RELEASE_TAG="nightly")
-        self.assertEqual(ok.returncode, 0, ok.stderr)
+        base = version.split("-")[0]
+        major, minor, patch = (int(part) for part in base.split("."))
+        # A nightly leads either to the version dev carries or to its next patch,
+        # once that version has shipped.
+        for nightly_base in (base, f"{major}.{minor}.{patch + 1}"):
+            ok = self.metadata(
+                BRISKEDIT_UPDATE_CHANNEL="nightly",
+                BRISKEDIT_VERSION=f"{nightly_base}-nightly.3",
+                BRISKEDIT_BUILD="215",
+                BRISKEDIT_RELEASE_TAG="nightly",
+            )
+            self.assertEqual(ok.returncode, 0, ok.stderr)
         for env in (
-            dict(BRISKEDIT_VERSION=version, BRISKEDIT_BUILD="211"),
-            dict(BRISKEDIT_VERSION=f"{version}-nightly.211", BRISKEDIT_BUILD="1006.1.99"),
-            dict(BRISKEDIT_VERSION=f"{version}-nightly.211", BRISKEDIT_BUILD="211", BRISKEDIT_RELEASE_TAG=f"v{version}"),
+            dict(BRISKEDIT_VERSION=base, BRISKEDIT_BUILD="215"),
+            dict(BRISKEDIT_VERSION=f"{base}-nightly.3", BRISKEDIT_BUILD="1006.1.99"),
+            dict(BRISKEDIT_VERSION=f"{base}-nightly.3", BRISKEDIT_BUILD="215", BRISKEDIT_RELEASE_TAG=f"v{version}"),
+            dict(BRISKEDIT_VERSION=f"{major}.{minor}.{patch + 2}-nightly.1", BRISKEDIT_BUILD="215"),
+            dict(BRISKEDIT_VERSION=f"{base}-nightly.3-beta.1", BRISKEDIT_BUILD="215"),
         ):
             self.assertNotEqual(self.metadata(BRISKEDIT_UPDATE_CHANNEL="nightly", **env).returncode, 0, env)
 
-    def test_nightly_identity_uses_commit_count_and_project_version(self):
+    def test_nightly_identity_counts_commits_for_sparkle_and_merges_for_the_label(self):
         output = subprocess.check_output([ROOT / "script/nightly_identity.sh", "HEAD"], text=True, cwd=ROOT)
         values = dict(line.split("=", 1) for line in output.strip().splitlines())
         count = subprocess.check_output(["git", "rev-list", "--count", "HEAD"], text=True, cwd=ROOT).strip()
+        # Sparkle orders nightlies by the commit count; the label counts the
+        # nightlies since the last release, so it never leaves the app's UI.
         self.assertEqual(values["build"], count)
-        self.assertRegex(values["version"], rf"^\d+\.\d+\.\d+(-beta\.\d+)?-nightly\.{count}$")
         self.assertEqual(len(values["short_commit"]), 7)
+        self.assertRegex(values["version"], rf"^\d+\.\d+\.\d+-nightly\.{values['sequence']}$")
+        self.assertLessEqual(int(values["sequence"]), int(values["build"]))
+        if values["base_commit"]:
+            merges = subprocess.check_output(
+                ["git", "rev-list", "--count", "--first-parent", f"{values['base_commit']}..HEAD"],
+                text=True, cwd=ROOT,
+            ).strip()
+            self.assertEqual(values["sequence"], merges)
+            self.assertTrue(values["base_tag"].startswith("v"), values["base_tag"])
 
     @unittest.skipUnless(sys.platform == "darwin", "Swift verifier requires Xcode on macOS")
     def test_verifier_does_not_mix_fields_between_items(self):

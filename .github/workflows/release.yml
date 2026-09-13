@@ -371,16 +371,25 @@ jobs:
             ./script/verify_appcast.swift "dist/feed-verification/item-${index}.xml" \
               "$url" "$channel" "$version" "$build" "$archive" "$public_key"
           done < dist/feed-verification.tsv
+          # `file#label` only sets a display label; the asset keeps the file's
+          # basename. Beta clients poll `beta/appcast.xml`, so upload that name.
+          mkdir -p dist/beta-feed/published
+          cp dist/sparkle/beta-appcast.xml dist/beta-feed/appcast.xml
           if gh release view beta >/dev/null 2>&1; then
             gh release edit beta --target "$RELEASE_COMMIT" --prerelease --latest=false --title "BriskEdit Beta Feed"
-            gh release upload beta "dist/sparkle/beta-appcast.xml#appcast.xml" --clobber
+            gh release upload beta dist/beta-feed/appcast.xml --clobber
           else
-            gh release create beta "dist/sparkle/beta-appcast.xml#appcast.xml" \
+            gh release create beta dist/beta-feed/appcast.xml \
               --target "$RELEASE_COMMIT" \
               --title "BriskEdit Beta Feed" \
               --notes "Moving Sparkle beta appcast feed. Install beta builds from versioned prereleases." \
               --prerelease
           fi
+          gh release download beta --pattern appcast.xml --dir dist/beta-feed/published --clobber
+          cmp dist/beta-feed/appcast.xml dist/beta-feed/published/appcast.xml || {
+            echo "error: the published beta appcast.xml does not match the verified feed" >&2
+            exit 1
+          }
 
       - name: Remove signing keychain
         if: always()

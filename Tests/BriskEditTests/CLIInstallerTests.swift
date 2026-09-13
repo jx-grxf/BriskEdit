@@ -22,8 +22,10 @@ final class CLIInstallerTests: XCTestCase {
     }
 
     func testLauncherScriptLivesUnderApplicationSupport() {
-        XCTAssertEqual(CLIInstaller.launcherScriptURL.lastPathComponent, "briskedit")
-        XCTAssertTrue(CLIInstaller.launcherScriptURL.path.contains("Application Support/BriskEdit"))
+        let url = CLIInstaller.launcherScriptURL
+        XCTAssertEqual(url.lastPathComponent, AppDistribution.current.cliCommandNames.primary)
+        XCTAssertEqual(url.deletingLastPathComponent().lastPathComponent, AppDistribution.current.supportDirectoryName)
+        XCTAssertEqual(url.deletingLastPathComponent().deletingLastPathComponent().lastPathComponent, "Application Support")
     }
 
     func testInstallerDoesNotReplaceForeignCommands() throws {

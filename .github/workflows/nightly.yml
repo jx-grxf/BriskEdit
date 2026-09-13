@@ -51,6 +51,8 @@ jobs:
       short_commit: ${{ steps.identity.outputs.short_commit }}
       build: ${{ steps.identity.outputs.build }}
       version: ${{ steps.identity.outputs.version }}
+      base_commit: ${{ steps.identity.outputs.base_commit }}
+      base_tag: ${{ steps.identity.outputs.base_tag }}
     steps:
       - name: Require dev
         if: github.ref != 'refs/heads/dev'
@@ -172,7 +174,11 @@ jobs:
         env:
           PREVIOUS_COMMIT: ${{ needs.resolve.outputs.previous_commit }}
           COMMIT: ${{ needs.resolve.outputs.commit }}
-        run: ./script/nightly_release_notes.sh "$PREVIOUS_COMMIT" "$COMMIT" "$BRISKEDIT_BUILD" dist/nightly-notes.md
+          BASE_COMMIT: ${{ needs.resolve.outputs.base_commit }}
+          BASE_TAG: ${{ needs.resolve.outputs.base_tag }}
+        run: |
+          ./script/nightly_release_notes.sh "$PREVIOUS_COMMIT" "$COMMIT" "$BRISKEDIT_VERSION" \
+            dist/nightly-notes.md "$BASE_COMMIT" "$BASE_TAG"
 
       - name: Build Sparkle assets
         env:
@@ -204,7 +210,7 @@ jobs:
           name: nightly-${{ needs.resolve.outputs.build }}
           path: |
             dist/BriskEdit-Nightly.dmg
-            dist/sparkle/BriskEdit-Nightly-*.zip
+            dist/sparkle/BriskEdit-*.zip
             dist/sparkle/appcast.xml
             dist/SHA256SUMS
             dist/nightly-notes.md
@@ -257,7 +263,7 @@ jobs:
         with:
           subject-path: |
             dist/BriskEdit-Nightly.dmg
-            dist/sparkle/BriskEdit-Nightly-*.zip
+            dist/sparkle/BriskEdit-*.zip
             dist/sparkle/appcast.xml
             dist/SHA256SUMS
 
@@ -294,12 +300,14 @@ jobs:
           fi
 
           # Keep the current and the previous archive (a client may still be
-          # downloading it from the old feed) and delete everything older.
-          gh release view nightly --json assets --jq '.assets[].name' \
-            | { grep -E '^BriskEdit-Nightly-[0-9]+\.zip$' || true; } \
-            | sort -t- -k3,3n \
-            | sed '$d' | sed '$d' \
+          # downloading it from the old feed) and delete everything older. Every
+          # zip on this release is a Sparkle archive, so upload order decides —
+          # a nightly version sorts by a sequence that restarts at each release.
+          gh release view nightly --json assets --jq '
+              [.assets[] | select(.name | endswith(".zip"))]
+              | sort_by(.createdAt) | reverse | .[2:] | .[].name' \
             | while IFS= read -r stale; do
+                [[ -n "$stale" ]] || continue
                 gh release delete-asset nightly "$stale" --yes
               done
 

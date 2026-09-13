@@ -46,15 +46,19 @@ enum WhatsNew {
     /// `MARKETING_VERSION`; `script/verify_release_metadata.sh` enforces it in CI
     /// so the in-app What's New page can't silently ship the previous release's
     /// highlights. Bump this together with `sections` (and the release notes).
-    static let highlightsVersion = "0.6.1"
+    static let highlightsVersion = "0.6.2"
 
     /// The latest release's curated highlights. **Update this for each release**
     /// (mirrors the top section of RELEASE_NOTES.md) — see the release recipe in
     /// the project notes so it doesn't get missed.
     static let sections: [Section] = [
-        Section(name: "A fresh look", highlights: [
-            Highlight(symbol: "chevron.left.forwardslash.chevron.right", title: "New app icon", detail: "A redesigned icon with code brackets and a pencil. On macOS 26 it uses Liquid Glass and follows the Dark, Tinted, and Clear icon styles.", tint: .blue),
-            Highlight(symbol: "info.circle", title: "Clearer version display", detail: "Settings and the About window show the version, for example 0.6.1, instead of an internal build number.", tint: .teal),
+        Section(name: "A clearer workspace", highlights: [
+            Highlight(symbol: "text.alignleft", title: "Reliable editor rendering", detail: "Text and line numbers stay visible with the minimap enabled, including when editor vibrancy is off.", tint: .blue),
+            Highlight(symbol: "folder", title: "Refreshed welcome screen", detail: "Find recent workspaces, file and folder actions, and project context more easily.", tint: .teal),
+        ]),
+        Section(name: "Updates", highlights: [
+            Highlight(symbol: "arrow.triangle.2.circlepath", title: "Reliable beta updates", detail: "The beta update feed is published at the address installed clients check.", tint: .orange),
+            Highlight(symbol: "moon.stars", title: "Clearer Nightly identity", detail: "The separate Nightly app has its own name, violet accent and window marker, with versions that show the release ahead.", tint: .purple),
         ]),
     ]
 }

@@ -10,6 +10,18 @@ final class RecentWorkspacesStoreTests: XCTestCase {
         XCTAssertTrue(RecentWorkspacesStore.isEligible(home.appendingPathComponent("Projects/Demo")))
     }
 
+    func testOpenedDatesFollowTheRememberedFolders() {
+        let kept = URL(fileURLWithPath: "/Users/x/Projects/Kept", isDirectory: true)
+        let dropped = URL(fileURLWithPath: "/Users/x/Projects/Dropped", isDirectory: true)
+        let dates = [kept.path: Date(timeIntervalSinceReferenceDate: 100), dropped.path: Date()]
+
+        let pruned = RecentWorkspacesStore.prunedDates(dates, keeping: [kept])
+
+        XCTAssertEqual(pruned.keys.sorted(), [kept.path])
+        XCTAssertEqual(pruned[kept.path], Date(timeIntervalSinceReferenceDate: 100))
+        XCTAssertTrue(RecentWorkspacesStore.prunedDates(dates, keeping: []).isEmpty)
+    }
+
     func testTemporaryDirectoriesAreNotEligible() {
         // The exact shape that leaked into Recent: a per-test temp workspace.
         let temp = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)

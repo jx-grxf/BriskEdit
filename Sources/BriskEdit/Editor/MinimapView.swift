@@ -27,6 +27,7 @@ final class MinimapView: NSView {
         self.theme = theme
         super.init(frame: .zero)
         wantsLayer = true
+        clipsToBounds = true
         layer?.backgroundColor = (theme.vibrancy == .off ? theme.background : NSColor.clear).cgColor
     }
 
@@ -144,9 +145,13 @@ final class MinimapView: NSView {
     // MARK: - Drawing
 
     override func draw(_ dirtyRect: NSRect) {
+        // AppKit may invalidate beyond our bounds. Never paint over siblings.
+        NSGraphicsContext.saveGraphicsState()
+        defer { NSGraphicsContext.restoreGraphicsState() }
+        NSBezierPath(rect: bounds).addClip()
         let background = theme.vibrancy == .off ? theme.background : theme.background.withAlphaComponent(0.18)
         background.setFill()
-        dirtyRect.fill(using: .copy)
+        dirtyRect.intersection(bounds).fill(using: .copy)
         guard !lines.isEmpty else { return }
 
         let offset = minimapOffset()

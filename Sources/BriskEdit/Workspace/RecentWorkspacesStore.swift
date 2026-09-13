@@ -10,12 +10,16 @@ final class RecentWorkspacesStore {
 
     private static let key = "workspace.recentFolders"
     private static let filesKey = "workspace.recentFiles"
+    private static let datesKey = "workspace.recentFolderDates"
     private static let limit = 10
 
     private(set) var folders: [URL]
     /// Recently opened files (as opposed to folders), surfaced as the top section
     /// of File ▸ Open Recent.
     private(set) var files: [URL]
+    /// When each remembered folder was last opened, keyed by standardized path.
+    /// The welcome screen shows it; the menu ignores it.
+    private(set) var openedDates: [String: Date]
 
     private init() {
         let stored = (UserDefaults.standard.stringArray(forKey: Self.key) ?? [])
@@ -25,15 +29,36 @@ final class RecentWorkspacesStore {
         // forever as greyed-out, un-openable entries.
         let storedFiles = (UserDefaults.standard.stringArray(forKey: Self.filesKey) ?? [])
             .map { URL(fileURLWithPath: $0) }
-        folders = stored.filter { Self.isEligible($0) }
-        files = storedFiles.filter { Self.isEligible($0) }
-        if folders.count != stored.count { persist() }
-        if files.count != storedFiles.count { persistFiles() }
+        let storedDates = (UserDefaults.standard.dictionary(forKey: Self.datesKey) as? [String: Double]) ?? [:]
+        // Everything below works off locals: with @Observable the properties are
+        // computed, so reading one back here would touch self before the last
+        // stored property exists.
+        let eligibleFolders = stored.filter { Self.isEligible($0) }
+        let eligibleFiles = storedFiles.filter { Self.isEligible($0) }
+        let eligibleDates = Self.prunedDates(
+            storedDates.mapValues { Date(timeIntervalSinceReferenceDate: $0) },
+            keeping: eligibleFolders
+        )
+        folders = eligibleFolders
+        files = eligibleFiles
+        openedDates = eligibleDates
+        if eligibleFolders.count != stored.count { persist() }
+        if eligibleFiles.count != storedFiles.count { persistFiles() }
+        if eligibleDates.count != storedDates.count { persistDates() }
     }
 
     func record(_ url: URL) {
         folders = Self.upsert(url, into: folders)
+        var dates = openedDates
+        dates[url.standardizedFileURL.path] = Date()
+        openedDates = Self.prunedDates(dates, keeping: folders)
         persist()
+        persistDates()
+    }
+
+    /// When this folder was last opened, if we remember it.
+    func openedAt(_ url: URL) -> Date? {
+        openedDates[url.standardizedFileURL.path]
     }
 
     func recordFile(_ url: URL) {
@@ -44,8 +69,10 @@ final class RecentWorkspacesStore {
     func clear() {
         folders = []
         files = []
+        openedDates = [:]
         UserDefaults.standard.removeObject(forKey: Self.key)
         UserDefaults.standard.removeObject(forKey: Self.filesKey)
+        UserDefaults.standard.removeObject(forKey: Self.datesKey)
     }
 
     private func persist() {
@@ -54,6 +81,20 @@ final class RecentWorkspacesStore {
 
     private func persistFiles() {
         UserDefaults.standard.set(files.map(\.path), forKey: Self.filesKey)
+    }
+
+    private func persistDates() {
+        UserDefaults.standard.set(
+            openedDates.mapValues(\.timeIntervalSinceReferenceDate),
+            forKey: Self.datesKey
+        )
+    }
+
+    /// Timestamps only exist for folders still on the list, so a dropped or
+    /// ineligible folder can't leave its date behind forever.
+    static func prunedDates(_ dates: [String: Date], keeping folders: [URL]) -> [String: Date] {
+        let remembered = Set(folders.map { $0.standardizedFileURL.path })
+        return dates.filter { remembered.contains($0.key) }
     }
 
     /// Moves `url` to the front of the list, deduplicating by standardized path

@@ -6,6 +6,42 @@ import XCTest
 
 @MainActor
 final class EditorVibrancyTests: XCTestCase {
+    func testOversizedDirtyRectDoesNotPaintOutsideEditorSurfaces() throws {
+        for mode in [EditorVibrancy.off, .strong] {
+            var theme = EditorTheme.default
+            theme.vibrancy = mode
+            theme.background = .black
+            theme.gutterBackground = .black
+            let surfaces: [NSView] = [
+                MinimapView(theme: theme), TextKit2GutterView(theme: theme), EditorBackingView(theme: theme)
+            ]
+            for surface in surfaces {
+                surface.frame = NSRect(x: 0, y: 0, width: 78, height: 60)
+                let bitmap = try XCTUnwrap(NSBitmapImageRep(
+                    bitmapDataPlanes: nil, pixelsWide: 160, pixelsHigh: 120,
+                    bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                    isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0
+                ))
+                let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+                NSGraphicsContext.saveGraphicsState()
+                NSGraphicsContext.current = context
+                NSColor.magenta.setFill()
+                NSRect(x: 0, y: 0, width: 160, height: 120).fill()
+                context.cgContext.translateBy(x: 40, y: 30)
+                // Deliberately emulate an invalidation that includes neighboring views.
+                surface.draw(NSRect(x: -40, y: -30, width: 160, height: 120))
+                NSGraphicsContext.restoreGraphicsState()
+                for (x, y) in [(10, 60), (140, 60), (80, 10), (80, 110)] {
+                    let pixel = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.deviceRGB))
+                    XCTAssertEqual(pixel.redComponent, 1, accuracy: 0.01, "\(type(of: surface)), \(mode)")
+                    XCTAssertEqual(pixel.greenComponent, 0, accuracy: 0.01)
+                    XCTAssertEqual(pixel.blueComponent, 1, accuracy: 0.01)
+                }
+                XCTAssertTrue(surface.clipsToBounds)
+            }
+        }
+    }
+
     func testAccessibilityAndLowPowerOverrideEveryPreset() {
         for mode in EditorVibrancy.allCases {
             XCTAssertEqual(mode.resolved(reduceTransparency: true), .off)

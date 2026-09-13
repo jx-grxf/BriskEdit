@@ -135,6 +135,7 @@ struct EditorTabsView: View {
     private var emptyState: some View {
         WelcomeView(
             recents: RecentWorkspacesStore.shared.folders,
+            openedAt: { RecentWorkspacesStore.shared.openedAt($0) },
             onNewFile: { workspace.newUntitled() },
             onOpenFile: onOpenFile,
             onOpenFolder: openFolderPanel,
