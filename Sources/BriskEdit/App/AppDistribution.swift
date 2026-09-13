@@ -35,6 +35,9 @@ enum AppDistribution: String, Sendable {
         }
     }
 
+    /// Project home, for commit links and the Help menu.
+    static let repositoryURL = "https://github.com/jx-grxf/BriskEdit"
+
     /// Short commit the nightly was built from; empty for local and release builds.
     static var sourceCommit: String? {
         let commit = Bundle.main.infoDictionary?["BriskEditSourceCommit"] as? String
