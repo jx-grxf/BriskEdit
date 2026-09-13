@@ -33,6 +33,10 @@ settings:
     BRISKEDIT_BUNDLE_IDENTIFIER: com.johannesgrof.briskedit
     BRISKEDIT_DISPLAY_NAME: BriskEdit
     BRISKEDIT_APP_ICON: AppIcon
+    # Empty means the app follows the user's system accent colour, which is what
+    # a release should do. The nightly names its own set so the whole app — tabs,
+    # selection, focus rings, drop targets — says which build you are in.
+    BRISKEDIT_ACCENT_COLOR: ""
     BRISKEDIT_SPARKLE_FEED_URL: "https://github.com/jx-grxf/BriskEdit/releases/latest/download/appcast.xml"
     BRISKEDIT_SOURCE_COMMIT: ""
 
@@ -89,6 +93,7 @@ targets:
         # package_dmg.sh rewrites it to the display name before signing.
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         ASSETCATALOG_COMPILER_APPICON_NAME: "$(BRISKEDIT_APP_ICON)"
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: "$(BRISKEDIT_ACCENT_COLOR)"
         CODE_SIGN_STYLE: Manual
         CODE_SIGN_IDENTITY: "-"
         CODE_SIGNING_REQUIRED: NO

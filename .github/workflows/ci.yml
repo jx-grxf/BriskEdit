@@ -266,6 +266,11 @@ jobs:
           test "$(defaults read "$info" CFBundleIdentifier)" = com.johannesgrof.briskedit
           test "$(defaults read "$info" BriskEditDistribution)" = release
           test "$(defaults read "$info" CFBundleName)" = BriskEdit
+          # A release follows the user's system accent colour.
+          if defaults read "$info" NSAccentColorName > /dev/null 2>&1; then
+            echo "error: the release build must not pin an accent colour" >&2
+            exit 1
+          fi
           test "$(defaults read "$info" SUFeedURL)" = https://github.com/jx-grxf/BriskEdit/releases/latest/download/appcast.xml
 
       - name: Build nightly DMG
@@ -285,6 +290,7 @@ jobs:
           test "$(defaults read "$info" CFBundleIdentifier)" = com.johannesgrof.briskedit.nightly
           test "$(defaults read "$info" CFBundleDisplayName)" = "BriskEdit Nightly"
           test "$(defaults read "$info" CFBundleName)" = "BriskEdit Nightly"
+          test "$(defaults read "$info" NSAccentColorName)" = AccentColorNightly
           test "$(defaults read "$info" BriskEditDistribution)" = nightly
           test "$(defaults read "$info" BriskEditSourceCommit)" = "$BRISKEDIT_SOURCE_COMMIT"
           test "$(defaults read "$info" CFBundleIconName)" = AppIconNightly

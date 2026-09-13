@@ -27,6 +27,18 @@ struct WorkspaceWindow: View {
             WorkspaceDetail(workspace: workspace, onOpenFile: openFile)
         }
         .navigationSplitViewStyle(.balanced)
+        // A nightly marks itself with one accent hairline under the toolbar:
+        // visible in the corner of your eye when you switch windows, and gone
+        // from every other surface you actually work in.
+        .overlay(alignment: .top) {
+            if AppDistribution.current == .nightly {
+                Rectangle()
+                    .fill(Color.accentColor)
+                    .frame(height: 2)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
         .transaction { transaction in
             if preferences.reduceMotion || accessibilityReduceMotion { transaction.disablesAnimations = true }
         }

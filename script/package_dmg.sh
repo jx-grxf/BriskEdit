@@ -102,6 +102,7 @@ if [[ "$CHANNEL" == "nightly" ]]; then
     "BRISKEDIT_BUNDLE_IDENTIFIER=$(./script/release_artifacts.sh bundle-id)"
     "BRISKEDIT_DISPLAY_NAME=$APP_NAME"
     "BRISKEDIT_APP_ICON=AppIconNightly"
+    "BRISKEDIT_ACCENT_COLOR=AccentColorNightly"
     "BRISKEDIT_SPARKLE_FEED_URL=https://github.com/${GITHUB_REPOSITORY:-jx-grxf/BriskEdit}/releases/download/nightly/appcast.xml"
     "BRISKEDIT_SOURCE_COMMIT=${BRISKEDIT_SOURCE_COMMIT:-}"
   )
